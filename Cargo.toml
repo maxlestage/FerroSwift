@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/ferroswift",
+  "crates/macros",
+  "crates/transpiler",
+  "crates/cli",
+  "site",
+  # "examples/counter",
+  # "examples/todo",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/maxlestage/FerroSwift"
+homepage = "https://github.com/maxlestage/FerroSwift"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+# The site's browser bundle (the live playground): `cargo build --profile wasm-release --target wasm32-unknown-unknown`.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+panic = "abort"

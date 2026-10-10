@@ -1,0 +1,16 @@
+[package]
+name = "ferroswift-transpiler"
+description = "Rust → Swift and SwiftUI source translator: the engine of FerroSwift, also compiled to WebAssembly for the online playground."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["swift", "swiftui", "transpiler", "rust", "ios"]
+categories = ["development-tools", "compilers"]
+
+[dependencies]
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "extra-traits", "clone-impls", "visit"] }
+proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
+quote = { version = "1", default-features = false }

@@ -1,0 +1,15 @@
+[package]
+name = "ferroswift"
+description = "Write SwiftUI apps in Rust: views, state and modifiers that type-check in Rust and are transpiled to Swift by the FerroSwift CLI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["swift", "swiftui", "ios", "transpiler", "macos"]
+categories = ["gui", "development-tools"]
+
+[dependencies]
+ferroswift-macros = { version = "0.1.0", path = "../macros" }
