@@ -53,3 +53,16 @@ fn environment_fields_are_not_passed() {
     );
     assert!(out.contains("Detail(name: name)"), "{out}");
 }
+
+#[test]
+fn comments_between_children_are_kept() {
+    let out = swift(
+        "use ferroswift::prelude::*;\n#[derive(View, Default)]\nstruct V;\nimpl View for V {\n    fn body(&mut self) -> impl View {\n        vstack() // screen\n            .spacing(8.0)\n            // title\n            .child(text(\"a\"))\n            .child(text(\"b\")) // second\n            .padding()\n    }\n}",
+    );
+    assert!(
+        out.contains(
+            "VStack(spacing: 8) {\n            // screen\n            // title\n            Text(\"a\")\n            Text(\"b\") // second\n        }"
+        ),
+        "{out}"
+    );
+}

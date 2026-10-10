@@ -530,8 +530,28 @@ impl Translator<'_> {
         let mut step = None;
         let mut children: Vec<String> = Vec::new();
         let mut rest: Vec<&ExprMethodCall> = Vec::new();
-        for mc in methods {
+        let has_children = methods
+            .iter()
+            .any(|mc| mc.method == "child" || mc.method == "children");
+        if let (true, Some(first)) = (has_children, methods.first()) {
+            // `vstack() // note`: at the top of the content.
+            children.extend(
+                self.comments
+                    .take_trailing(first.receiver.span().end().line),
+            );
+        }
+        for (i, mc) in methods.iter().enumerate() {
             let m = mc.method.to_string();
+            if m == "child" || m == "children" {
+                // The comments written before `.child(…)` go before the child.
+                let prev = match i {
+                    0 => mc.receiver.span().end().line,
+                    _ => methods[i - 1].span().end().line,
+                };
+                let dot = mc.dot_token.span().start().line;
+                children.extend(self.comments.take_trailing(prev));
+                children.extend(self.comments.take_between(prev, dot));
+            }
             match m.as_str() {
                 "spacing" => spacing = Some(self.ui_arg(&mc.args[0])),
                 "alignment" if CONTAINERS.contains(&name) => {
@@ -540,12 +560,18 @@ impl Translator<'_> {
                 "axes" => axes = Some(self.ui_arg(&mc.args[0])),
                 "header" => header = Some(self.ui_text(&mc.args[0])),
                 "step" => step = Some(self.ui_arg(&mc.args[0])),
-                "child" => {
-                    let lines = self.view_content(&mc.args[0]);
-                    children.extend(lines);
-                }
-                "children" => {
-                    let lines = self.view_children(&mc.args[0]);
+                "child" | "children" => {
+                    let mut lines = if m == "child" {
+                        self.view_content(&mc.args[0])
+                    } else {
+                        self.view_children(&mc.args[0])
+                    };
+                    if let (Some(c), Some(last)) = (
+                        self.comments.take_trailing(mc.span().end().line),
+                        lines.last_mut(),
+                    ) {
+                        last.push_str(&format!(" {c}"));
+                    }
                     children.extend(lines);
                 }
                 _ => rest.push(mc),
