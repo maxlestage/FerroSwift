@@ -21,31 +21,103 @@ use crate::ty::Ty;
 
 /// The view functions of the ferroswift crate.
 const VIEW_FNS: &[&str] = &[
-    "text", "button", "button_role", "button_label", "vstack", "hstack", "zstack", "lazy_vstack",
-    "lazy_hstack", "scroll_view", "list", "form", "section", "group", "navigation_stack", "tab_view",
-    "disclosure_group", "for_each", "navigation_link", "navigation_link_label", "spacer", "divider",
-    "empty_view", "image", "system_image", "label", "async_image", "link", "toggle", "text_field",
-    "secure_field", "text_editor", "slider", "stepper", "picker", "progress_view", "progress",
-    "rectangle", "circle", "capsule", "ellipse", "rounded_rectangle", "content_unavailable",
+    "text",
+    "button",
+    "button_role",
+    "button_label",
+    "vstack",
+    "hstack",
+    "zstack",
+    "lazy_vstack",
+    "lazy_hstack",
+    "scroll_view",
+    "list",
+    "form",
+    "section",
+    "group",
+    "navigation_stack",
+    "tab_view",
+    "disclosure_group",
+    "for_each",
+    "navigation_link",
+    "navigation_link_label",
+    "spacer",
+    "divider",
+    "empty_view",
+    "image",
+    "system_image",
+    "label",
+    "async_image",
+    "link",
+    "toggle",
+    "text_field",
+    "secure_field",
+    "text_editor",
+    "slider",
+    "stepper",
+    "picker",
+    "progress_view",
+    "progress",
+    "rectangle",
+    "circle",
+    "capsule",
+    "ellipse",
+    "rounded_rectangle",
+    "content_unavailable",
 ];
 
 /// Containers whose children go in a trailing `{ … }`.
 const CONTAINERS: &[&str] = &[
-    "vstack", "hstack", "zstack", "lazy_vstack", "lazy_hstack", "scroll_view", "list", "form", "section",
-    "group", "navigation_stack", "tab_view", "disclosure_group", "picker",
+    "vstack",
+    "hstack",
+    "zstack",
+    "lazy_vstack",
+    "lazy_hstack",
+    "scroll_view",
+    "list",
+    "form",
+    "section",
+    "group",
+    "navigation_stack",
+    "tab_view",
+    "disclosure_group",
+    "picker",
 ];
 
 /// Style enums of the ferroswift crate, written as SwiftUI members.
 const STYLE_ENUMS: &[&str] = &[
-    "Color", "Font", "Weight", "Design", "Alignment", "Edge", "Axis", "TextAlignment", "ListStyle",
-    "ButtonStyle", "ButtonRole", "TextFieldStyle", "PickerStyle", "Animation", "Transition",
-    "ContentMode", "ImageScale", "ColorScheme",
+    "Color",
+    "Font",
+    "Weight",
+    "Design",
+    "Alignment",
+    "Edge",
+    "Axis",
+    "TextAlignment",
+    "ListStyle",
+    "ButtonStyle",
+    "ButtonRole",
+    "TextFieldStyle",
+    "PickerStyle",
+    "Animation",
+    "Transition",
+    "ContentMode",
+    "ImageScale",
+    "ColorScheme",
 ];
 
 /// Modifiers that set the frame: merged into one `.frame(…)` when consecutive.
 const FRAME: &[&str] = &[
-    "frame", "frame_width", "frame_height", "frame_min_width", "frame_min_height", "frame_max_width",
-    "frame_max_height", "fill_width", "fill_height", "frame_alignment",
+    "frame",
+    "frame_width",
+    "frame_height",
+    "frame_min_width",
+    "frame_min_height",
+    "frame_max_width",
+    "frame_max_height",
+    "fill_width",
+    "fill_height",
+    "frame_alignment",
 ];
 
 impl Translator<'_> {
@@ -54,7 +126,10 @@ impl Translator<'_> {
     }
 
     fn is_view_fn(&self, name: &str) -> bool {
-        self.ui() && VIEW_FNS.contains(&name) && !self.syms.fns.contains_key(name) && self.lookup(name).is_none()
+        self.ui()
+            && VIEW_FNS.contains(&name)
+            && !self.syms.fns.contains_key(name)
+            && self.lookup(name).is_none()
     }
 
     /// `Color::Red` → `.red` (in arguments) or `Color.red`.
@@ -68,7 +143,9 @@ impl Translator<'_> {
             _ => names::case_name(last),
         };
         let ty = Ty::Named(owner.to_string(), vec![]);
-        let explicit = matches!(owner, "Color" | "Font") && !self.implicit_member && expected.named() != Some(owner);
+        let explicit = matches!(owner, "Color" | "Font")
+            && !self.implicit_member
+            && expected.named() != Some(owner);
         if explicit {
             Some(Ex::primary(format!("{owner}.{member}"), ty))
         } else {
@@ -86,7 +163,12 @@ impl Translator<'_> {
 
     /// A ferroswift function called on its own (no modifier): `spacer()`, `text("Hi")`,
     /// `Color::rgb(…)`, `window_group(…)`, `with_animation(…)`.
-    pub fn ui_call(&mut self, name: &str, args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>, _expected: &Ty) -> Option<Ex> {
+    pub fn ui_call(
+        &mut self,
+        name: &str,
+        args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+        _expected: &Ty,
+    ) -> Option<Ex> {
         if !self.ui() {
             return None;
         }
@@ -95,7 +177,10 @@ impl Translator<'_> {
             "window_group" if args.len() == 1 => {
                 self.used_ui = true;
                 let lines = self.view_content(&args[0]);
-                return Some(Ex::primary(format!("WindowGroup {{\n{}\n}}", indent_lines(&lines.join("\n"))), Ty::View));
+                return Some(Ex::primary(
+                    format!("WindowGroup {{\n{}\n}}", indent_lines(&lines.join("\n"))),
+                    Ty::View,
+                ));
             }
             "with_animation" if args.len() == 1 => {
                 let f = self.action(&args[0]);
@@ -128,14 +213,21 @@ impl Translator<'_> {
         let prefix = if implicit { "" } else { owner };
         Some(match (owner, name) {
             ("Color", "rgb") => format!("Color(red: {}, green: {}, blue: {})", a[0], a[1], a[2]),
-            ("Color", "rgba") => format!("Color(red: {}, green: {}, blue: {}, opacity: {})", a[0], a[1], a[2], a[3]),
+            ("Color", "rgba") => format!(
+                "Color(red: {}, green: {}, blue: {}, opacity: {})",
+                a[0], a[1], a[2], a[3]
+            ),
             ("Color", "hex") => {
                 self.helper("color_hex");
                 format!("Color(hex: {})", a[0])
             }
             ("Font", "system") => format!("{prefix}.system(size: {})", a[0]),
-            ("Font", "system_weight") => format!("{prefix}.system(size: {}, weight: {})", a[0], a[1]),
-            ("Font", "system_design") => format!("{prefix}.system(size: {}, design: {})", a[0], a[1]),
+            ("Font", "system_weight") => {
+                format!("{prefix}.system(size: {}, weight: {})", a[0], a[1])
+            }
+            ("Font", "system_design") => {
+                format!("{prefix}.system(size: {}, design: {})", a[0], a[1])
+            }
             _ => return None,
         })
     }
@@ -174,7 +266,10 @@ impl Translator<'_> {
             if m.mac.path.is_ident("format") {
                 self.format_types.clear();
                 let v = self.expr(e);
-                let safe = self.format_types.iter().all(|t| matches!(t, Ty::Str | Ty::Int(_) | Ty::Float(_)));
+                let safe = self
+                    .format_types
+                    .iter()
+                    .all(|t| matches!(t, Ty::Str | Ty::Int(_) | Ty::Float(_)));
                 if v.code.starts_with('"') && !safe {
                     return format!("verbatim: {}", v.code);
                 }
@@ -241,7 +336,10 @@ impl Translator<'_> {
                 }
             }
             Expr::Path(p) if p.path.is_ident("None") => vec![],
-            Expr::Call(c) if matches!(&*c.func, Expr::Path(p) if p.path.is_ident("Some")) && c.args.len() == 1 => {
+            Expr::Call(c)
+                if matches!(&*c.func, Expr::Path(p) if p.path.is_ident("Some"))
+                    && c.args.len() == 1 =>
+            {
                 self.view_lines(&c.args[0])
             }
             Expr::MethodCall(m) if m.method == "then" && m.args.len() == 1 => {
@@ -252,21 +350,33 @@ impl Translator<'_> {
                     Expr::Closure(c) => self.view_content(&c.body),
                     other => self.view_lines(other),
                 };
-                vec![format!("if {} {{\n{}\n}}", cond.code, indent_lines(&body.join("\n")))]
+                vec![format!(
+                    "if {} {{\n{}\n}}",
+                    cond.code,
+                    indent_lines(&body.join("\n"))
+                )]
             }
-            Expr::MethodCall(m) if m.method == "map" && m.args.len() == 1 && self.is_option_expr(&m.receiver) => {
+            Expr::MethodCall(m)
+                if m.method == "map" && m.args.len() == 1 && self.is_option_expr(&m.receiver) =>
+            {
                 // `opt.map(|x| view)` → `if let x = opt { view }`.
                 if let Expr::Closure(c) = &m.args[0] {
                     let v = self.expr(&m.receiver);
                     let v = self.settle(v);
                     self.push_scope();
                     let name = match c.inputs.first() {
-                        Some(syn::Pat::Ident(id)) => self.declare(&id.ident.to_string(), v.ty.item()),
+                        Some(syn::Pat::Ident(id)) => {
+                            self.declare(&id.ident.to_string(), v.ty.item())
+                        }
                         _ => "_".into(),
                     };
                     let body = self.view_content(&c.body);
                     self.pop_scope();
-                    return vec![format!("if let {name} = {} {{\n{}\n}}", v.code, indent_lines(&body.join("\n")))];
+                    return vec![format!(
+                        "if let {name} = {} {{\n{}\n}}",
+                        v.code,
+                        indent_lines(&body.join("\n"))
+                    )];
                 }
                 let v = self.expr(e);
                 vec![v.code]
@@ -308,18 +418,23 @@ impl Translator<'_> {
         let root_code = match root {
             Expr::Call(c) => {
                 let Expr::Path(p) = &*c.func else { return None };
-                let segs: Vec<String> = p.path.segments.iter().map(|s| s.ident.to_string()).collect();
+                let segs: Vec<String> = p
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect();
                 let args: Vec<Expr> = c.args.iter().cloned().collect();
                 if segs.len() == 1 && self.is_view_fn(&segs[0]) {
                     self.used_ui = true;
                     let name = segs[0].clone();
-                    return Some(Ex::primary(self.view_root(&name, &args, &methods), Ty::View));
+                    return Some(Ex::primary(
+                        self.view_root(&name, &args, &methods),
+                        Ty::View,
+                    ));
                 }
                 if segs.len() == 2 && STYLE_ENUMS.contains(&segs[0].as_str()) {
-                    match self.ui_static(&segs[0], &segs[1], &args) {
-                        Some(code) => code,
-                        None => return None,
-                    }
+                    self.ui_static(&segs[0], &segs[1], &args)?
                 } else {
                     return self.view_modified(root, &methods);
                 }
@@ -346,7 +461,11 @@ impl Translator<'_> {
         let mut code = root_code;
         for mc in &methods {
             let args: Vec<String> = mc.args.iter().map(|a| self.ui_arg(a)).collect();
-            code = format!("{code}.{}({})", names::lower_camel(&mc.method.to_string()), args.join(", "));
+            code = format!(
+                "{code}.{}({})",
+                names::lower_camel(&mc.method.to_string()),
+                args.join(", ")
+            );
         }
         Some(Ex::primary(code, Ty::Named("Color".into(), vec![])))
     }
@@ -389,7 +508,9 @@ impl Translator<'_> {
             let m = mc.method.to_string();
             match m.as_str() {
                 "spacing" => spacing = Some(self.ui_arg(&mc.args[0])),
-                "alignment" if CONTAINERS.contains(&name) => alignment = Some(self.ui_arg(&mc.args[0])),
+                "alignment" if CONTAINERS.contains(&name) => {
+                    alignment = Some(self.ui_arg(&mc.args[0]))
+                }
                 "axes" => axes = Some(self.ui_arg(&mc.args[0])),
                 "header" => header = Some(self.ui_text(&mc.args[0])),
                 "step" => step = Some(self.ui_arg(&mc.args[0])),
@@ -430,7 +551,11 @@ impl Translator<'_> {
                 if name == "zstack" {
                     init.retain(|a| a.starts_with("alignment"));
                 }
-                let args = if init.is_empty() { String::new() } else { format!("({})", init.join(", ")) };
+                let args = if init.is_empty() {
+                    String::new()
+                } else {
+                    format!("({})", init.join(", "))
+                };
                 format!("{swift}{args}{}", content(&children))
             }
             "scroll_view" => {
@@ -451,7 +576,11 @@ impl Translator<'_> {
                 Some(h) => format!("Section({h}){}", content(&children)),
                 None => format!("Section{}", content(&children)),
             },
-            "disclosure_group" => format!("DisclosureGroup({}){}", self.ui_text(&args[0]), content(&children)),
+            "disclosure_group" => format!(
+                "DisclosureGroup({}){}",
+                self.ui_text(&args[0]),
+                content(&children)
+            ),
             "picker" => {
                 let label = self.ui_text(&args[0]);
                 let sel = self.binding_arg(&args[1]);
@@ -472,13 +601,19 @@ impl Translator<'_> {
             "button_label" => {
                 let action = self.action(&args[0]);
                 let label = self.view_content(&args[1]);
-                format!("Button {action} label: {{\n{}\n}}", indent_lines(&label.join("\n")))
+                format!(
+                    "Button {action} label: {{\n{}\n}}",
+                    indent_lines(&label.join("\n"))
+                )
             }
             "for_each" => self.for_each(&args[0], &args[1]),
             "navigation_link" => {
                 let label = self.ui_text(&args[0]);
                 let dest = self.view_content(&args[1]);
-                format!("NavigationLink({label}) {{\n{}\n}}", indent_lines(&dest.join("\n")))
+                format!(
+                    "NavigationLink({label}) {{\n{}\n}}",
+                    indent_lines(&dest.join("\n"))
+                )
             }
             "navigation_link_label" => {
                 let dest = self.view_content(&args[0]);
@@ -497,15 +632,37 @@ impl Translator<'_> {
             "capsule" => "Capsule()".into(),
             "ellipse" => "Ellipse()".into(),
             "progress_view" => "ProgressView()".into(),
-            "rounded_rectangle" => format!("RoundedRectangle(cornerRadius: {})", self.ui_arg(&args[0])),
+            "rounded_rectangle" => {
+                format!("RoundedRectangle(cornerRadius: {})", self.ui_arg(&args[0]))
+            }
             "image" => format!("Image({})", self.ui_text(&args[0])),
             "system_image" => format!("Image(systemName: {})", self.ui_text(&args[0])),
-            "label" => format!("Label({}, systemImage: {})", self.ui_text(&args[0]), self.ui_text(&args[1])),
+            "label" => format!(
+                "Label({}, systemImage: {})",
+                self.ui_text(&args[0]),
+                self.ui_text(&args[1])
+            ),
             "async_image" => format!("AsyncImage(url: URL(string: {}))", self.ui_text(&args[0])),
-            "link" => format!("Link({}, destination: URL(string: {})!)", self.ui_text(&args[0]), self.ui_text(&args[1])),
-            "toggle" => format!("Toggle({}, isOn: {})", self.ui_text(&args[0]), self.binding_arg(&args[1])),
-            "text_field" => format!("TextField({}, text: {})", self.ui_text(&args[0]), self.binding_arg(&args[1])),
-            "secure_field" => format!("SecureField({}, text: {})", self.ui_text(&args[0]), self.binding_arg(&args[1])),
+            "link" => format!(
+                "Link({}, destination: URL(string: {})!)",
+                self.ui_text(&args[0]),
+                self.ui_text(&args[1])
+            ),
+            "toggle" => format!(
+                "Toggle({}, isOn: {})",
+                self.ui_text(&args[0]),
+                self.binding_arg(&args[1])
+            ),
+            "text_field" => format!(
+                "TextField({}, text: {})",
+                self.ui_text(&args[0]),
+                self.binding_arg(&args[1])
+            ),
+            "secure_field" => format!(
+                "SecureField({}, text: {})",
+                self.ui_text(&args[0]),
+                self.binding_arg(&args[1])
+            ),
             "text_editor" => format!("TextEditor(text: {})", self.binding_arg(&args[0])),
             "slider" => {
                 let v = self.binding_arg(&args[0]);
@@ -521,18 +678,28 @@ impl Translator<'_> {
                 self.binding_arg(&args[1]),
                 self.ui_arg(&args[2])
             ),
-            "progress" => format!("ProgressView(value: {}, total: {})", self.ui_arg(&args[0]), self.ui_arg(&args[1])),
+            "progress" => format!(
+                "ProgressView(value: {}, total: {})",
+                self.ui_arg(&args[0]),
+                self.ui_arg(&args[1])
+            ),
             "content_unavailable" => format!(
                 "ContentUnavailableView({}, systemImage: {}, description: Text({}))",
                 self.ui_text(&args[0]),
                 self.ui_text(&args[1]),
                 self.ui_text(&args[2])
             ),
-            other => self.unsupported(args.first().map_or_else(proc_macro2::Span::call_site, Spanned::span), &format!("the view {other}()")),
+            other => self.unsupported(
+                args.first()
+                    .map_or_else(proc_macro2::Span::call_site, Spanned::span),
+                &format!("the view {other}()"),
+            ),
         };
         if !children.is_empty() && !CONTAINERS.contains(&name) {
             self.warn(
-                methods.first().map_or_else(proc_macro2::Span::call_site, |m| m.span()),
+                methods
+                    .first()
+                    .map_or_else(proc_macro2::Span::call_site, |m| m.span()),
                 format!("{name}() has no children: .child() is ignored"),
             );
         }
@@ -553,7 +720,10 @@ impl Translator<'_> {
             other => {
                 let v = self.expr(other);
                 let v = self.settle(v);
-                vec![format!("ForEach(Array({}.enumerated()), id: \\.offset) {{ $0.element }}", v.code)]
+                vec![format!(
+                    "ForEach(Array({}.enumerated()), id: \\.offset) {{ $0.element }}",
+                    v.code
+                )]
             }
         }
     }
@@ -582,8 +752,14 @@ impl Translator<'_> {
             match &item_ty {
                 Ty::Int(_) | Ty::Str | Ty::Char | Ty::Bool | Ty::Float(_) => ", id: \\.self".into(),
                 Ty::Named(n, _) => {
-                    let identifiable = self.struct_by_swift(n).is_some_and(|s| s.field("id").is_some());
-                    if identifiable { String::new() } else { ", id: \\.self".into() }
+                    let identifiable = self
+                        .struct_by_swift(n)
+                        .is_some_and(|s| s.field("id").is_some());
+                    if identifiable {
+                        String::new()
+                    } else {
+                        ", id: \\.self".into()
+                    }
                 }
                 Ty::Unknown if matches!(v.ty, Ty::Range(_)) => ", id: \\.self".into(),
                 _ => String::new(),
@@ -607,7 +783,11 @@ impl Translator<'_> {
             Some(syn::Pat::Tuple(t)) if enumerated => {
                 let mut names = Vec::new();
                 for (i, p) in t.elems.iter().enumerate() {
-                    let ty = if i == 0 { Ty::Int(crate::ty::IntKind::Usize) } else { item_ty.clone() };
+                    let ty = if i == 0 {
+                        Ty::Int(crate::ty::IntKind::Usize)
+                    } else {
+                        item_ty.clone()
+                    };
                     match p {
                         syn::Pat::Ident(id) => names.push(self.declare(&id.ident.to_string(), ty)),
                         _ => names.push("_".into()),
@@ -634,7 +814,10 @@ impl Translator<'_> {
             self.binding_items.pop();
         }
         self.pop_scope();
-        format!("ForEach({items_code}{id}) {{ {param} in\n{}\n}}", indent_lines(&body.join("\n")))
+        format!(
+            "ForEach({items_code}{id}) {{ {param} in\n{}\n}}",
+            indent_lines(&body.join("\n"))
+        )
     }
 
     /// The modifiers of a view, one per line.
@@ -668,12 +851,24 @@ impl Translator<'_> {
                     }
                     j += 1;
                 }
-                let order = ["width", "height", "minWidth", "idealWidth", "maxWidth", "minHeight", "idealHeight", "maxHeight"];
-                let sort = |v: &mut Vec<(String, String)>| v.sort_by_key(|(k, _)| order.iter().position(|o| o == k));
+                let order = [
+                    "width",
+                    "height",
+                    "minWidth",
+                    "idealWidth",
+                    "maxWidth",
+                    "minHeight",
+                    "idealHeight",
+                    "maxHeight",
+                ];
+                let sort = |v: &mut Vec<(String, String)>| {
+                    v.sort_by_key(|(k, _)| order.iter().position(|o| o == k))
+                };
                 sort(&mut fixed);
                 sort(&mut flexible);
                 let render = |v: &[(String, String)], align: Option<&String>| {
-                    let mut parts: Vec<String> = v.iter().map(|(k, x)| format!("{k}: {x}")).collect();
+                    let mut parts: Vec<String> =
+                        v.iter().map(|(k, x)| format!("{k}: {x}")).collect();
                     if let Some(a) = align {
                         parts.push(format!("alignment: {a}"));
                     }
@@ -716,7 +911,9 @@ impl Translator<'_> {
             "padding_edges" => format!(".padding({}, {})", a(self, 0), a(self, 1)),
             "font" => format!(".font({})", a(self, 0)),
             "font_size" => format!(".font(.system(size: {}))", a(self, 0)),
-            "foreground" | "foreground_color" | "foreground_style" => format!(".foregroundStyle({})", a(self, 0)),
+            "foreground" | "foreground_color" | "foreground_style" => {
+                format!(".foregroundStyle({})", a(self, 0))
+            }
             "background_view" => format!(".background {}", content(self, 0)),
             "overlay" => format!(".overlay {}", content(self, 0)),
             "stroke" => format!(".stroke({}, lineWidth: {})", a(self, 0), a(self, 1)),
@@ -729,13 +926,23 @@ impl Translator<'_> {
             "scale" => format!(".scaleEffect({})", a(self, 0)),
             "offset" => format!(".offset(x: {}, y: {})", a(self, 0), a(self, 1)),
             "aspect_ratio" => format!(".aspectRatio(contentMode: {})", a(self, 0)),
-            "navigation_inline" => "#if os(iOS)\n.navigationBarTitleDisplayMode(.inline)\n#endif".into(),
+            "navigation_inline" => {
+                "#if os(iOS)\n.navigationBarTitleDisplayMode(.inline)\n#endif".into()
+            }
             "toolbar" => format!(".toolbar {}", content(self, 0)),
             "tab_item" => format!(
                 ".tabItem {{\n{}\n}}",
-                indent_lines(&format!("Label({}, systemImage: {})", self.ui_text(&args[0]), self.ui_text(&args[1])))
+                indent_lines(&format!(
+                    "Label({}, systemImage: {})",
+                    self.ui_text(&args[0]),
+                    self.ui_text(&args[1])
+                ))
             ),
-            "sheet" => format!(".sheet(isPresented: {}) {}", self.binding_arg(&args[0]), content(self, 1)),
+            "sheet" => format!(
+                ".sheet(isPresented: {}) {}",
+                self.binding_arg(&args[0]),
+                content(self, 1)
+            ),
             "alert" => format!(
                 ".alert({}, isPresented: {}) {}",
                 self.ui_text(&args[0]),
@@ -746,19 +953,33 @@ impl Translator<'_> {
             "swipe_actions" => format!(".swipeActions {}", content(self, 0)),
             "context_menu" => format!(".contextMenu {}", content(self, 0)),
             "navigation_title" => format!(".navigationTitle({})", self.ui_text(&args[0])),
-            "accessibility_label" | "help" => format!(".{}({})", names::lower_camel(&name), self.ui_text(&args[0])),
+            "accessibility_label" | "help" => {
+                format!(".{}({})", names::lower_camel(&name), self.ui_text(&args[0]))
+            }
             "on_appear" | "on_disappear" | "on_tap_gesture" | "on_submit" => {
                 format!(".{} {}", names::lower_camel(&name), self.action(&args[0]))
             }
             "on_change" => format!(".onChange(of: {}) {}", a(self, 0), self.action(&args[1])),
             "on_delete" => {
-                let f = self.expr_with(&args[0], &Ty::Fn(vec![Ty::Named("IndexSet".into(), vec![])], Box::new(Ty::Unit)));
+                let f = self.expr_with(
+                    &args[0],
+                    &Ty::Fn(
+                        vec![Ty::Named("IndexSet".into(), vec![])],
+                        Box::new(Ty::Unit),
+                    ),
+                );
                 format!(".onDelete {}", f.code)
             }
             "on_move" => {
                 let f = self.expr_with(
                     &args[0],
-                    &Ty::Fn(vec![Ty::Named("IndexSet".into(), vec![]), Ty::Int(crate::ty::IntKind::Usize)], Box::new(Ty::Unit)),
+                    &Ty::Fn(
+                        vec![
+                            Ty::Named("IndexSet".into(), vec![]),
+                            Ty::Int(crate::ty::IntKind::Usize),
+                        ],
+                        Box::new(Ty::Unit),
+                    ),
                 );
                 format!(".onMove {}", f.code)
             }
@@ -790,7 +1011,11 @@ fn attach(base: String, modifiers: &[String]) -> String {
     }
     // Below a closing brace, modifiers align with it; below a one-line view, they are
     // indented.
-    let indent = if base.contains('\n') && base.ends_with('}') { "" } else { crate::translate::INDENT };
+    let indent = if base.contains('\n') && base.ends_with('}') {
+        ""
+    } else {
+        crate::translate::INDENT
+    };
     let mut out = base;
     for m in modifiers {
         for line in m.lines() {
@@ -807,7 +1032,14 @@ fn attach(base: String, modifiers: &[String]) -> String {
 /// `items.iter()` → `items`.
 fn strip_iter(e: &Expr) -> &Expr {
     match e {
-        Expr::MethodCall(m) if matches!(m.method.to_string().as_str(), "iter" | "into_iter" | "iter_mut" | "clone" | "cloned") && m.args.is_empty() => strip_iter(&m.receiver),
+        Expr::MethodCall(m)
+            if matches!(
+                m.method.to_string().as_str(),
+                "iter" | "into_iter" | "iter_mut" | "clone" | "cloned"
+            ) && m.args.is_empty() =>
+        {
+            strip_iter(&m.receiver)
+        }
         Expr::Reference(r) => strip_iter(&r.expr),
         Expr::Paren(p) => strip_iter(&p.expr),
         e => e,
@@ -819,16 +1051,74 @@ fn is_modifier(name: &str) -> bool {
     FRAME.contains(&name)
         || matches!(
             name,
-            "padding" | "padding_len" | "padding_edges" | "font" | "font_size" | "font_weight" | "font_design" | "bold" | "italic"
-                | "monospaced" | "underline" | "strikethrough" | "multiline_text_alignment" | "line_limit" | "foreground"
-                | "background" | "background_view" | "overlay" | "tint" | "fill" | "stroke" | "border" | "corner_radius"
-                | "clip_circle" | "opacity" | "shadow" | "blur" | "rotation" | "scale" | "glass_effect" | "resizable"
-                | "scaled_to_fit" | "scaled_to_fill" | "aspect_ratio" | "image_scale" | "disabled" | "hidden"
-                | "button_style" | "text_field_style" | "picker_style" | "list_style" | "tag" | "id" | "badge"
-                | "accessibility_label" | "help" | "labels_hidden" | "preferred_color_scheme" | "navigation_title" | "navigation_inline"
-                | "toolbar" | "tab_item" | "sheet" | "alert" | "searchable" | "swipe_actions" | "context_menu"
-                | "on_appear" | "on_disappear" | "on_tap_gesture" | "on_submit" | "on_change" | "on_delete" | "on_move"
-                | "animation" | "transition" | "offset" | "ignores_safe_area"
+            "padding"
+                | "padding_len"
+                | "padding_edges"
+                | "font"
+                | "font_size"
+                | "font_weight"
+                | "font_design"
+                | "bold"
+                | "italic"
+                | "monospaced"
+                | "underline"
+                | "strikethrough"
+                | "multiline_text_alignment"
+                | "line_limit"
+                | "foreground"
+                | "background"
+                | "background_view"
+                | "overlay"
+                | "tint"
+                | "fill"
+                | "stroke"
+                | "border"
+                | "corner_radius"
+                | "clip_circle"
+                | "opacity"
+                | "shadow"
+                | "blur"
+                | "rotation"
+                | "scale"
+                | "glass_effect"
+                | "resizable"
+                | "scaled_to_fit"
+                | "scaled_to_fill"
+                | "aspect_ratio"
+                | "image_scale"
+                | "disabled"
+                | "hidden"
+                | "button_style"
+                | "text_field_style"
+                | "picker_style"
+                | "list_style"
+                | "tag"
+                | "id"
+                | "badge"
+                | "accessibility_label"
+                | "help"
+                | "labels_hidden"
+                | "preferred_color_scheme"
+                | "navigation_title"
+                | "navigation_inline"
+                | "toolbar"
+                | "tab_item"
+                | "sheet"
+                | "alert"
+                | "searchable"
+                | "swipe_actions"
+                | "context_menu"
+                | "on_appear"
+                | "on_disappear"
+                | "on_tap_gesture"
+                | "on_submit"
+                | "on_change"
+                | "on_delete"
+                | "on_move"
+                | "animation"
+                | "transition"
+                | "offset"
+                | "ignores_safe_area"
         )
 }
 

@@ -10,7 +10,8 @@ use std::process::Command;
 use std::sync::Mutex;
 
 fn swiftc() -> Option<PathBuf> {
-    let candidate = std::env::var_os("FERROSWIFT_SWIFTC").map_or_else(|| PathBuf::from("swiftc"), PathBuf::from);
+    let candidate = std::env::var_os("FERROSWIFT_SWIFTC")
+        .map_or_else(|| PathBuf::from("swiftc"), PathBuf::from);
     let ok = Command::new(&candidate)
         .arg("--version")
         .output()
@@ -25,7 +26,10 @@ fn programs() -> Vec<PathBuf> {
         .expect("tests/programs")
         .map(|e| e.expect("entry").path())
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-        .filter(|p| only.as_deref().is_none_or(|o| p.file_stem().is_some_and(|s| s == o)))
+        .filter(|p| {
+            only.as_deref()
+                .is_none_or(|o| p.file_stem().is_some_and(|s| s == o))
+        })
         .collect();
     files.sort();
     files
@@ -55,7 +59,11 @@ fn errors_only(output: &str) -> String {
             }
         }
     }
-    if out.is_empty() { output.to_string() } else { out.join("\n") }
+    if out.is_empty() {
+        output.to_string()
+    } else {
+        out.join("\n")
+    }
 }
 
 fn check(program: &Path, swiftc: Option<&Path>, work: &Path) -> Result<(), String> {
@@ -75,13 +83,27 @@ fn check(program: &Path, swiftc: Option<&Path>, work: &Path) -> Result<(), Strin
     }
     let Some(swiftc) = swiftc else { return Ok(()) };
     let rust_bin = work.join(format!("{name}_rust"));
-    run(Command::new("rustc").args(["--edition", "2024", "-A", "warnings", "-o"]).arg(&rust_bin).arg(program))
-        .map_err(|e| format!("rustc failed:\n{e}"))?;
-    let expected = run(&mut Command::new(&rust_bin)).map_err(|e| format!("the Rust program failed:\n{e}"))?;
+    run(Command::new("rustc")
+        .args(["--edition", "2024", "-A", "warnings", "-o"])
+        .arg(&rust_bin)
+        .arg(program))
+    .map_err(|e| format!("rustc failed:\n{e}"))?;
+    let expected =
+        run(&mut Command::new(&rust_bin)).map_err(|e| format!("the Rust program failed:\n{e}"))?;
     let swift_bin = work.join(format!("{name}_swift"));
-    run(Command::new(swiftc).arg(&swift_path).arg("-o").arg(&swift_bin))
-        .map_err(|e| format!("swiftc failed on {}:\n{}", swift_path.display(), errors_only(&e)))?;
-    let actual = run(&mut Command::new(&swift_bin)).map_err(|e| format!("the Swift program failed:\n{e}"))?;
+    run(Command::new(swiftc)
+        .arg(&swift_path)
+        .arg("-o")
+        .arg(&swift_bin))
+    .map_err(|e| {
+        format!(
+            "swiftc failed on {}:\n{}",
+            swift_path.display(),
+            errors_only(&e)
+        )
+    })?;
+    let actual = run(&mut Command::new(&swift_bin))
+        .map_err(|e| format!("the Swift program failed:\n{e}"))?;
     if expected != actual {
         let mut diff = String::new();
         for (i, (e, a)) in expected.lines().zip(actual.lines()).enumerate() {
@@ -93,7 +115,10 @@ fn check(program: &Path, swiftc: Option<&Path>, work: &Path) -> Result<(), Strin
         if el != al {
             diff.push_str(&format!("{el} lines from Rust, {al} from Swift\n"));
         }
-        return Err(format!("different output ({}):\n{diff}", swift_path.display()));
+        return Err(format!(
+            "different output ({}):\n{diff}",
+            swift_path.display()
+        ));
     }
     Ok(())
 }
@@ -110,23 +135,36 @@ fn programs_behave_the_same_in_rust_and_swift() {
     assert!(!programs.is_empty());
     let failures = Mutex::new(Vec::new());
     let next = Mutex::new(0usize);
-    let threads = std::thread::available_parallelism().map_or(2, |n| n.get()).min(6);
+    let threads = std::thread::available_parallelism()
+        .map_or(2, |n| n.get())
+        .min(6);
     std::thread::scope(|scope| {
         for _ in 0..threads {
-            scope.spawn(|| loop {
-                let i = {
-                    let mut n = next.lock().unwrap();
-                    let i = *n;
-                    *n += 1;
-                    i
-                };
-                let Some(p) = programs.get(i) else { break };
-                if let Err(e) = check(p, swiftc.as_deref(), &work) {
-                    failures.lock().unwrap().push(format!("== {} ==\n{e}", p.display()));
+            scope.spawn(|| {
+                loop {
+                    let i = {
+                        let mut n = next.lock().unwrap();
+                        let i = *n;
+                        *n += 1;
+                        i
+                    };
+                    let Some(p) = programs.get(i) else { break };
+                    if let Err(e) = check(p, swiftc.as_deref(), &work) {
+                        failures
+                            .lock()
+                            .unwrap()
+                            .push(format!("== {} ==\n{e}", p.display()));
+                    }
                 }
             });
         }
     });
     let failures = failures.into_inner().unwrap();
-    assert!(failures.is_empty(), "{} of {} programs failed:\n\n{}", failures.len(), programs.len(), failures.join("\n\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {} programs failed:\n\n{}",
+        failures.len(),
+        programs.len(),
+        failures.join("\n\n")
+    );
 }

@@ -337,10 +337,8 @@ impl Ty {
 
 /// Names of the generic parameters in scope, which stay as they are.
 pub fn is_primitive_name(name: &str) -> bool {
-    matches!(
-        name,
-        "bool" | "char" | "str" | "String" | "f32" | "f64"
-    ) || IntKind::parse(name).is_some()
+    matches!(name, "bool" | "char" | "str" | "String" | "f32" | "f64")
+        || IntKind::parse(name).is_some()
 }
 
 /// Reads a type name as Rust writes it in paths (`i32`, `String`, `Vec`…) with arguments.

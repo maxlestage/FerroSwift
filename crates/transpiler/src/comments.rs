@@ -168,8 +168,7 @@ impl Comments {
     pub fn take_between(&mut self, after: usize, before: usize) -> Vec<String> {
         let mut out = Vec::new();
         for c in &mut self.list {
-            if !c.taken && c.line > after && c.line < before && !(c.trailing && c.line == after)
-            {
+            if !c.taken && c.line > after && c.line < before && !(c.trailing && c.line == after) {
                 c.taken = true;
                 out.push(c.text.clone());
             }

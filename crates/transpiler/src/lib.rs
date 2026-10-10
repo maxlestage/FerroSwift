@@ -98,10 +98,12 @@ pub fn transpile(source: &str) -> Output {
 pub fn transpile_with(source: &str, options: &Options) -> Output {
     let file = match syn::parse_file(source) {
         Ok(file) => file,
-        Err(error) => return Output {
-            swift: String::new(),
-            diagnostics: vec![parse_error(&error, None)],
-        },
+        Err(error) => {
+            return Output {
+                swift: String::new(),
+                diagnostics: vec![parse_error(&error, None)],
+            };
+        }
     };
     let symbols = Symbols::collect(&[&file]);
     let mut helpers = BTreeSet::new();
@@ -114,14 +116,19 @@ pub fn transpile_with(source: &str, options: &Options) -> Output {
         swift.push_str(&code);
     }
     diagnostics.sort_by_key(|d| (d.line, d.column));
-    diagnostics.dedup();
+    // One message per position: the first, most precise one.
+    diagnostics.dedup_by(|a, b| a.line == b.line && a.column == b.column);
     Output { swift, diagnostics }
 }
 
 /// Translates the files of a crate together: types, functions and methods declared in one
 /// file are known in the others. `entry` is the file whose `fn main` starts the program
 /// (`src/main.rs`), if any.
-pub fn transpile_crate(files: &[SourceFile], entry: Option<&str>, options: &Options) -> CrateOutput {
+pub fn transpile_crate(
+    files: &[SourceFile],
+    entry: Option<&str>,
+    options: &Options,
+) -> CrateOutput {
     let mut out = CrateOutput::default();
     let mut parsed = Vec::new();
     for f in files {
@@ -141,7 +148,8 @@ pub fn transpile_crate(files: &[SourceFile], entry: Option<&str>, options: &Opti
         helpers.extend(t.helpers.iter().copied());
         ui |= t.used_ui;
         out.diagnostics.append(&mut t.diags);
-        out.files.push((swift_file_name(&src.path, is_entry), swift));
+        out.files
+            .push((swift_file_name(&src.path, is_entry), swift));
     }
     out.support = support::render(&helpers, ui).map(|code| {
         format!(
@@ -151,7 +159,8 @@ pub fn transpile_crate(files: &[SourceFile], entry: Option<&str>, options: &Opti
     });
     out.diagnostics
         .sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
-    out.diagnostics.dedup();
+    out.diagnostics
+        .dedup_by(|a, b| a.file == b.file && a.line == b.line && a.column == b.column);
     out
 }
 

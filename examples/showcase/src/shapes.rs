@@ -13,7 +13,13 @@ pub struct ShapesView {
 
 impl ShapesView {
     fn palette() -> Vec<Color> {
-        vec![Color::Red, Color::Orange, Color::Yellow, Color::Green, Color::Blue]
+        vec![
+            Color::Red,
+            Color::Orange,
+            Color::Yellow,
+            Color::Green,
+            Color::Blue,
+        ]
     }
 }
 
@@ -23,8 +29,15 @@ impl View for ShapesView {
             .spacing(24.0)
             .child(
                 zstack()
-                    .child(circle().fill(Color::hex(0xF05138)).frame(if self.big { 200.0 } else { 120.0 }, if self.big { 200.0 } else { 120.0 }))
-                    .child(text(format!("{}", self.taps)).font(Font::system_weight(40.0, Weight::Bold)).foreground(Color::White))
+                    .child(circle().fill(Color::hex(0xF05138)).frame(
+                        if self.big { 200.0 } else { 120.0 },
+                        if self.big { 200.0 } else { 120.0 },
+                    ))
+                    .child(
+                        text(format!("{}", self.taps))
+                            .font(Font::system_weight(40.0, Weight::Bold))
+                            .foreground(Color::White),
+                    )
                     .on_tap_gesture(|| {
                         with_animation_of(Animation::Bouncy, || {
                             self.big = !self.big;
@@ -33,12 +46,14 @@ impl View for ShapesView {
                     }),
             )
             .child(
-                hstack().spacing(8.0).children(Self::palette().into_iter().map(|color| {
-                    rounded_rectangle(8.0)
-                        .fill(color)
-                        .frame(40.0, 40.0)
-                        .shadow(2.0)
-                })),
+                hstack()
+                    .spacing(8.0)
+                    .children(Self::palette().into_iter().map(|color| {
+                        rounded_rectangle(8.0)
+                            .fill(color)
+                            .frame(40.0, 40.0)
+                            .shadow(2.0)
+                    })),
             )
             .child(
                 text("Tap the circle")

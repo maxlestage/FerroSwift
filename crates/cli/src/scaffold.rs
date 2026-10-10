@@ -8,9 +8,13 @@ pub fn new_app(dir: &Path) -> Result<(), String> {
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or("invalid name")?;
     let valid = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
     if !valid {
-        return Err(format!("`{name}` is not a valid crate name: use letters, digits, - and _"));
+        return Err(format!(
+            "`{name}` is not a valid crate name: use letters, digits, - and _"
+        ));
     }
     if dir.exists() {
         return Err(format!("{} already exists", dir.display()));
@@ -21,7 +25,9 @@ pub fn new_app(dir: &Path) -> Result<(), String> {
         .filter(|w| !w.is_empty())
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
         })
         .collect();
     let files: [(&str, String); 5] = [
@@ -29,7 +35,12 @@ pub fn new_app(dir: &Path) -> Result<(), String> {
         ("src/lib.rs", LIB.replace("{App}", &swift_name)),
         ("swift/Package.swift", PACKAGE.replace("{App}", &swift_name)),
         (".gitignore", GITIGNORE.to_string()),
-        ("README.md", README.replace("{App}", &swift_name).replace("{name}", &name)),
+        (
+            "README.md",
+            README
+                .replace("{App}", &swift_name)
+                .replace("{name}", &name),
+        ),
     ];
     for (path, content) in files {
         let p = dir.join(path);

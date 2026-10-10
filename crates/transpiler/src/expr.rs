@@ -113,7 +113,9 @@ impl Translator<'_> {
         }
         if v.weak {
             let int_literal = v.ty.is_int() && !v.code.contains('.') && !v.code.contains('e');
-            if expected.is_int() && v.ty.is_int() || expected.is_float() && (v.ty.is_float() || int_literal) {
+            if expected.is_int() && v.ty.is_int()
+                || expected.is_float() && (v.ty.is_float() || int_literal)
+            {
                 v.ty = expected.clone();
                 return v;
             }
@@ -235,7 +237,10 @@ impl Translator<'_> {
             let (ok, err) = *t;
             let code = match (ok.swift(), err.swift()) {
                 (Some(o), Some(e)) if !matches!(err, Ty::Dyn(_)) => {
-                    format!("Result<{o}, {e}> {{ () throws({e}) -> {o} in try {} }}", v.code)
+                    format!(
+                        "Result<{o}, {e}> {{ () throws({e}) -> {o} in try {} }}",
+                        v.code
+                    )
                 }
                 _ => format!("Result {{ try {} }}", v.code),
             };
@@ -258,7 +263,11 @@ impl Translator<'_> {
                 Ty::Result(o, _) => (**o).clone(),
                 _ => Ty::Unknown,
             };
-            return Ex::new(format!("try? {}.get()", wrap(&v, P_PRIMARY)), P_TRY, Ty::Option(Box::new(ok)));
+            return Ex::new(
+                format!("try? {}.get()", wrap(&v, P_PRIMARY)),
+                P_TRY,
+                Ty::Option(Box::new(ok)),
+            );
         }
         v
     }
@@ -270,7 +279,9 @@ impl Translator<'_> {
             Lit::Int(i) => {
                 let suffix = i.suffix();
                 let text = i.to_string();
-                let digits = text[..text.len() - suffix.len()].trim_end_matches('_').to_string();
+                let digits = text[..text.len() - suffix.len()]
+                    .trim_end_matches('_')
+                    .to_string();
                 let ty = match suffix {
                     "f32" => Ty::Float(FloatKind::F32),
                     "f64" => Ty::Float(FloatKind::F64),
@@ -288,7 +299,9 @@ impl Translator<'_> {
                 let mut ex = Ex::primary(code, ty.clone());
                 if suffix.is_empty() {
                     ex.weak = true;
-                } else if !matches!(ty.swift().as_deref(), Some("Int" | "Double")) && expected.swift() != ty.swift() {
+                } else if !matches!(ty.swift().as_deref(), Some("Int" | "Double"))
+                    && expected.swift() != ty.swift()
+                {
                     // `5u8` → `UInt8(5)`: Swift would make a bare literal an `Int`.
                     ex.code = format!("{}({})", ty.swift_lossy(), ex.code);
                 }
@@ -297,7 +310,9 @@ impl Translator<'_> {
             Lit::Float(f) => {
                 let suffix = f.suffix();
                 let text = f.to_string();
-                let mut digits = text[..text.len() - suffix.len()].trim_end_matches('_').to_string();
+                let mut digits = text[..text.len() - suffix.len()]
+                    .trim_end_matches('_')
+                    .to_string();
                 if digits.ends_with('.') {
                     digits.push('0');
                 }
@@ -337,7 +352,12 @@ impl Translator<'_> {
             Lit::Bool(b) => Ex::primary(b.value.to_string(), Ty::Bool),
             Lit::Byte(b) => {
                 let v = b.value();
-                if v.is_ascii() && !v.is_ascii_control() || v == b'\n' || v == b'\t' || v == b'\r' || v == 0 {
+                if v.is_ascii() && !v.is_ascii_control()
+                    || v == b'\n'
+                    || v == b'\t'
+                    || v == b'\r'
+                    || v == 0
+                {
                     Ex::primary(
                         format!("UInt8(ascii: {})", swift_string(&(v as char).to_string())),
                         Ty::Int(IntKind::U8),
@@ -348,7 +368,10 @@ impl Translator<'_> {
             }
             Lit::ByteStr(b) => {
                 let s = String::from_utf8_lossy(&b.value()).to_string();
-                Ex::primary(format!("Array({}.utf8)", swift_string(&s)), Ty::Vec(Box::new(Ty::Int(IntKind::U8))))
+                Ex::primary(
+                    format!("Array({}.utf8)", swift_string(&s)),
+                    Ty::Vec(Box::new(Ty::Int(IntKind::U8))),
+                )
             }
             other => {
                 let code = self.unsupported(other.span(), "this literal");
@@ -377,7 +400,11 @@ impl Translator<'_> {
     pub fn type_path_name(&self, name: &str) -> String {
         if name == "Self" {
             if let Some(i) = &self.imp {
-                return if i.kind == TypeKind::Observable { i.swift.clone() } else { "Self".into() };
+                return if i.kind == TypeKind::Observable {
+                    i.swift.clone()
+                } else {
+                    "Self".into()
+                };
             }
         }
         match name {
@@ -428,11 +455,17 @@ impl Translator<'_> {
             }
             if let Some(st) = self.syms.structs.get(n) {
                 if st.fields.is_empty() {
-                    return Ex::primary(format!("{}()", st.swift), Ty::Named(st.swift.clone(), vec![]));
+                    return Ex::primary(
+                        format!("{}()", st.swift),
+                        Ty::Named(st.swift.clone(), vec![]),
+                    );
                 }
             }
             if let Some(sig) = self.syms.fns.get(n) {
-                let ty = Ty::Fn(sig.params.iter().map(|p| p.ty.clone()).collect(), Box::new(sig.ret.clone()));
+                let ty = Ty::Fn(
+                    sig.params.iter().map(|p| p.ty.clone()).collect(),
+                    Box::new(sig.ret.clone()),
+                );
                 return Ex::primary(names::lower_camel(n), ty);
             }
             // A variant imported with `use Enum::*`.
@@ -487,7 +520,10 @@ impl Translator<'_> {
         }
         if owner == "Ordering" {
             self.helper("Ordering");
-            return Ex::primary(format!("Ordering.{}", names::case_name(last)), Ty::Named("Ordering".into(), vec![]));
+            return Ex::primary(
+                format!("Ordering.{}", names::case_name(last)),
+                Ty::Named("Ordering".into(), vec![]),
+            );
         }
         // `module::item`: modules disappear.
         let single = syn::Path::from(syn::Ident::new(&segs[segs.len() - 1], span));
@@ -543,7 +579,13 @@ impl Translator<'_> {
                 "NAN" => "nan",
                 "EPSILON" => "ulpOfOne",
                 "MAX" => "greatestFiniteMagnitude",
-                "MIN" => return Some(Ex::new(format!("-{t}.greatestFiniteMagnitude"), P_PREFIX, ty)),
+                "MIN" => {
+                    return Some(Ex::new(
+                        format!("-{t}.greatestFiniteMagnitude"),
+                        P_PREFIX,
+                        ty,
+                    ));
+                }
                 "MIN_POSITIVE" => "leastNormalMagnitude",
                 "E" => return Some(Ex::primary(format!("{t}(M_E)"), ty)),
                 "TAU" => return Some(Ex::new(format!("2 * {t}.pi"), P_MUL, ty)),
@@ -607,7 +649,10 @@ impl Translator<'_> {
             let rhs = self.settle(rhs);
             if op == "%=" && lhs_ty.is_float() {
                 return Ex::new(
-                    format!("{lhs} = {lhs}.truncatingRemainder(dividingBy: {})", rhs.code),
+                    format!(
+                        "{lhs} = {lhs}.truncatingRemainder(dividingBy: {})",
+                        rhs.code
+                    ),
                     P_ASSIGN,
                     Ty::Unit,
                 );
@@ -619,7 +664,11 @@ impl Translator<'_> {
         }
         let comparison = prec == P_CMP;
         let left_expected = if comparison || matches!(op, "&&" | "||") {
-            if matches!(op, "&&" | "||") { Ty::Bool } else { Ty::Unknown }
+            if matches!(op, "&&" | "||") {
+                Ty::Bool
+            } else {
+                Ty::Unknown
+            }
         } else {
             expected.clone()
         };
@@ -655,7 +704,11 @@ impl Translator<'_> {
         }
         if op == "%" && operand_ty.is_float() {
             return Ex::primary(
-                format!("{}.truncatingRemainder(dividingBy: {})", wrap(&left, P_PRIMARY), right.code),
+                format!(
+                    "{}.truncatingRemainder(dividingBy: {})",
+                    wrap(&left, P_PRIMARY),
+                    right.code
+                ),
                 operand_ty,
             );
         }
@@ -721,15 +774,23 @@ impl Translator<'_> {
                 if t == "UInt32" {
                     Ex::primary(format!("{}.rsCode", wrap(&v, P_PRIMARY)), target)
                 } else {
-                    Ex::primary(format!("{t}(truncatingIfNeeded: {}.rsCode)", wrap(&v, P_PRIMARY)), target)
+                    Ex::primary(
+                        format!("{t}(truncatingIfNeeded: {}.rsCode)", wrap(&v, P_PRIMARY)),
+                        target,
+                    )
                 }
             }
-            (Ty::Int(IntKind::U8), Ty::Char) => Ex::primary(format!("Character(UnicodeScalar({}))", v.code), Ty::Char),
+            (Ty::Int(IntKind::U8), Ty::Char) => {
+                Ex::primary(format!("Character(UnicodeScalar({}))", v.code), Ty::Char)
+            }
             (Ty::Int(_), Ty::Char) => {
                 self.helper("char");
                 Ex::primary(format!("Character(rsScalar: {})", v.code), Ty::Char)
             }
-            (Ty::Named(n, _), Ty::Int(_)) if self.syms.enums.contains_key(n) || self.syms.enums.values().any(|e| &e.swift == n) => {
+            (Ty::Named(n, _), Ty::Int(_))
+                if self.syms.enums.contains_key(n)
+                    || self.syms.enums.values().any(|e| &e.swift == n) =>
+            {
                 let raw = format!("{}.rawValue", wrap(&v, P_PRIMARY));
                 if t == "Int" {
                     Ex::primary(raw, target)
@@ -739,7 +800,9 @@ impl Translator<'_> {
             }
             // Narrowing, or a negative value made unsigned: Rust's `as` truncates.
             (Ty::Int(from), Ty::Int(to))
-                if to.bits() < from.bits() || from.signed() && !to.signed() || to.bits() == from.bits() && from.signed() != to.signed() =>
+                if to.bits() < from.bits()
+                    || from.signed() && !to.signed()
+                    || to.bits() == from.bits() && from.signed() != to.signed() =>
             {
                 Ex::primary(format!("{t}(truncatingIfNeeded: {})", v.code), target)
             }
@@ -758,7 +821,11 @@ impl Translator<'_> {
         });
         let start_weak = start.as_ref().is_some_and(|s| s.weak);
         let mut item_ty = start.as_ref().map_or(Ty::Unknown, |s| s.ty.clone());
-        let end_expected = if start_weak { item.clone() } else { item_ty.clone() };
+        let end_expected = if start_weak {
+            item.clone()
+        } else {
+            item_ty.clone()
+        };
         let end = r.end.as_ref().map(|e| {
             let v = self.expr_with(e, &end_expected);
             self.settle(v)
@@ -775,7 +842,9 @@ impl Translator<'_> {
             syn::RangeLimits::Closed(_) => "...",
         };
         let code = match (&start, &end) {
-            (Some(s), Some(e)) if e.code.starts_with('-') => format!("{} {op} {}", wrap(s, P_RANGE + 1), wrap(e, P_RANGE + 1)),
+            (Some(s), Some(e)) if e.code.starts_with('-') => {
+                format!("{} {op} {}", wrap(s, P_RANGE + 1), wrap(e, P_RANGE + 1))
+            }
             (Some(s), Some(e)) => format!("{}{op}{}", wrap(s, P_RANGE + 1), wrap(e, P_RANGE + 1)),
             (Some(s), None) => format!("{}...", wrap(s, P_RANGE + 1)),
             (None, Some(e)) => format!("{op}{}", wrap(e, P_RANGE + 1)),
@@ -787,7 +856,11 @@ impl Translator<'_> {
     // ----- ? -----
 
     fn try_expr(&mut self, t: &syn::ExprTry, expected: &Ty) -> Ex {
-        let inner_expected = if expected.is_unknown() { Ty::Unknown } else { Ty::Option(Box::new(expected.clone())) };
+        let inner_expected = if expected.is_unknown() {
+            Ty::Unknown
+        } else {
+            Ty::Option(Box::new(expected.clone()))
+        };
         // The value may end up in a `guard let … else`: no trailing closure.
         self.no_trailing += 1;
         let v = self.expr_with(&t.expr, &inner_expected);
@@ -819,7 +892,11 @@ impl Translator<'_> {
             (None, _) => {
                 let cx = self.fn_cx();
                 let unit = cx.is_some_and(|f| f.ret == Ty::Unit);
-                if unit { "return".into() } else { "return nil".into() }
+                if unit {
+                    "return".into()
+                } else {
+                    "return nil".into()
+                }
             }
         };
         self.prelude(format!("guard let {tmp} = {} else {{ {exit} }}", v.code));
@@ -840,7 +917,11 @@ impl Translator<'_> {
             Expr::Unary(u) => self.place_ty(&u.expr),
             Expr::Field(f) => {
                 let base = self.place_ty(&f.base);
-                let base = if base.is_unknown() && is_self(&f.base) { self.self_ty() } else { base };
+                let base = if base.is_unknown() && is_self(&f.base) {
+                    self.self_ty()
+                } else {
+                    base
+                };
                 self.field_ty(&base, &f.member)
             }
             Expr::Index(i) => {
@@ -876,10 +957,15 @@ impl Translator<'_> {
     /// `map.entry(k).or_insert(v)` → `map[k, default: v]`.
     pub fn entry_place(&mut self, m: &syn::ExprMethodCall) -> Option<String> {
         let method = m.method.to_string();
-        if !matches!(method.as_str(), "or_insert" | "or_insert_with" | "or_default") {
+        if !matches!(
+            method.as_str(),
+            "or_insert" | "or_insert_with" | "or_default"
+        ) {
             return None;
         }
-        let Expr::MethodCall(entry) = &*m.receiver else { return None };
+        let Expr::MethodCall(entry) = &*m.receiver else {
+            return None;
+        };
         if entry.method != "entry" || entry.args.len() != 1 {
             return None;
         }
@@ -896,7 +982,10 @@ impl Translator<'_> {
                 let v = self.settle(v);
                 if let Expr::Path(p) = &*entry.receiver {
                     if let Some(id) = p.path.get_ident() {
-                        self.refine(&id.to_string(), &Ty::Map(Box::new(key.ty.clone()), Box::new(v.ty.clone()), false));
+                        self.refine(
+                            &id.to_string(),
+                            &Ty::Map(Box::new(key.ty.clone()), Box::new(v.ty.clone()), false),
+                        );
                     }
                 }
                 v.code
@@ -927,18 +1016,27 @@ impl Translator<'_> {
                 }
             }
             _ => value_ty.default_value().unwrap_or_else(|| {
-                self.error(m.span(), "or_default(): the value type of this map is unknown");
+                self.error(
+                    m.span(),
+                    "or_default(): the value type of this map is unknown",
+                );
                 "fatalError()".into()
             }),
         };
-        Some(format!("{}[{}, default: {default}]", wrap(&map, P_PRIMARY), key.code))
+        Some(format!(
+            "{}[{}, default: {default}]",
+            wrap(&map, P_PRIMARY),
+            key.code
+        ))
     }
 
     // ----- Fields and indexes -----
 
     pub fn field_ty(&self, base: &Ty, member: &syn::Member) -> Ty {
         match (base, member) {
-            (Ty::Tuple(ts), syn::Member::Unnamed(i)) => ts.get(i.index as usize).cloned().unwrap_or(Ty::Unknown),
+            (Ty::Tuple(ts), syn::Member::Unnamed(i)) => {
+                ts.get(i.index as usize).cloned().unwrap_or(Ty::Unknown)
+            }
             (Ty::Named(n, _), m) => {
                 let rust = match m {
                     syn::Member::Named(id) => id.to_string(),
@@ -963,7 +1061,11 @@ impl Translator<'_> {
         let base_is_self = is_self(&f.base);
         let base = self.expr(&f.base);
         let base = self.settle(base);
-        let base_ty = if base.ty.is_unknown() && base_is_self { self.self_ty() } else { base.ty.clone() };
+        let base_ty = if base.ty.is_unknown() && base_is_self {
+            self.self_ty()
+        } else {
+            base.ty.clone()
+        };
         let ty = self.field_ty(&base_ty, &f.member);
         let swift_member = match (&f.member, &base_ty) {
             (syn::Member::Named(id), Ty::Named(n, _)) => self
@@ -971,14 +1073,19 @@ impl Translator<'_> {
                 .and_then(|s| s.field(&id.to_string()).map(|f| f.swift.clone()))
                 .unwrap_or_else(|| names::lower_camel(&id.to_string())),
             (syn::Member::Named(id), _) => names::lower_camel(&id.to_string()),
-            (syn::Member::Unnamed(i), Ty::Named(n, _)) if self.struct_by_swift(n).is_some_and(|s| s.tuple) => {
+            (syn::Member::Unnamed(i), Ty::Named(n, _))
+                if self.struct_by_swift(n).is_some_and(|s| s.tuple) =>
+            {
                 format!("_{}", i.index)
             }
             (syn::Member::Unnamed(i), _) => i.index.to_string(),
         };
         // `self.count` → `count`, unless a local of that name hides the field.
         if base_is_self && base.code == "self" {
-            let in_class = self.imp.as_ref().is_some_and(|i| i.kind == TypeKind::Observable);
+            let in_class = self
+                .imp
+                .as_ref()
+                .is_some_and(|i| i.kind == TypeKind::Observable);
             if !in_class && !self.swift_local_visible(&swift_member) {
                 return Ex::primary(swift_member, ty);
             }
@@ -993,20 +1100,36 @@ impl Translator<'_> {
             let range = self.range(r, &Ty::Range(Box::new(Ty::Int(IntKind::Usize))));
             if base.ty == Ty::Str {
                 self.helper("string");
-                let a = r.start.as_ref().map(|s| { let v = self.expr(s); self.settle(v).code }).unwrap_or_else(|| "0".into());
-                let b = r.end.as_ref().map(|e| { let v = self.expr(e); self.settle(v).code });
+                let a = r
+                    .start
+                    .as_ref()
+                    .map(|s| {
+                        let v = self.expr(s);
+                        self.settle(v).code
+                    })
+                    .unwrap_or_else(|| "0".into());
+                let b = r.end.as_ref().map(|e| {
+                    let v = self.expr(e);
+                    self.settle(v).code
+                });
                 let closed = matches!(r.limits, syn::RangeLimits::Closed(_));
                 let end = match (b, closed) {
                     (Some(b), false) => b,
                     (Some(b), true) => format!("{b} + 1"),
                     (None, _) => format!("{}.utf8.count", wrap(&base, P_PRIMARY)),
                 };
-                return Ex::primary(format!("{}.rsSlice({a}, {end})", wrap(&base, P_PRIMARY)), Ty::Str);
+                return Ex::primary(
+                    format!("{}.rsSlice({a}, {end})", wrap(&base, P_PRIMARY)),
+                    Ty::Str,
+                );
             }
             if r.start.is_none() && r.end.is_none() {
                 return base;
             }
-            return Ex::primary(format!("Array({}[{}])", wrap(&base, P_PRIMARY), range.code), base.ty);
+            return Ex::primary(
+                format!("Array({}[{}])", wrap(&base, P_PRIMARY), range.code),
+                base.ty,
+            );
         }
         let key_ty = match &base.ty {
             Ty::Map(k, _, _) => (**k).clone(),
@@ -1015,15 +1138,26 @@ impl Translator<'_> {
         let idx = self.expr_with(&i.index, &key_ty);
         let idx = self.settle(idx);
         match &base.ty {
-            Ty::Map(_, v, _) => Ex::primary(format!("{}[{}]!", wrap(&base, P_PRIMARY), idx.code), (**v).clone()),
-            t => Ex::primary(format!("{}[{}]", wrap(&base, P_PRIMARY), idx.code), t.item()),
+            Ty::Map(_, v, _) => Ex::primary(
+                format!("{}[{}]!", wrap(&base, P_PRIMARY), idx.code),
+                (**v).clone(),
+            ),
+            t => Ex::primary(
+                format!("{}[{}]", wrap(&base, P_PRIMARY), idx.code),
+                t.item(),
+            ),
         }
     }
 
     // ----- Struct literals -----
 
     fn struct_lit(&mut self, s: &syn::ExprStruct, expected: &Ty) -> Ex {
-        let segs: Vec<String> = s.path.segments.iter().map(|s| s.ident.to_string()).collect();
+        let segs: Vec<String> = s
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
         let last = segs.last().cloned().unwrap_or_default();
         // An enum variant with named fields: `Shape::Rect { w, h }`.
         if segs.len() >= 2 {
@@ -1063,7 +1197,11 @@ impl Translator<'_> {
         };
         let type_code = match expected {
             // `Pair<B, A>(…)`: inside `Pair`'s own methods, a bare `Pair` would mean `Pair<A, B>`.
-            Ty::Named(n, args) if *n == info.swift && !args.is_empty() && expected.is_complete() => expected.swift_lossy(),
+            Ty::Named(n, args)
+                if *n == info.swift && !args.is_empty() && expected.is_complete() =>
+            {
+                expected.swift_lossy()
+            }
             _ if last == "Self" && info.kind != TypeKind::Observable => "Self".to_string(),
             _ => info.swift.clone(),
         };
@@ -1073,7 +1211,11 @@ impl Translator<'_> {
         };
         let mut args = Vec::new();
         for field in &info.fields {
-            let Some(fv) = s.fields.iter().find(|f| member_name(&f.member) == field.rust) else {
+            let Some(fv) = s
+                .fields
+                .iter()
+                .find(|f| member_name(&f.member) == field.rust)
+            else {
                 continue;
             };
             let code = if field.role == FieldRole::Binding {
@@ -1135,10 +1277,7 @@ impl Translator<'_> {
             }
             // `&mut item.done` inside `for_each(&mut self.items, …)`.
             let base = self.expr(&f.base);
-            if let Some(rest) = base.code.strip_prefix('$') {
-                let _ = rest;
-            }
-            if self.binding_items.iter().any(|b| *b == base.code) {
+            if self.binding_items.contains(&base.code) {
                 let member = match &f.member {
                     syn::Member::Named(id) => {
                         let rust = id.to_string();
@@ -1165,7 +1304,7 @@ impl Translator<'_> {
         if let Expr::Path(p) = inner {
             if let Some(id) = p.path.get_ident() {
                 if let Some(l) = self.lookup(&id.to_string()) {
-                    if self.binding_items.iter().any(|b| *b == l.swift) {
+                    if self.binding_items.contains(&l.swift) {
                         return format!("${}", l.swift);
                     }
                 }
@@ -1216,13 +1355,19 @@ impl Translator<'_> {
         let throws = if returns_result {
             Some(match &ret {
                 Ty::Result(_, e) => (**e).clone(),
-                _ => self.fn_cx().and_then(|f| f.throws.clone()).unwrap_or(Ty::Unknown),
+                _ => self
+                    .fn_cx()
+                    .and_then(|f| f.throws.clone())
+                    .unwrap_or(Ty::Unknown),
             })
         } else {
             None
         };
         if returns_result && !ret.is_result() {
-            ret = Ty::Result(Box::new(Ty::Unknown), Box::new(throws.clone().unwrap_or(Ty::Unknown)));
+            ret = Ty::Result(
+                Box::new(Ty::Unknown),
+                Box::new(throws.clone().unwrap_or(Ty::Unknown)),
+            );
         }
         self.fns.push(FnCx {
             ret: ret.clone(),
@@ -1234,14 +1379,16 @@ impl Translator<'_> {
         let body_expr = &*c.body;
         let mut body_ty = Ty::Unknown;
         let single: Option<String> = match body_expr {
-            Expr::Block(b) if b.block.stmts.len() == 1 && throws.is_none() => match &b.block.stmts[0] {
-                syn::Stmt::Expr(e, None) if !needs_statements(e) && !has_control_flow(e) => {
-                    let v = self.closure_value(e, &ret);
-                    body_ty = v.ty.clone();
-                    Some(v.code)
+            Expr::Block(b) if b.block.stmts.len() == 1 && throws.is_none() => {
+                match &b.block.stmts[0] {
+                    syn::Stmt::Expr(e, None) if !needs_statements(e) && !has_control_flow(e) => {
+                        let v = self.closure_value(e, &ret);
+                        body_ty = v.ty.clone();
+                        Some(v.code)
+                    }
+                    _ => None,
                 }
-                _ => None,
-            },
+            }
             Expr::Block(_) => None,
             e if !needs_statements(e) && !has_control_flow(e) && throws.is_none() => {
                 let v = self.closure_value(e, &ret);
@@ -1261,7 +1408,11 @@ impl Translator<'_> {
                 }
             }
             None => {
-                let sink = if ret == Ty::Unit { Sink::Discard } else { Sink::Return };
+                let sink = if ret == Ty::Unit {
+                    Sink::Discard
+                } else {
+                    Sink::Return
+                };
                 let mut l = prologue.clone();
                 match body_expr {
                     Expr::Block(b) => l.extend(self.block_lines(&b.block, sink)),
@@ -1328,7 +1479,13 @@ impl Translator<'_> {
     }
 
     /// A closure parameter: a name, `(a, b)`, or `_`.
-    fn closure_param(&mut self, pat: &Pat, ty: &Ty, prologue: &mut Vec<String>, index: usize) -> String {
+    fn closure_param(
+        &mut self,
+        pat: &Pat,
+        ty: &Ty,
+        prologue: &mut Vec<String>,
+        index: usize,
+    ) -> String {
         match pat {
             Pat::Ident(id) => {
                 let n = self.declare(&id.ident.to_string(), ty.clone());
@@ -1348,7 +1505,9 @@ impl Translator<'_> {
                     .elems
                     .iter()
                     .enumerate()
-                    .map(|(i, p)| self.closure_param(p, tys.get(i).unwrap_or(&Ty::Unknown), prologue, i))
+                    .map(|(i, p)| {
+                        self.closure_param(p, tys.get(i).unwrap_or(&Ty::Unknown), prologue, i)
+                    })
                     .collect();
                 format!("({})", parts.join(", "))
             }
@@ -1356,7 +1515,10 @@ impl Translator<'_> {
                 let n = format!("arg{index}");
                 let (lines, ok) = self.let_pattern(other, &n, ty, false);
                 if !ok {
-                    self.error(other.span(), "this closure parameter pattern is not supported");
+                    self.error(
+                        other.span(),
+                        "this closure parameter pattern is not supported",
+                    );
                 }
                 prologue.extend(lines);
                 n
@@ -1377,7 +1539,11 @@ impl Translator<'_> {
         }
         let ret = expected.clone();
         self.fns.push(FnCx {
-            ret: if ret.is_unknown() { Ty::Unknown } else { ret.clone() },
+            ret: if ret.is_unknown() {
+                Ty::Unknown
+            } else {
+                ret.clone()
+            },
             throws: None,
             init: false,
             closure: true,
@@ -1389,7 +1555,10 @@ impl Translator<'_> {
             Some(t) if ret != Ty::Unit => format!(" () -> {t} in"),
             _ => String::new(),
         };
-        Ex::primary(format!("{{{head}\n{}\n}}()", indent_lines(&lines.join("\n"))), ret)
+        Ex::primary(
+            format!("{{{head}\n{}\n}}()", indent_lines(&lines.join("\n"))),
+            ret,
+        )
     }
 
     pub fn ternary(&mut self, i: &syn::ExprIf, expected: &Ty) -> Option<Ex> {
@@ -1407,9 +1576,7 @@ impl Translator<'_> {
             return None;
         }
         if let Expr::If(inner) = else_expr {
-            if self.ternary_possible(inner).is_none() {
-                return None;
-            }
+            self.ternary_possible(inner)?;
         }
         let c = self.expr_with(&i.cond, &Ty::Bool);
         let c = self.settle(c);
@@ -1424,7 +1591,12 @@ impl Translator<'_> {
         self.implicit_member = saved_implicit;
         ty.merge(&b.ty);
         Some(Ex::new(
-            format!("{} ? {} : {}", wrap(&c, P_TERNARY + 1), wrap(&a, P_TERNARY + 1), wrap(&b, P_TERNARY)),
+            format!(
+                "{} ? {} : {}",
+                wrap(&c, P_TERNARY + 1),
+                wrap(&a, P_TERNARY + 1),
+                wrap(&b, P_TERNARY)
+            ),
             P_TERNARY,
             ty,
         ))
@@ -1442,7 +1614,11 @@ impl Translator<'_> {
         match &**e {
             Expr::Block(b) => {
                 let e = single_expr(&b.block)?;
-                if has_control_flow(e) || needs_statements(e) { None } else { Some(()) }
+                if has_control_flow(e) || needs_statements(e) {
+                    None
+                } else {
+                    Some(())
+                }
             }
             Expr::If(inner) => self.ternary_possible(inner),
             _ => None,

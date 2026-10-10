@@ -119,7 +119,11 @@ impl Translator<'_> {
                 let name = self.declare(&rust, declared_ty.clone());
                 let (slot, placeholder) = self.new_slot(declared_ty);
                 self.attach_slot(&rust, slot);
-                let kw = if id.mutability.is_some() { "var" } else { "let" };
+                let kw = if id.mutability.is_some() {
+                    "var"
+                } else {
+                    "let"
+                };
                 return vec![format!("{kw} {name}{placeholder}")];
             }
             return vec![self.unsupported(l.span(), "a destructuring `let` without a value")];
@@ -136,7 +140,11 @@ impl Translator<'_> {
             }
             Pat::Wild(_) => {
                 let v = self.expr(value_expr);
-                let v = if v.throws.is_some() { self.try_optional(v) } else { v };
+                let v = if v.throws.is_some() {
+                    self.try_optional(v)
+                } else {
+                    v
+                };
                 vec![format!("_ = {}", v.code)]
             }
             _ => {
@@ -149,7 +157,11 @@ impl Translator<'_> {
                     self.prelude(format!("let {tmp} = {}", v.code));
                     tmp
                 };
-                let ty = if declared_ty.is_unknown() { v.ty.clone() } else { declared_ty };
+                let ty = if declared_ty.is_unknown() {
+                    v.ty.clone()
+                } else {
+                    declared_ty
+                };
                 let (lines, ok) = self.let_pattern(pat, &subject, &ty, false);
                 if !ok {
                     return vec![self.unsupported(pat.span(), "this destructuring pattern")];
@@ -159,7 +171,13 @@ impl Translator<'_> {
         }
     }
 
-    fn let_ident(&mut self, rust: &str, mutable: bool, declared: Option<Ty>, value: &Expr) -> Vec<String> {
+    fn let_ident(
+        &mut self,
+        rust: &str,
+        mutable: bool,
+        declared: Option<Ty>,
+        value: &Expr,
+    ) -> Vec<String> {
         let kw = if mutable { "var" } else { "let" };
         let declared_ty = declared.clone().unwrap_or(Ty::Unknown);
         if needs_statements(value) {
@@ -177,7 +195,11 @@ impl Translator<'_> {
                         self.slots[slot].merge(&t.ty);
                         let name = self.declare(rust, t.ty.clone());
                         self.attach_slot(rust, slot);
-                        let annot = if declared.is_some() { placeholder } else { String::new() };
+                        let annot = if declared.is_some() {
+                            placeholder
+                        } else {
+                            String::new()
+                        };
                         return vec![format!("{kw} {name}{annot} = {}", t.code)];
                     }
                     _ => self.diags.truncate(saved),
@@ -189,7 +211,11 @@ impl Translator<'_> {
                     self.slots[slot].merge(&ty);
                     let name = self.declare(rust, ty);
                     self.attach_slot(rust, slot);
-                    let annot = if declared.is_some() { placeholder } else { String::new() };
+                    let annot = if declared.is_some() {
+                        placeholder
+                    } else {
+                        String::new()
+                    };
                     return vec![format!("{kw} {name}{annot} = {code}")];
                 }
             }
@@ -199,7 +225,10 @@ impl Translator<'_> {
             let mut out = vec![format!("{kw} {name}{placeholder}")];
             out.extend(lines);
             if self.slots[slot].swift().is_none() {
-                self.error(value.span(), "add a type annotation to this `let`: its value is computed by statements");
+                self.error(
+                    value.span(),
+                    "add a type annotation to this `let`: its value is computed by statements",
+                );
             }
             return out;
         }
@@ -222,7 +251,9 @@ impl Translator<'_> {
         let mut ty = declared_ty.clone();
         ty.merge(&v.ty);
         // Empty collections and `nil` need their type written.
-        let needs_annotation = declared.as_ref().is_some_and(|d| !crate::translate::natural_type_matches(&v.ty, d))
+        let needs_annotation = declared
+            .as_ref()
+            .is_some_and(|d| !crate::translate::natural_type_matches(&v.ty, d))
             || matches!(v.code.as_str(), "[]" | "[:]" | "nil")
             || v.code.starts_with("Set()");
         let name = self.declare(rust, ty.clone());
@@ -236,8 +267,18 @@ impl Translator<'_> {
     }
 
     /// `let x = e?;` when `e` is an optional: a `guard let`.
-    fn let_try(&mut self, rust: &str, mutable: bool, declared: &Ty, inner: &Expr) -> Option<Vec<String>> {
-        let expected = if declared.is_unknown() { Ty::Unknown } else { Ty::Option(Box::new(declared.clone())) };
+    fn let_try(
+        &mut self,
+        rust: &str,
+        mutable: bool,
+        declared: &Ty,
+        inner: &Expr,
+    ) -> Option<Vec<String>> {
+        let expected = if declared.is_unknown() {
+            Ty::Unknown
+        } else {
+            Ty::Option(Box::new(declared.clone()))
+        };
         // Translate in a scratch prelude: a throwing call or a Result goes the usual way.
         self.preludes.push(Vec::new());
         self.no_trailing += 1;
@@ -266,7 +307,10 @@ impl Translator<'_> {
         ty.merge(&item);
         let name = self.declare(rust, ty);
         let kw = if mutable { "var" } else { "let" };
-        Some(vec![format!("guard {kw} {name} = {} else {{ {exit} }}", v.code)])
+        Some(vec![format!(
+            "guard {kw} {name} = {} else {{ {exit} }}",
+            v.code
+        )])
     }
 
     /// Whether every branch of an `if`/`match` value is a single expression without control
@@ -322,7 +366,13 @@ impl Translator<'_> {
     }
 
     /// Destructures `subject` (a Swift expression) with a `let` pattern.
-    pub fn let_pattern(&mut self, pat: &Pat, subject: &str, ty: &Ty, mutable: bool) -> (Vec<String>, bool) {
+    pub fn let_pattern(
+        &mut self,
+        pat: &Pat,
+        subject: &str,
+        ty: &Ty,
+        mutable: bool,
+    ) -> (Vec<String>, bool) {
         let kw = if mutable { "var" } else { "let" };
         match pat {
             Pat::Ident(id) => {
@@ -343,32 +393,53 @@ impl Translator<'_> {
                     _ => vec![Ty::Unknown; t.elems.len()],
                 };
                 // Simple tuples of names: `let (a, b) = t`.
-                let all_idents = t.elems.iter().all(|p| matches!(p, Pat::Ident(i) if i.subpat.is_none()) || matches!(p, Pat::Wild(_)));
+                let all_idents = t.elems.iter().all(|p| {
+                    matches!(p, Pat::Ident(i) if i.subpat.is_none()) || matches!(p, Pat::Wild(_))
+                });
                 if all_idents {
-                    let any_mut = t.elems.iter().any(|p| matches!(p, Pat::Ident(i) if i.mutability.is_some()));
+                    let any_mut = t
+                        .elems
+                        .iter()
+                        .any(|p| matches!(p, Pat::Ident(i) if i.mutability.is_some()));
                     let names: Vec<String> = t
                         .elems
                         .iter()
                         .enumerate()
                         .map(|(i, p)| match p {
-                            Pat::Ident(id) => self.declare(&id.ident.to_string(), elems.get(i).cloned().unwrap_or(Ty::Unknown)),
+                            Pat::Ident(id) => self.declare(
+                                &id.ident.to_string(),
+                                elems.get(i).cloned().unwrap_or(Ty::Unknown),
+                            ),
                             _ => "_".into(),
                         })
                         .collect();
                     let kw = if any_mut || mutable { "var" } else { "let" };
-                    return (vec![format!("{kw} ({}) = {subject}", names.join(", "))], true);
+                    return (
+                        vec![format!("{kw} ({}) = {subject}", names.join(", "))],
+                        true,
+                    );
                 }
                 let mut lines = Vec::new();
                 let mut ok = true;
                 for (i, p) in t.elems.iter().enumerate() {
-                    let (l, o) = self.let_pattern(p, &format!("{subject}.{i}"), elems.get(i).unwrap_or(&Ty::Unknown), mutable);
+                    let (l, o) = self.let_pattern(
+                        p,
+                        &format!("{subject}.{i}"),
+                        elems.get(i).unwrap_or(&Ty::Unknown),
+                        mutable,
+                    );
                     lines.extend(l);
                     ok &= o;
                 }
                 (lines, ok)
             }
             Pat::Struct(s) => {
-                let name = s.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+                let name = s
+                    .path
+                    .segments
+                    .last()
+                    .map(|s| s.ident.to_string())
+                    .unwrap_or_default();
                 let info = self.syms.structs.get(&name).cloned();
                 let mut lines = Vec::new();
                 let mut ok = true;
@@ -378,24 +449,38 @@ impl Translator<'_> {
                         syn::Member::Unnamed(i) => i.index.to_string(),
                     };
                     let field = info.as_ref().and_then(|i| i.field(&member));
-                    let swift = field.map_or_else(|| names::lower_camel(&member), |f| f.swift.clone());
+                    let swift =
+                        field.map_or_else(|| names::lower_camel(&member), |f| f.swift.clone());
                     let fty = field.map_or(Ty::Unknown, |f| f.ty.clone());
-                    let (l, o) = self.let_pattern(&f.pat, &format!("{subject}.{swift}"), &fty, mutable);
+                    let (l, o) =
+                        self.let_pattern(&f.pat, &format!("{subject}.{swift}"), &fty, mutable);
                     lines.extend(l);
                     ok &= o;
                 }
                 (lines, ok)
             }
             Pat::TupleStruct(ts) => {
-                let name = ts.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+                let name = ts
+                    .path
+                    .segments
+                    .last()
+                    .map(|s| s.ident.to_string())
+                    .unwrap_or_default();
                 let Some(info) = self.syms.structs.get(&name).cloned() else {
                     return (vec![], false);
                 };
                 let mut lines = Vec::new();
                 let mut ok = true;
                 for (i, p) in ts.elems.iter().enumerate() {
-                    let Some(field) = info.fields.get(i) else { break };
-                    let (l, o) = self.let_pattern(p, &format!("{subject}.{}", field.swift), &field.ty, mutable);
+                    let Some(field) = info.fields.get(i) else {
+                        break;
+                    };
+                    let (l, o) = self.let_pattern(
+                        p,
+                        &format!("{subject}.{}", field.swift),
+                        &field.ty,
+                        mutable,
+                    );
                     lines.extend(l);
                     ok &= o;
                 }
@@ -430,7 +515,9 @@ impl Translator<'_> {
     /// An expression evaluated for its effect.
     pub fn expr_stmt(&mut self, e: &Expr) -> Vec<String> {
         match e {
-            Expr::If(_) | Expr::Match(_) | Expr::Block(_) | Expr::Unsafe(_) => self.tail(e, &Sink::Discard),
+            Expr::If(_) | Expr::Match(_) | Expr::Block(_) | Expr::Unsafe(_) => {
+                self.tail(e, &Sink::Discard)
+            }
             Expr::ForLoop(f) => self.for_loop(f),
             Expr::While(w) => self.while_loop(w),
             Expr::Loop(l) => self.loop_stmt(l),
@@ -445,7 +532,10 @@ impl Translator<'_> {
                 };
                 // `break value` out of `let x = loop { … }`: assign, then leave.
                 let target = match &b.label {
-                    Some(l) => self.loops.iter().rposition(|n| n.as_deref() == Some(&l.ident.to_string())),
+                    Some(l) => self
+                        .loops
+                        .iter()
+                        .rposition(|n| n.as_deref() == Some(&l.ident.to_string())),
                     None => self.loops.len().checked_sub(1),
                 };
                 let var = target.and_then(|i| self.loop_values.get(i).cloned().flatten());
@@ -455,7 +545,10 @@ impl Translator<'_> {
                         lines.push(jump);
                         lines
                     }
-                    None => vec![self.unsupported(b.span(), "`break` with a value outside `let x = loop { … }`")],
+                    None => vec![self.unsupported(
+                        b.span(),
+                        "`break` with a value outside `let x = loop { … }`",
+                    )],
                 }
             }
             Expr::Continue(c) => vec![match &c.label {
@@ -496,13 +589,24 @@ impl Translator<'_> {
             Expr::Match(m) => self.match_stmt(m, sink),
             Expr::Block(b) if b.label.is_none() => {
                 let lines = self.block_lines(&b.block, sink.clone());
-                if *sink == Sink::Yield || *sink == Sink::Discard && lines.iter().all(|l| !l.starts_with("let ") && !l.starts_with("var ")) {
+                if *sink == Sink::Yield
+                    || *sink == Sink::Discard
+                        && lines
+                            .iter()
+                            .all(|l| !l.starts_with("let ") && !l.starts_with("var "))
+                {
                     lines
                 } else {
                     vec![format!("do {{\n{}\n}}", indent_lines(&lines.join("\n")))]
                 }
             }
-            Expr::Unsafe(u) => self.block_lines(&u.block, sink.clone()),
+            Expr::Unsafe(u) => {
+                self.warn(
+                    u.unsafe_token.span,
+                    "unsafe code is translated as ordinary code: check it",
+                );
+                self.block_lines(&u.block, sink.clone())
+            }
             Expr::Paren(p) => self.tail(&p.expr, sink),
             Expr::Loop(l) => {
                 let value = match sink {
@@ -511,20 +615,28 @@ impl Translator<'_> {
                 };
                 self.loop_with(l, value)
             }
-            Expr::ForLoop(_) | Expr::While(_) | Expr::Return(_) | Expr::Break(_) | Expr::Continue(_) => {
-                self.expr_stmt(e)
-            }
+            Expr::ForLoop(_)
+            | Expr::While(_)
+            | Expr::Return(_)
+            | Expr::Break(_)
+            | Expr::Continue(_) => self.expr_stmt(e),
             Expr::Macro(m) if crate::macros::is_statement_macro(&m.mac) => self.macro_stmt(&m.mac),
             _ => match sink {
                 Sink::Discard => self.expr_stmt(e),
                 Sink::Return => self.return_stmt(Some(e)),
                 Sink::InitSelf => self.init_value(e),
                 Sink::Assign(name) => {
-                    let expected = self.lookup(name).map(|l| self.local_ty(l)).unwrap_or(Ty::Unknown);
+                    let expected = self
+                        .lookup(name)
+                        .map(|l| self.local_ty(l))
+                        .unwrap_or(Ty::Unknown);
                     let v = self.expr_with(e, &expected);
                     let v = self.settle(v);
                     self.refine(name, &v.ty);
-                    let swift = self.lookup(name).map(|l| l.swift.clone()).unwrap_or_else(|| names::lower_camel(name));
+                    let swift = self
+                        .lookup(name)
+                        .map(|l| l.swift.clone())
+                        .unwrap_or_else(|| names::lower_camel(name));
                     vec![format!("{swift} = {}", v.code)]
                 }
                 Sink::Yield => {
@@ -545,7 +657,9 @@ impl Translator<'_> {
 
     /// Whether `Sink::Yield` means a view of a result builder.
     pub fn in_view_builder(&self) -> bool {
-        self.fn_cx().is_some_and(|f| f.ret == Ty::View && !f.closure) || self.view_closure_depth > 0
+        self.fn_cx()
+            .is_some_and(|f| f.ret == Ty::View && !f.closure)
+            || self.view_closure_depth > 0
     }
 
     /// `return e`, with `Ok`/`Err`/`Some`/`None` mapped to the Swift function's conventions.
@@ -557,7 +671,10 @@ impl Translator<'_> {
             return match e {
                 Some(e) => {
                     let mut lines = self.init_value(e);
-                    if !lines.last().is_some_and(|l| l.starts_with("throw ") || l.starts_with("return")) {
+                    if !lines
+                        .last()
+                        .is_some_and(|l| l.starts_with("throw ") || l.starts_with("return"))
+                    {
                         lines.push("return".into());
                     }
                     lines
@@ -675,9 +792,12 @@ impl Translator<'_> {
         let cond = self.condition(&i.cond);
         let then = self.block_lines(&i.then_branch, sink.clone());
         self.pop_scope();
-        out.push_str(&format!("if {cond} {{\n{}\n}}", indent_lines(&join_or_break(then, sink, self.in_view_builder()))));
-        match &i.else_branch {
-            Some((_, e)) => match &**e {
+        out.push_str(&format!(
+            "if {cond} {{\n{}\n}}",
+            indent_lines(&join_or_break(then, sink, self.in_view_builder()))
+        ));
+        if let Some((_, e)) = &i.else_branch {
+            match &**e {
                 Expr::If(inner) => {
                     let rest = self.if_stmt(inner, sink);
                     out.push_str(" else ");
@@ -685,14 +805,23 @@ impl Translator<'_> {
                 }
                 Expr::Block(b) => {
                     let lines = self.block_lines(&b.block, sink.clone());
-                    out.push_str(&format!(" else {{\n{}\n}}", indent_lines(&join_or_break(lines, sink, self.in_view_builder()))));
+                    // `else { None }` in a view: nothing to show.
+                    let skip = lines.is_empty() && *sink == Sink::Yield && self.in_view_builder();
+                    if !skip {
+                        out.push_str(&format!(
+                            " else {{\n{}\n}}",
+                            indent_lines(&join_or_break(lines, sink, self.in_view_builder()))
+                        ));
+                    }
                 }
                 other => {
                     let lines = self.tail(other, sink);
-                    out.push_str(&format!(" else {{\n{}\n}}", indent_lines(&lines.join("\n"))));
+                    out.push_str(&format!(
+                        " else {{\n{}\n}}",
+                        indent_lines(&lines.join("\n"))
+                    ));
                 }
-            },
-            None => {}
+            }
         }
         vec![out]
     }
@@ -721,7 +850,9 @@ impl Translator<'_> {
             let mut body = pats.lets.clone();
             // An arm is a scope already: its block needs no `do { }`.
             match &*arm.body {
-                Expr::Block(b) if b.label.is_none() => body.extend(self.block_lines(&b.block, sink.clone())),
+                Expr::Block(b) if b.label.is_none() => {
+                    body.extend(self.block_lines(&b.block, sink.clone()))
+                }
                 other => body.extend(self.tail(other, sink)),
             }
             self.pop_scope();
@@ -733,7 +864,8 @@ impl Translator<'_> {
                 && arm.guard.is_none()
                 && !pats.code.contains("let ")
                 && !pats.code.contains("var ")
-                && (!pats.guards.is_empty() || matches!(subject_ty, Ty::Int(_) | Ty::Char | Ty::Str | Ty::Float(_)));
+                && (!pats.guards.is_empty()
+                    || matches!(subject_ty, Ty::Int(_) | Ty::Char | Ty::Str | Ty::Float(_)));
             let label = if (pats.wildcard && guards.is_empty() || catch_all) && last {
                 "default:".to_string()
             } else {
@@ -752,14 +884,18 @@ impl Translator<'_> {
             case.push_str(&format!("{label}\n{}", indent_lines(&body)));
             cases.push(case);
         }
-        vec![format!("switch {subject_code} {{\n{}\n}}", cases.join("\n"))]
+        vec![format!(
+            "switch {subject_code} {{\n{}\n}}",
+            cases.join("\n")
+        )]
     }
 
     // ----- Loops -----
 
     fn for_loop(&mut self, f: &syn::ExprForLoop) -> Vec<String> {
         let label = f.label.as_ref().map(|l| format!("{}: ", l.name.ident));
-        self.loops.push(f.label.as_ref().map(|l| l.name.ident.to_string()));
+        self.loops
+            .push(f.label.as_ref().map(|l| l.name.ident.to_string()));
         self.push_scope();
         self.no_trailing += 1;
         let iter = self.iterable(&f.expr);
@@ -772,21 +908,36 @@ impl Translator<'_> {
                     // `for (i, x) in v.iter_mut().enumerate()`: the loop index is `i`.
                     Pat::Tuple(t) if t.elems.len() == 2 && iter.enumerated && !iter.keyed => {
                         if let Pat::Ident(index) = &t.elems[0] {
-                            i = self.declare(&index.ident.to_string(), Ty::Int(crate::ty::IntKind::Usize));
+                            i = self.declare(
+                                &index.ident.to_string(),
+                                Ty::Int(crate::ty::IntKind::Usize),
+                            );
                         }
                         if let Pat::Ident(id) = &t.elems[1] {
-                            self.declare_alias(&id.ident.to_string(), format!("{collection}[{i}]"), iter.item.clone());
+                            self.declare_alias(
+                                &id.ident.to_string(),
+                                format!("{collection}[{i}]"),
+                                iter.item.clone(),
+                            );
                         }
                     }
                     Pat::Ident(id) => {
-                        let element = if iter.keyed { format!("{collection}[{i}]!") } else { format!("{collection}[{i}]") };
+                        let element = if iter.keyed {
+                            format!("{collection}[{i}]!")
+                        } else {
+                            format!("{collection}[{i}]")
+                        };
                         self.declare_alias(&id.ident.to_string(), element, iter.item.clone());
                     }
                     Pat::Tuple(t) if t.elems.len() == 2 && iter.keyed => {
                         if let Pat::Ident(k) = &t.elems[0] {
                             let kn = self.declare(&k.ident.to_string(), Ty::Unknown);
                             if let Pat::Ident(v) = &t.elems[1] {
-                                self.declare_alias(&v.ident.to_string(), format!("{collection}[{kn}]!"), iter.item.clone());
+                                self.declare_alias(
+                                    &v.ident.to_string(),
+                                    format!("{collection}[{kn}]!"),
+                                    iter.item.clone(),
+                                );
                             }
                             let body = self.block_lines(&f.body, Sink::Discard);
                             self.pop_scope();
@@ -823,14 +974,22 @@ impl Translator<'_> {
     }
 
     fn while_loop(&mut self, w: &syn::ExprWhile) -> Vec<String> {
-        let label = w.label.as_ref().map(|l| format!("{}: ", l.name.ident)).unwrap_or_default();
-        self.loops.push(w.label.as_ref().map(|l| l.name.ident.to_string()));
+        let label = w
+            .label
+            .as_ref()
+            .map(|l| format!("{}: ", l.name.ident))
+            .unwrap_or_default();
+        self.loops
+            .push(w.label.as_ref().map(|l| l.name.ident.to_string()));
         self.push_scope();
         let cond_lines = self.with_prelude(|t| {
             let c = t.condition(&w.cond);
             vec![c]
         });
-        let (cond, pre) = cond_lines.split_last().map(|(c, p)| (c.clone(), p.to_vec())).unwrap_or_default();
+        let (cond, pre) = cond_lines
+            .split_last()
+            .map(|(c, p)| (c.clone(), p.to_vec()))
+            .unwrap_or_default();
         let body = self.block_lines(&w.body, Sink::Discard);
         self.pop_scope();
         self.loops.pop();
@@ -839,9 +998,15 @@ impl Translator<'_> {
             let mut inner = pre;
             inner.push(format!("if !({cond}) {{ break }}"));
             inner.extend(body);
-            return vec![format!("{label}while true {{\n{}\n}}", indent_lines(&inner.join("\n")))];
+            return vec![format!(
+                "{label}while true {{\n{}\n}}",
+                indent_lines(&inner.join("\n"))
+            )];
         }
-        vec![format!("{label}while {cond} {{\n{}\n}}", indent_lines(&body.join("\n")))]
+        vec![format!(
+            "{label}while {cond} {{\n{}\n}}",
+            indent_lines(&body.join("\n"))
+        )]
     }
 
     fn loop_stmt(&mut self, l: &syn::ExprLoop) -> Vec<String> {
@@ -850,14 +1015,22 @@ impl Translator<'_> {
 
     /// `loop { … }`; `value`: the variable its `break value` assigns.
     fn loop_with(&mut self, l: &syn::ExprLoop, value: Option<String>) -> Vec<String> {
-        let label = l.label.as_ref().map(|l| format!("{}: ", l.name.ident)).unwrap_or_default();
-        self.loops.push(l.label.as_ref().map(|l| l.name.ident.to_string()));
+        let label = l
+            .label
+            .as_ref()
+            .map(|l| format!("{}: ", l.name.ident))
+            .unwrap_or_default();
+        self.loops
+            .push(l.label.as_ref().map(|l| l.name.ident.to_string()));
         self.loop_values.resize(self.loops.len() - 1, None);
         self.loop_values.push(value);
         let body = self.block_lines(&l.body, Sink::Discard);
         self.loops.pop();
         self.loop_values.truncate(self.loops.len());
-        vec![format!("{label}while true {{\n{}\n}}", indent_lines(&body.join("\n")))]
+        vec![format!(
+            "{label}while true {{\n{}\n}}",
+            indent_lines(&body.join("\n"))
+        )]
     }
 
     /// What a `for` loop iterates on.
@@ -877,8 +1050,12 @@ impl Translator<'_> {
         }
         let mutable = match e {
             Expr::Reference(r) if r.mutability.is_some() => Some((&*r.expr, false)),
-            Expr::MethodCall(m) if m.method == "iter_mut" && m.args.is_empty() => Some((&*m.receiver, false)),
-            Expr::MethodCall(m) if m.method == "values_mut" && m.args.is_empty() => Some((&*m.receiver, true)),
+            Expr::MethodCall(m) if m.method == "iter_mut" && m.args.is_empty() => {
+                Some((&*m.receiver, false))
+            }
+            Expr::MethodCall(m) if m.method == "values_mut" && m.args.is_empty() => {
+                Some((&*m.receiver, true))
+            }
             _ => None,
         };
         if let Some((collection, values)) = mutable {
@@ -890,7 +1067,14 @@ impl Translator<'_> {
                 Ty::Map(_, val, _) => (**val).clone(),
                 t => t.item(),
             };
-            let item = if keyed && !values { match item { Ty::Tuple(ts) => ts[1].clone(), t => t } } else { item };
+            let item = if keyed && !values {
+                match item {
+                    Ty::Tuple(ts) => ts[1].clone(),
+                    t => t,
+                }
+            } else {
+                item
+            };
             return Iterable {
                 code: v.code.clone(),
                 item,
@@ -907,7 +1091,10 @@ impl Translator<'_> {
         let v = self.settle(v);
         let item = v.ty.item();
         let code = match &v.ty {
-            Ty::Map(_, _, true) if !v.code.contains(".sorted(") => format!("{}.sorted(by: {{ $0.key < $1.key }})", crate::expr::wrap(&v, P_PRIMARY)),
+            Ty::Map(_, _, true) if !v.code.contains(".sorted(") => format!(
+                "{}.sorted(by: {{ $0.key < $1.key }})",
+                crate::expr::wrap(&v, P_PRIMARY)
+            ),
             Ty::Set(_, true) => format!("{}.sorted()", crate::expr::wrap(&v, P_PRIMARY)),
             _ => v.code.clone(),
         };
@@ -934,13 +1121,22 @@ impl Translator<'_> {
                 let key = self.settle(key);
                 let value = self.expr_with(&m.args[1], v);
                 let value = self.settle(value);
-                let learned = Ty::Map(Box::new(key.ty.clone()), Box::new(value.ty.clone()), *ordered);
+                let learned = Ty::Map(
+                    Box::new(key.ty.clone()),
+                    Box::new(value.ty.clone()),
+                    *ordered,
+                );
                 if let Expr::Path(p) = &*m.receiver {
                     if let Some(id) = p.path.get_ident() {
                         self.refine(&id.to_string(), &learned);
                     }
                 }
-                Some(vec![format!("{}[{}] = {}", crate::expr::wrap(&recv, P_PRIMARY), key.code, value.code)])
+                Some(vec![format!(
+                    "{}[{}] = {}",
+                    crate::expr::wrap(&recv, P_PRIMARY),
+                    key.code,
+                    value.code
+                )])
             }
             (Ty::Set(t, ordered), 1) => {
                 let x = self.expr_with(&m.args[0], t);
@@ -951,7 +1147,11 @@ impl Translator<'_> {
                         self.refine(&id.to_string(), &learned);
                     }
                 }
-                Some(vec![format!("{}.insert({})", crate::expr::wrap(&recv, P_PRIMARY), x.code)])
+                Some(vec![format!(
+                    "{}.insert({})",
+                    crate::expr::wrap(&recv, P_PRIMARY),
+                    x.code
+                )])
             }
             _ => None,
         }
@@ -1005,11 +1205,15 @@ impl Translator<'_> {
     /// `if let Some(x) = map.get_mut(&k)` and friends: Swift has no mutable references, so
     /// `x` stands for the element itself (`map[k]!`, `items[i]`).
     fn mutable_binding(&mut self, pat: &Pat, e: &Expr) -> Option<String> {
-        let Pat::TupleStruct(ts) = pat else { return None };
+        let Pat::TupleStruct(ts) = pat else {
+            return None;
+        };
         if !ts.path.is_ident("Some") || ts.elems.len() != 1 {
             return None;
         }
-        let Pat::Ident(id) = &ts.elems[0] else { return None };
+        let Pat::Ident(id) = &ts.elems[0] else {
+            return None;
+        };
         let Expr::MethodCall(m) = e else { return None };
         let name = id.ident.to_string();
         match m.method.to_string().as_str() {
@@ -1037,13 +1241,19 @@ impl Translator<'_> {
                 let coll = self.expr(&m.receiver);
                 let coll = self.settle(coll);
                 let c = crate::expr::wrap(&coll, P_PRIMARY);
-                let index = if m.method == "last_mut" { format!("{c}.count - 1") } else { "0".into() };
+                let index = if m.method == "last_mut" {
+                    format!("{c}.count - 1")
+                } else {
+                    "0".into()
+                };
                 self.declare_alias(&name, format!("{c}[{index}]"), coll.ty.item());
                 Some(format!("!{c}.isEmpty"))
             }
             "find" if m.args.len() == 1 => {
                 // `v.iter_mut().find(|x| …)` → the index of the first match.
-                let Expr::MethodCall(inner) = &*m.receiver else { return None };
+                let Expr::MethodCall(inner) = &*m.receiver else {
+                    return None;
+                };
                 if inner.method != "iter_mut" {
                     return None;
                 }
@@ -1065,18 +1275,34 @@ impl Translator<'_> {
     pub fn pattern_condition(&mut self, pat: &Pat, v: Ex) -> String {
         // `Some(x)` / `Ok(x)` with a plain name: Swift's optional binding.
         if let Pat::TupleStruct(ts) = pat {
-            let ctor = ts.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+            let ctor = ts
+                .path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
             if ts.elems.len() == 1 {
                 if let Pat::Ident(id) = &ts.elems[0] {
                     if id.subpat.is_none() {
-                        let kw = if id.mutability.is_some() { "var" } else { "let" };
-                        if ctor == "Some" && (v.ty.is_option() || v.ty.is_unknown()) && v.throws.is_none() {
+                        let kw = if id.mutability.is_some() {
+                            "var"
+                        } else {
+                            "let"
+                        };
+                        if ctor == "Some"
+                            && (v.ty.is_option() || v.ty.is_unknown())
+                            && v.throws.is_none()
+                        {
                             let item = v.ty.item();
                             let n = self.declare(&id.ident.to_string(), item);
                             return format!("{kw} {n} = {}", v.code);
                         }
                         if ctor == "Ok" && v.throws.is_some() {
-                            let ok = v.throws.as_ref().map(|t| t.0.clone()).unwrap_or(Ty::Unknown);
+                            let ok = v
+                                .throws
+                                .as_ref()
+                                .map(|t| t.0.clone())
+                                .unwrap_or(Ty::Unknown);
                             let n = self.declare(&id.ident.to_string(), ok);
                             return format!("{kw} {n} = try? {}", v.code);
                         }
@@ -1087,7 +1313,11 @@ impl Translator<'_> {
         let v = self.settle(v);
         let subject = v.code.clone();
         let pats = self.case_patterns(pat, &v.ty, &subject);
-        let mut s = format!("case {} = {}", pats.code, crate::expr::wrap(&v, crate::expr::P_TERNARY + 1));
+        let mut s = format!(
+            "case {} = {}",
+            pats.code,
+            crate::expr::wrap(&v, crate::expr::P_TERNARY + 1)
+        );
         for g in pats.guards {
             s.push_str(", ");
             s.push_str(&g);
@@ -1137,7 +1367,12 @@ fn block_is_single_expr(b: &Block) -> bool {
 /// Expressions that Swift can only write as statements.
 pub fn needs_statements(e: &Expr) -> bool {
     match e {
-        Expr::If(_) | Expr::Match(_) | Expr::Loop(_) | Expr::While(_) | Expr::ForLoop(_) | Expr::Unsafe(_) => true,
+        Expr::If(_)
+        | Expr::Match(_)
+        | Expr::Loop(_)
+        | Expr::While(_)
+        | Expr::ForLoop(_)
+        | Expr::Unsafe(_) => true,
         Expr::Block(b) => b.label.is_none(),
         Expr::Paren(p) => needs_statements(&p.expr),
         _ => false,
@@ -1151,7 +1386,9 @@ pub fn has_control_flow(e: &Expr) -> bool {
     impl<'ast> Visit<'ast> for V {
         fn visit_expr(&mut self, e: &'ast Expr) {
             match e {
-                Expr::Return(_) | Expr::Break(_) | Expr::Continue(_) | Expr::Try(_) => self.0 = true,
+                Expr::Return(_) | Expr::Break(_) | Expr::Continue(_) | Expr::Try(_) => {
+                    self.0 = true
+                }
                 Expr::Closure(_) => {}
                 Expr::Macro(m) if crate::macros::is_statement_macro(&m.mac) => self.0 = true,
                 _ => syn::visit::visit_expr(self, e),
@@ -1167,7 +1404,9 @@ pub fn has_control_flow(e: &Expr) -> bool {
 pub fn contains_let(e: &Expr) -> bool {
     match e {
         Expr::Let(_) => true,
-        Expr::Binary(b) if matches!(b.op, syn::BinOp::And(_)) => contains_let(&b.left) || contains_let(&b.right),
+        Expr::Binary(b) if matches!(b.op, syn::BinOp::And(_)) => {
+            contains_let(&b.left) || contains_let(&b.right)
+        }
         Expr::Paren(p) => contains_let(&p.expr),
         _ => false,
     }
@@ -1206,11 +1445,9 @@ pub fn is_simple_path(code: &str) -> bool {
 fn user_call_returns_value(t: &Translator<'_>, e: &Expr) -> bool {
     match e {
         Expr::Call(c) => match &*c.func {
-            Expr::Path(p) => p
-                .path
-                .segments
-                .last()
-                .is_some_and(|s| t.syms.fns.contains_key(&s.ident.to_string()) && p.path.segments.len() == 1),
+            Expr::Path(p) => p.path.segments.last().is_some_and(|s| {
+                t.syms.fns.contains_key(&s.ident.to_string()) && p.path.segments.len() == 1
+            }),
             _ => false,
         },
         Expr::MethodCall(m) => {

@@ -23,7 +23,12 @@ impl Translator<'_> {
             };
             return Ex::primary(format!("{}({})", wrap(&f, P_PRIMARY), args.join(", ")), ret);
         };
-        let segs: Vec<String> = p.path.segments.iter().map(|s| s.ident.to_string()).collect();
+        let segs: Vec<String> = p
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
         let last = segs.last().cloned().unwrap_or_default();
         let turbofish = generic_args(&p.path);
         if segs.len() == 1 {
@@ -46,7 +51,11 @@ impl Translator<'_> {
                         Ty::Result(o, e) => ((**o).clone(), (**e).clone()),
                         _ => (Ty::Unknown, Ty::Unknown),
                     };
-                    let (case, arg_ty) = if last == "Ok" { ("success", &ok) } else { ("failure", &err) };
+                    let (case, arg_ty) = if last == "Ok" {
+                        ("success", &ok)
+                    } else {
+                        ("failure", &err)
+                    };
                     let v = self.expr_with(&c.args[0], arg_ty);
                     let v = self.settle(v);
                     let ty = if last == "Ok" {
@@ -67,7 +76,14 @@ impl Translator<'_> {
                 // A closure in a local variable.
                 let ty = self.local_ty(&local);
                 let params: Option<Vec<ParamInfo>> = match &ty {
-                    Ty::Fn(ps, _) => Some(ps.iter().map(|t| ParamInfo { ty: t.clone(), inout: false }).collect()),
+                    Ty::Fn(ps, _) => Some(
+                        ps.iter()
+                            .map(|t| ParamInfo {
+                                ty: t.clone(),
+                                inout: false,
+                            })
+                            .collect(),
+                    ),
                     _ => None,
                 };
                 let args = self.call_args(&c.args, params.as_deref());
@@ -89,7 +105,10 @@ impl Translator<'_> {
                             self.settle(v).code
                         })
                         .collect();
-                    return Ex::primary(format!("{}({})", st.swift, args.join(", ")), Ty::Named(st.swift.clone(), vec![]));
+                    return Ex::primary(
+                        format!("{}({})", st.swift, args.join(", ")),
+                        Ty::Named(st.swift.clone(), vec![]),
+                    );
                 }
             }
             if let Some(sig) = self.syms.fns.get(&last).cloned() {
@@ -106,7 +125,11 @@ impl Translator<'_> {
                 let (en, case) = &found[0];
                 let args = self.variant_args(en, &last, &c.args);
                 let ty = Ty::Named(en.clone(), vec![]);
-                let prefix = if expected.named() == Some(en.as_str()) { String::new() } else { en.clone() };
+                let prefix = if expected.named() == Some(en.as_str()) {
+                    String::new()
+                } else {
+                    en.clone()
+                };
                 return Ex::primary(format!("{prefix}.{case}({})", args.join(", ")), ty);
             }
             if let Some(ex) = self.ui_call(&last, &c.args, expected) {
@@ -116,7 +139,10 @@ impl Translator<'_> {
                 return ex;
             }
             let args = self.call_args(&c.args, None);
-            return Ex::primary(format!("{}({})", names::lower_camel(&last), args.join(", ")), Ty::Unknown);
+            return Ex::primary(
+                format!("{}({})", names::lower_camel(&last), args.join(", ")),
+                Ty::Unknown,
+            );
         }
         // `Type::function(…)`, `Enum::Variant(…)`, `module::function(…)`.
         let owner = segs[segs.len() - 2].clone();
@@ -133,7 +159,13 @@ impl Translator<'_> {
                 return Ex::primary(format!("{prefix}.{}({})", v.swift, args.join(", ")), ty);
             }
         }
-        if let Some(sig) = self.syms.methods.get(&owner_rust).and_then(|m| m.get(&last)).cloned() {
+        if let Some(sig) = self
+            .syms
+            .methods
+            .get(&owner_rust)
+            .and_then(|m| m.get(&last))
+            .cloned()
+        {
             let tname = self.type_path_name(&owner);
             if sig.is_init {
                 let mut ex = self.sig_call(tname.clone(), &sig, &c.args);
@@ -142,12 +174,25 @@ impl Translator<'_> {
                     ex.throws = Some(Box::new((self_ty, (**e).clone())));
                     ex.ty = Ty::Unknown;
                 } else if let Ty::Option(_) = &sig.ret {
-                    ex.ty = Ty::Option(Box::new(Ty::Named(self.struct_or_enum_swift(&owner_rust), vec![])));
+                    ex.ty = Ty::Option(Box::new(Ty::Named(
+                        self.struct_or_enum_swift(&owner_rust),
+                        vec![],
+                    )));
                 } else {
-                    let n = self.syms.structs.get(&owner_rust).map_or(0, |s| s.generics.len());
+                    let n = self
+                        .syms
+                        .structs
+                        .get(&owner_rust)
+                        .map_or(0, |s| s.generics.len());
                     ex.ty = match expected {
-                        Ty::Named(e, args) if *e == self.struct_or_enum_swift(&owner_rust) && args.len() == n => expected.clone(),
-                        _ => Ty::Named(self.struct_or_enum_swift(&owner_rust), vec![Ty::Unknown; n]),
+                        Ty::Named(e, args)
+                            if *e == self.struct_or_enum_swift(&owner_rust) && args.len() == n =>
+                        {
+                            expected.clone()
+                        }
+                        _ => {
+                            Ty::Named(self.struct_or_enum_swift(&owner_rust), vec![Ty::Unknown; n])
+                        }
                     };
                 }
                 return ex;
@@ -157,10 +202,19 @@ impl Translator<'_> {
                 let recv = self.expr(&c.args[0]);
                 let recv = self.settle(recv);
                 let rest: Vec<Expr> = c.args.iter().skip(1).cloned().collect();
-                let rest: syn::punctuated::Punctuated<Expr, syn::token::Comma> = rest.into_iter().collect();
-                return self.sig_call(format!("{}.{}", wrap(&recv, P_PRIMARY), names::lower_camel(&last)), &sig, &rest);
+                let rest: syn::punctuated::Punctuated<Expr, syn::token::Comma> =
+                    rest.into_iter().collect();
+                return self.sig_call(
+                    format!("{}.{}", wrap(&recv, P_PRIMARY), names::lower_camel(&last)),
+                    &sig,
+                    &rest,
+                );
             }
-            let mut ex = self.sig_call(format!("{tname}.{}", names::lower_camel(&last)), &sig, &c.args);
+            let mut ex = self.sig_call(
+                format!("{tname}.{}", names::lower_camel(&last)),
+                &sig,
+                &c.args,
+            );
             if ex.ty == Ty::Named("Self".into(), vec![]) {
                 ex.ty = Ty::Named(self.struct_or_enum_swift(&owner_rust), vec![]);
             }
@@ -168,11 +222,17 @@ impl Translator<'_> {
         }
         if let Some(st) = self.syms.structs.get(&owner_rust).cloned() {
             if last == "default" {
-                return Ex::primary(format!("{}()", self.type_path_name(&owner)), Ty::Named(st.swift.clone(), vec![]));
+                return Ex::primary(
+                    format!("{}()", self.type_path_name(&owner)),
+                    Ty::Named(st.swift.clone(), vec![]),
+                );
             }
         }
         if self.syms.enums.contains_key(&owner_rust) && last == "default" {
-            return Ex::primary(format!("{}()", self.type_path_name(&owner)), Ty::Named(self.struct_or_enum_swift(&owner_rust), vec![]));
+            return Ex::primary(
+                format!("{}()", self.type_path_name(&owner)),
+                Ty::Named(self.struct_or_enum_swift(&owner_rust), vec![]),
+            );
         }
         if let Some(ex) = self.std_path_call(&segs, &c.args, expected, &turbofish) {
             return ex;
@@ -184,16 +244,28 @@ impl Translator<'_> {
         if let Some(sig) = self.syms.fns.get(&last).cloned() {
             return self.sig_call(names::lower_camel(&last), &sig, &c.args);
         }
-        if self.syms.is_user_type(&owner_rust) || owner == "Self" || self.generics.contains(&owner) {
+        if self.syms.is_user_type(&owner_rust) || owner == "Self" || self.generics.contains(&owner)
+        {
             let args = self.call_args(&c.args, None);
             return Ex::primary(
-                format!("{}.{}({})", self.type_path_name(&owner), names::lower_camel(&last), args.join(", ")),
+                format!(
+                    "{}.{}({})",
+                    self.type_path_name(&owner),
+                    names::lower_camel(&last),
+                    args.join(", ")
+                ),
                 Ty::Unknown,
             );
         }
         let args = self.call_args(&c.args, None);
-        self.warn(c.span(), format!("unknown function `{}`: translated as is", segs.join("::")));
-        Ex::primary(format!("{}({})", names::lower_camel(&last), args.join(", ")), Ty::Unknown)
+        self.warn(
+            c.span(),
+            format!("unknown function `{}`: translated as is", segs.join("::")),
+        );
+        Ex::primary(
+            format!("{}({})", names::lower_camel(&last), args.join(", ")),
+            Ty::Unknown,
+        )
     }
 
     fn struct_or_enum_swift(&self, rust: &str) -> String {
@@ -205,7 +277,12 @@ impl Translator<'_> {
             .unwrap_or_else(|| names::upper_camel(rust))
     }
 
-    fn variant_args(&mut self, enum_rust: &str, variant: &str, args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>) -> Vec<String> {
+    fn variant_args(
+        &mut self,
+        enum_rust: &str,
+        variant: &str,
+        args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+    ) -> Vec<String> {
         let tys: Vec<Ty> = self
             .syms
             .enums
@@ -227,7 +304,12 @@ impl Translator<'_> {
     }
 
     /// A call to a function of the crate, whose signature is known.
-    pub fn sig_call(&mut self, callee: String, sig: &FnSig, args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>) -> Ex {
+    pub fn sig_call(
+        &mut self,
+        callee: String,
+        sig: &FnSig,
+        args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+    ) -> Ex {
         let (codes, _) = self.call_args_typed(args, Some(&sig.params));
         let mut ex = Ex::primary(format!("{callee}({})", codes.join(", ")), sig.ret.clone());
         if let Ty::Result(ok, err) = &sig.ret {
@@ -259,12 +341,20 @@ impl Translator<'_> {
 
     /// Call arguments: `&mut x` for an `inout` parameter becomes `&x`, other references
     /// disappear.
-    pub fn call_args(&mut self, args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>, params: Option<&[ParamInfo]>) -> Vec<String> {
+    pub fn call_args(
+        &mut self,
+        args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+        params: Option<&[ParamInfo]>,
+    ) -> Vec<String> {
         self.call_args_typed(args, params).0
     }
 
     /// Like [`call_args`](Self::call_args), with the types of the arguments.
-    pub fn call_args_typed(&mut self, args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>, params: Option<&[ParamInfo]>) -> (Vec<String>, Vec<Ty>) {
+    pub fn call_args_typed(
+        &mut self,
+        args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+        params: Option<&[ParamInfo]>,
+    ) -> (Vec<String>, Vec<Ty>) {
         let mut out = Vec::new();
         let mut tys = Vec::new();
         for (i, a) in args.iter().enumerate() {
@@ -291,7 +381,12 @@ impl Translator<'_> {
     }
 
     /// `max(a, b)`, `drop(x)`… called without a path.
-    fn std_free_call(&mut self, segs: &[String], args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>, expected: &Ty) -> Option<Ex> {
+    fn std_free_call(
+        &mut self,
+        segs: &[String],
+        args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+        expected: &Ty,
+    ) -> Option<Ex> {
         let last = segs.last()?.as_str();
         match last {
             "max" | "min" if args.len() == 2 => {
@@ -302,13 +397,21 @@ impl Translator<'_> {
                 Some(Ex::primary(format!("{last}({}, {})", a.code, b.code), a.ty))
             }
             "drop" if args.len() == 1 => Some(Ex::primary("", Ty::Unit)),
-            "swap" | "take" | "replace" => self.std_path_call(&["mem".into(), last.into()], args, expected, &[]),
+            "swap" | "take" | "replace" => {
+                self.std_path_call(&["mem".into(), last.into()], args, expected, &[])
+            }
             _ => None,
         }
     }
 
     /// `String::new()`, `Vec::with_capacity(n)`, `HashMap::from(…)`, `i64::from(x)`…
-    fn std_path_call(&mut self, segs: &[String], args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>, expected: &Ty, turbofish: &[Ty]) -> Option<Ex> {
+    fn std_path_call(
+        &mut self,
+        segs: &[String],
+        args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+        expected: &Ty,
+        turbofish: &[Ty],
+    ) -> Option<Ex> {
         let last = segs.last()?.as_str();
         let owner = segs[segs.len() - 2].as_str();
         let arg = |t: &mut Self, i: usize, exp: &Ty| -> Ex {
@@ -326,21 +429,33 @@ impl Translator<'_> {
             }
             ("String", "from_utf8") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Unknown);
-                let mut ex = Ex::primary(format!("String(bytes: {}, encoding: .utf8)", v.code), Ty::Option(Box::new(Ty::Str)));
+                let mut ex = Ex::primary(
+                    format!("String(bytes: {}, encoding: .utf8)", v.code),
+                    Ty::Option(Box::new(Ty::Str)),
+                );
                 ex.parsed = true;
                 Some(ex)
             }
             ("String", "from_utf8_lossy") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Unknown);
-                Some(Ex::primary(format!("String(decoding: {}, as: UTF8.self)", v.code), Ty::Str))
+                Some(Ex::primary(
+                    format!("String(decoding: {}, as: UTF8.self)", v.code),
+                    Ty::Str,
+                ))
             }
             ("Vec" | "VecDeque", "new" | "with_capacity") => {
-                let item = turbofish.first().cloned().unwrap_or_else(|| expected.item());
+                let item = turbofish
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| expected.item());
                 Some(Ex::primary("[]", Ty::Vec(Box::new(item))))
             }
             ("Vec" | "VecDeque", "from") if args.len() == 1 => {
                 let v = arg(self, 0, expected);
-                Some(Ex { ty: Ty::Vec(Box::new(v.ty.item())), ..v })
+                Some(Ex {
+                    ty: Ty::Vec(Box::new(v.ty.item())),
+                    ..v
+                })
             }
             ("HashMap" | "BTreeMap", "new" | "with_capacity") => {
                 let ordered = owner == "BTreeMap";
@@ -361,7 +476,10 @@ impl Translator<'_> {
             ("HashSet" | "BTreeSet", "from" | "from_iter") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Unknown);
                 let item = v.ty.item();
-                Some(Ex::primary(format!("Set({})", v.code), Ty::Set(Box::new(item), owner == "BTreeSet")))
+                Some(Ex::primary(
+                    format!("Set({})", v.code),
+                    Ty::Set(Box::new(item), owner == "BTreeSet"),
+                ))
             }
             ("HashMap" | "BTreeMap", "from" | "from_iter") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Unknown);
@@ -370,13 +488,17 @@ impl Translator<'_> {
                     _ => (Ty::Unknown, Ty::Unknown),
                 };
                 Some(Ex::primary(
-                    format!("Dictionary({}, uniquingKeysWith: {{ _, last in last }})", v.code),
+                    format!(
+                        "Dictionary({}, uniquingKeysWith: {{ _, last in last }})",
+                        v.code
+                    ),
                     Ty::Map(Box::new(k), Box::new(val), owner == "BTreeMap"),
                 ))
             }
-            ("Box" | "Rc" | "Arc" | "RefCell" | "Cell" | "Mutex" | "RwLock" | "Cow", "new" | "from") if args.len() == 1 => {
-                Some(arg(self, 0, expected))
-            }
+            (
+                "Box" | "Rc" | "Arc" | "RefCell" | "Cell" | "Mutex" | "RwLock" | "Cow",
+                "new" | "from",
+            ) if args.len() == 1 => Some(arg(self, 0, expected)),
             ("cmp", "max" | "min") | ("std", "max" | "min") if args.len() == 2 => {
                 let a = arg(self, 0, expected);
                 let b = arg(self, 1, &a.ty);
@@ -406,22 +528,36 @@ impl Translator<'_> {
                 let v = arg(self, 0, &Ty::Int(IntKind::I32));
                 Some(Ex::primary(format!("exit(Int32({}))", v.code), Ty::Never))
             }
-            ("env", "args") => Some(Ex::primary("CommandLine.arguments", Ty::Vec(Box::new(Ty::Str)))),
+            ("env", "args") => Some(Ex::primary(
+                "CommandLine.arguments",
+                Ty::Vec(Box::new(Ty::Str)),
+            )),
             ("char", "from") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Int(IntKind::U8));
-                Some(Ex::primary(format!("Character(UnicodeScalar({}))", v.code), Ty::Char))
+                Some(Ex::primary(
+                    format!("Character(UnicodeScalar({}))", v.code),
+                    Ty::Char,
+                ))
             }
             ("char", "from_u32") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Int(IntKind::U32));
-                Some(Ex::primary(format!("UnicodeScalar({}).map(Character.init)", v.code), Ty::Option(Box::new(Ty::Char))))
+                Some(Ex::primary(
+                    format!("UnicodeScalar({}).map(Character.init)", v.code),
+                    Ty::Option(Box::new(Ty::Char)),
+                ))
             }
             ("char", "from_digit") if args.len() == 2 => {
                 self.helper("char");
                 let d = arg(self, 0, &Ty::Int(IntKind::U32));
                 let r = arg(self, 1, &Ty::Int(IntKind::U32));
-                Some(Ex::primary(format!("Character.fromDigit({}, {})", d.code, r.code), Ty::Option(Box::new(Ty::Char))))
+                Some(Ex::primary(
+                    format!("Character.fromDigit({}, {})", d.code, r.code),
+                    Ty::Option(Box::new(Ty::Char)),
+                ))
             }
-            (o, "from") if args.len() == 1 && (IntKind::parse(o).is_some() || o == "f64" || o == "f32") => {
+            (o, "from")
+                if args.len() == 1 && (IntKind::parse(o).is_some() || o == "f64" || o == "f32") =>
+            {
                 let t = crate::ty::from_name(o, vec![]);
                 let v = arg(self, 0, &Ty::Unknown);
                 if v.ty.swift() == t.swift() {
@@ -430,7 +566,10 @@ impl Translator<'_> {
                 let ts = t.swift_lossy();
                 if v.ty == Ty::Char {
                     self.helper("char");
-                    return Some(Ex::primary(format!("{ts}({}.rsCode)", wrap(&v, P_PRIMARY)), t));
+                    return Some(Ex::primary(
+                        format!("{ts}({}.rsCode)", wrap(&v, P_PRIMARY)),
+                        t,
+                    ));
                 }
                 if v.ty == Ty::Bool {
                     return Some(Ex::primary(format!("({} ? 1 : 0)", v.code), t));
@@ -441,24 +580,37 @@ impl Translator<'_> {
                 let t = crate::ty::from_name(o, vec![]);
                 let s = arg(self, 0, &Ty::Str);
                 let r = arg(self, 1, &Ty::Int(IntKind::U32));
-                let mut ex = Ex::primary(format!("{}({}, radix: Int({}))", t.swift_lossy(), s.code, r.code), Ty::Option(Box::new(t)));
+                let mut ex = Ex::primary(
+                    format!("{}({}, radix: Int({}))", t.swift_lossy(), s.code, r.code),
+                    Ty::Option(Box::new(t)),
+                );
                 ex.parsed = true;
                 Some(ex)
             }
-            (o, "pow" | "abs" | "max" | "min" | "sqrt") if IntKind::parse(o).is_some() || o == "f64" || o == "f32" => {
+            (o, "pow" | "abs" | "max" | "min" | "sqrt")
+                if IntKind::parse(o).is_some() || o == "f64" || o == "f32" =>
+            {
                 // `i32::pow(x, 2)` → `x.pow(2)`.
                 if args.is_empty() {
                     return None;
                 }
                 let recv = arg(self, 0, &crate::ty::from_name(o, vec![]));
-                let rest: Vec<Ex> = (1..args.len()).map(|i| arg(self, i, &Ty::Unknown)).collect();
+                let rest: Vec<Ex> = (1..args.len())
+                    .map(|i| arg(self, i, &Ty::Unknown))
+                    .collect();
                 Some(self.std_method(recv, last, rest, &[], expected, args.span()))
             }
             (_, "default") => {
-                let t = if owner == "Default" { expected.clone() } else { crate::ty::from_name(owner, vec![]) };
+                let t = if owner == "Default" {
+                    expected.clone()
+                } else {
+                    crate::ty::from_name(owner, vec![])
+                };
                 match t.default_value() {
                     Some(v) => Some(Ex::primary(v, t)),
-                    None if self.generics.iter().any(|g| g == owner) => Some(Ex::primary(format!("{owner}()"), t)),
+                    None if self.generics.iter().any(|g| g == owner) => {
+                        Some(Ex::primary(format!("{owner}()"), t))
+                    }
                     None => {
                         self.error(args.span(), "Default::default(): the type is unknown here, write it (`T::default()`)");
                         Some(Ex::primary("fatalError()", Ty::Unknown))
@@ -478,11 +630,13 @@ impl Translator<'_> {
             return ex;
         }
         if name == "into" && m.args.is_empty() {
-            return self.into_call(m, expected);
+            return self.convert_into(m, expected);
         }
         // `"42".parse().unwrap()` with an `i32` expected: the receiver is an `Option<i32>`.
         let recv_expected = match name.as_str() {
-            "unwrap" | "expect" | "unwrap_or" | "unwrap_or_default" | "unwrap_or_else" if !expected.is_unknown() => {
+            "unwrap" | "expect" | "unwrap_or" | "unwrap_or_default" | "unwrap_or_else"
+                if !expected.is_unknown() =>
+            {
                 Ty::Option(Box::new(expected.clone()))
             }
             _ => Ty::Unknown,
@@ -503,7 +657,10 @@ impl Translator<'_> {
         if let Some((mut sig, owner)) = self.user_method(&recv.ty, &name) {
             let recv = self.settle(recv);
             // The type's generic parameters, as far as the receiver's type knows them.
-            let generics = self.struct_by_swift(&owner).map(|s| s.generics.clone()).unwrap_or_default();
+            let generics = self
+                .struct_by_swift(&owner)
+                .map(|s| s.generics.clone())
+                .unwrap_or_default();
             if let Ty::Named(_, args) = &recv.ty {
                 let known: std::collections::HashMap<String, Ty> = generics
                     .iter()
@@ -518,7 +675,14 @@ impl Translator<'_> {
                     sig.ret = crate::symbols::substitute(&sig.ret, &known);
                 }
             }
-            let callee = if crate::expr::is_self(&m.receiver) && recv.code == "self" && !self.swift_local_visible(&names::lower_camel(&name)) && self.imp.as_ref().is_some_and(|i| i.kind != TypeKind::Observable) {
+            let callee = if crate::expr::is_self(&m.receiver)
+                && recv.code == "self"
+                && !self.swift_local_visible(&names::lower_camel(&name))
+                && self
+                    .imp
+                    .as_ref()
+                    .is_some_and(|i| i.kind != TypeKind::Observable)
+            {
                 names::lower_camel(&name)
             } else {
                 format!("{}.{}", wrap(&recv, P_PRIMARY), names::lower_camel(&name))
@@ -539,7 +703,12 @@ impl Translator<'_> {
                         let args: Vec<Ty> = generics
                             .iter()
                             .enumerate()
-                            .map(|(i, g)| bound.get(g).cloned().unwrap_or_else(|| args.get(i).cloned().unwrap_or(Ty::Unknown)))
+                            .map(|(i, g)| {
+                                bound
+                                    .get(g)
+                                    .cloned()
+                                    .unwrap_or_else(|| args.get(i).cloned().unwrap_or(Ty::Unknown))
+                            })
                             .collect();
                         let learned = Ty::Named(n.clone(), args);
                         self.refine(&id.to_string(), &learned);
@@ -569,7 +738,10 @@ impl Translator<'_> {
         }
         let recv = self.settle(recv);
         // `self.dismiss.call()` → `dismiss()`.
-        if name == "call" && m.args.is_empty() && recv.ty == Ty::Named("DismissAction".into(), vec![]) {
+        if name == "call"
+            && m.args.is_empty()
+            && recv.ty == Ty::Named("DismissAction".into(), vec![])
+        {
             return Ex::primary(format!("{}()", wrap(&recv, P_PRIMARY)), Ty::Unit);
         }
         let args = self.method_args(&recv, &name, m);
@@ -593,7 +765,12 @@ impl Translator<'_> {
     pub fn entry_value_ty(&mut self, m: &ExprMethodCall) -> Ty {
         if let Expr::MethodCall(entry) = &*m.receiver {
             if let Expr::Path(p) = &*entry.receiver {
-                if let Some(l) = p.path.get_ident().and_then(|i| self.lookup(&i.to_string())).cloned() {
+                if let Some(l) = p
+                    .path
+                    .get_ident()
+                    .and_then(|i| self.lookup(&i.to_string()))
+                    .cloned()
+                {
                     if let Ty::Map(_, v, _) = self.local_ty(&l) {
                         return *v;
                     }
@@ -604,7 +781,7 @@ impl Translator<'_> {
     }
 
     /// `x.into()`: a `From` conversion when the target is known, otherwise the value.
-    fn into_call(&mut self, m: &ExprMethodCall, expected: &Ty) -> Ex {
+    fn convert_into(&mut self, m: &ExprMethodCall, expected: &Ty) -> Ex {
         let v = self.expr(&m.receiver);
         let v = self.settle(v);
         if let Ty::Named(n, _) = expected {
@@ -614,7 +791,13 @@ impl Translator<'_> {
                 .iter()
                 .find(|(_, s)| &s.swift == n)
                 .map(|(k, _)| k.clone())
-                .or_else(|| self.syms.enums.iter().find(|(_, e)| &e.swift == n).map(|(k, _)| k.clone()));
+                .or_else(|| {
+                    self.syms
+                        .enums
+                        .iter()
+                        .find(|(_, e)| &e.swift == n)
+                        .map(|(k, _)| k.clone())
+                });
             if let Some(rust) = rust {
                 if self.syms.from_impls.contains_key(&rust) {
                     return Ex::primary(format!("{n}({})", v.code), expected.clone());
@@ -624,7 +807,10 @@ impl Translator<'_> {
         match (expected, &v.ty) {
             (Ty::Str, Ty::Char) => Ex::primary(format!("String({})", v.code), Ty::Str),
             (Ty::Int(_) | Ty::Float(_), t) if t.swift() != expected.swift() && t.is_numeric() => {
-                Ex::primary(format!("{}({})", expected.swift_lossy(), v.code), expected.clone())
+                Ex::primary(
+                    format!("{}({})", expected.swift_lossy(), v.code),
+                    expected.clone(),
+                )
             }
             _ => {
                 let mut ty = v.ty.clone();
@@ -646,7 +832,13 @@ impl Translator<'_> {
                         .iter()
                         .find(|(_, s)| &s.swift == n)
                         .map(|(k, _)| k.clone())
-                        .or_else(|| self.syms.enums.iter().find(|(_, e)| &e.swift == n).map(|(k, _)| k.clone()))
+                        .or_else(|| {
+                            self.syms
+                                .enums
+                                .iter()
+                                .find(|(_, e)| &e.swift == n)
+                                .map(|(k, _)| k.clone())
+                        })
                         .unwrap_or_else(|| n.clone())
                 };
                 let sig = self.syms.methods.get(&rust)?.get(name)?;
@@ -656,7 +848,11 @@ impl Translator<'_> {
                 if std_method_name(name) {
                     return None;
                 }
-                let mut found = self.syms.methods.iter().filter(|(_, ms)| ms.contains_key(name));
+                let mut found = self
+                    .syms
+                    .methods
+                    .iter()
+                    .filter(|(_, ms)| ms.contains_key(name));
                 let (owner, ms) = found.next()?;
                 Some((ms[name].clone(), names::upper_camel(owner)))
             }
@@ -674,13 +870,26 @@ impl Translator<'_> {
         let mut out = Vec::new();
         for (i, a) in m.args.iter().enumerate() {
             let expected = match (name, i, &recv.ty) {
-                ("push" | "contains" | "starts_with" | "ends_with" | "fill", 0, Ty::Vec(_)) => item.clone(),
+                ("push" | "contains" | "starts_with" | "ends_with" | "fill", 0, Ty::Vec(_)) => {
+                    item.clone()
+                }
                 ("push", 0, Ty::Str) => Ty::Char,
-                ("insert", 0, Ty::Map(..)) | ("get" | "contains_key" | "remove" | "get_mut" | "entry", 0, Ty::Map(..)) => key.clone(),
+                ("insert", 0, Ty::Map(..))
+                | ("get" | "contains_key" | "remove" | "get_mut" | "entry", 0, Ty::Map(..)) => {
+                    key.clone()
+                }
                 ("insert", 1, Ty::Map(..)) => value.clone(),
                 ("insert", 1, Ty::Vec(_)) => item.clone(),
                 ("insert" | "contains" | "remove", 0, Ty::Set(..)) => item.clone(),
-                ("map" | "filter" | "filter_map" | "flat_map" | "any" | "all" | "find" | "position" | "for_each" | "take_while" | "skip_while" | "max_by_key" | "min_by_key" | "sort_by_key" | "sort_by_cached_key" | "retain" | "inspect" | "find_map" | "partition" | "is_some_and" | "and_then" | "map_or" | "map_or_else", _, _) => {
+                (
+                    "map" | "filter" | "filter_map" | "flat_map" | "any" | "all" | "find"
+                    | "position" | "for_each" | "take_while" | "skip_while" | "max_by_key"
+                    | "min_by_key" | "sort_by_key" | "sort_by_cached_key" | "retain" | "inspect"
+                    | "find_map" | "partition" | "is_some_and" | "and_then" | "map_or"
+                    | "map_or_else",
+                    _,
+                    _,
+                ) => {
                     let param = match (&recv.ty, name) {
                         (Ty::Map(..), "retain") => item.clone(),
                         _ => item.clone(),
@@ -691,15 +900,39 @@ impl Translator<'_> {
                         Ty::Fn(vec![param], Box::new(Ty::Unknown))
                     }
                 }
-                ("sort_by" | "max_by" | "min_by" | "sort_unstable_by", 0, _) => Ty::Fn(vec![item.clone(), item.clone()], Box::new(Ty::Named("Ordering".into(), vec![]))),
+                ("sort_by" | "max_by" | "min_by" | "sort_unstable_by", 0, _) => Ty::Fn(
+                    vec![item.clone(), item.clone()],
+                    Box::new(Ty::Named("Ordering".into(), vec![])),
+                ),
                 ("fold", 0, _) => Ty::Unknown,
                 ("unwrap_or" | "or", 0, Ty::Option(t)) => (**t).clone(),
                 ("unwrap_or_else" | "or_else", 0, Ty::Option(t)) => Ty::Fn(vec![], t.clone()),
-                ("min" | "max" | "pow" | "powi" | "powf" | "abs_diff" | "atan2" | "hypot" | "checked_add" | "checked_sub" | "checked_mul" | "checked_div" | "wrapping_add" | "wrapping_sub" | "wrapping_mul" | "saturating_add" | "saturating_sub" | "saturating_mul" | "rem_euclid" | "div_euclid" | "clamp", _, t) if t.is_numeric() => {
-                    if matches!(name, "pow" | "powi") { Ty::Int(IntKind::U32) } else { t.clone() }
+                (
+                    "min" | "max" | "pow" | "powi" | "powf" | "abs_diff" | "atan2" | "hypot"
+                    | "checked_add" | "checked_sub" | "checked_mul" | "checked_div"
+                    | "wrapping_add" | "wrapping_sub" | "wrapping_mul" | "saturating_add"
+                    | "saturating_sub" | "saturating_mul" | "rem_euclid" | "div_euclid" | "clamp",
+                    _,
+                    t,
+                ) if t.is_numeric() => {
+                    if matches!(name, "pow" | "powi") {
+                        Ty::Int(IntKind::U32)
+                    } else {
+                        t.clone()
+                    }
                 }
-                ("cmp" | "partial_cmp" | "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "total_cmp", 0, t) => t.clone(),
-                ("push_str" | "contains" | "starts_with" | "ends_with" | "rfind" | "split" | "replace" | "strip_prefix" | "strip_suffix" | "split_once" | "trim_start_matches" | "trim_end_matches" | "matches", _, Ty::Str) => Ty::Str,
+                (
+                    "cmp" | "partial_cmp" | "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "total_cmp",
+                    0,
+                    t,
+                ) => t.clone(),
+                (
+                    "push_str" | "contains" | "starts_with" | "ends_with" | "rfind" | "split"
+                    | "replace" | "strip_prefix" | "strip_suffix" | "split_once"
+                    | "trim_start_matches" | "trim_end_matches" | "matches",
+                    _,
+                    Ty::Str,
+                ) => Ty::Str,
                 _ => Ty::Unknown,
             };
             // `fold(init, |acc, x| …)`: the accumulator has the type of `init`.
@@ -717,7 +950,13 @@ impl Translator<'_> {
 
     /// Methods of `Result`s returned by throwing calls: `f()?` is handled by `?`, this covers
     /// `f().unwrap()`, `f().ok()`, `f().is_ok()`…
-    fn throwing_receiver(&mut self, recv: Ex, name: &str, m: &ExprMethodCall, expected: &Ty) -> Option<Ex> {
+    fn throwing_receiver(
+        &mut self,
+        recv: Ex,
+        name: &str,
+        m: &ExprMethodCall,
+        expected: &Ty,
+    ) -> Option<Ex> {
         let (ok, _err) = recv.throws.as_ref().map(|t| (t.0.clone(), t.1.clone()))?;
         let code = recv.code.clone();
         Some(match name {
@@ -739,13 +978,20 @@ impl Translator<'_> {
                     if matches!(c.inputs.first(), Some(syn::Pat::Wild(_))) || c.inputs.is_empty() {
                         let v = self.expr_with(&c.body, &ok);
                         let v = self.settle(v);
-                        return Some(Ex::new(format!("(try? {code}) ?? {}", wrap(&v, P_NIL)), P_NIL, ok));
+                        return Some(Ex::new(
+                            format!("(try? {code}) ?? {}", wrap(&v, P_NIL)),
+                            P_NIL,
+                            ok,
+                        ));
                     }
                 }
                 let settled = self.settle(recv);
                 let f = self.expr(&m.args[0]);
                 self.helper("result");
-                Ex::primary(format!("{}.unwrapOrElse({})", wrap(&settled, P_PRIMARY), f.code), ok)
+                Ex::primary(
+                    format!("{}.unwrapOrElse({})", wrap(&settled, P_PRIMARY), f.code),
+                    ok,
+                )
             }
             _ => {
                 let _ = expected;
@@ -756,19 +1002,33 @@ impl Translator<'_> {
 
     /// The standard library methods.
     #[allow(clippy::too_many_lines)]
-    pub fn std_method(&mut self, recv: Ex, name: &str, args: Vec<Ex>, turbofish: &[Ty], expected: &Ty, span: proc_macro2::Span) -> Ex {
+    pub fn std_method(
+        &mut self,
+        recv: Ex,
+        name: &str,
+        args: Vec<Ex>,
+        turbofish: &[Ty],
+        expected: &Ty,
+        span: proc_macro2::Span,
+    ) -> Ex {
         let args: Vec<Ex> = args.into_iter().map(|a| self.settle(a)).collect();
         let r = wrap(&recv, P_PRIMARY);
         let rty = recv.ty.clone();
         let item = rty.item();
-        let a = |i: usize| args.get(i).map_or_else(String::new, |e: &Ex| e.code.clone());
+        let a = |i: usize| {
+            args.get(i)
+                .map_or_else(String::new, |e: &Ex| e.code.clone())
+        };
         let ty_a = |i: usize| args.get(i).map_or(Ty::Unknown, |e: &Ex| e.ty.clone());
         let fn_ret = |i: usize| match args.get(i).map(|e| &e.ty) {
             Some(Ty::Fn(_, r)) => (**r).clone(),
             _ => Ty::Unknown,
         };
         let prim = |code: String, ty: Ty| Ex::primary(code, ty);
-        let is_seq = matches!(rty, Ty::Vec(_) | Ty::Iter(_) | Ty::Range(_) | Ty::Set(..) | Ty::Map(..));
+        let is_seq = matches!(
+            rty,
+            Ty::Vec(_) | Ty::Iter(_) | Ty::Range(_) | Ty::Set(..) | Ty::Map(..)
+        );
         let is_str = rty == Ty::Str;
         let usize_ty = Ty::Int(IntKind::Usize);
 
@@ -776,18 +1036,42 @@ impl Translator<'_> {
         if let Ty::Option(inner) = &rty {
             let inner = (**inner).clone();
             match name {
-                "is_some" | "is_ok" => return Ex::new(format!("{} != nil", wrap(&recv, P_CMP + 1)), P_CMP, Ty::Bool),
-                "is_none" | "is_err" => return Ex::new(format!("{} == nil", wrap(&recv, P_CMP + 1)), P_CMP, Ty::Bool),
+                "is_some" | "is_ok" => {
+                    return Ex::new(
+                        format!("{} != nil", wrap(&recv, P_CMP + 1)),
+                        P_CMP,
+                        Ty::Bool,
+                    );
+                }
+                "is_none" | "is_err" => {
+                    return Ex::new(
+                        format!("{} == nil", wrap(&recv, P_CMP + 1)),
+                        P_CMP,
+                        Ty::Bool,
+                    );
+                }
                 "unwrap" | "expect" | "unwrap_unchecked" => return prim(format!("{r}!"), inner),
                 "unwrap_or" | "or" => {
                     let mut t = inner.clone();
                     t.merge(&ty_a(0));
                     let d = &args[0];
-                    return Ex::new(format!("{} ?? {}", wrap(&recv, P_NIL + 1), wrap(d, P_NIL)), P_NIL, if name == "or" { rty.clone() } else { t });
+                    return Ex::new(
+                        format!("{} ?? {}", wrap(&recv, P_NIL + 1), wrap(d, P_NIL)),
+                        P_NIL,
+                        if name == "or" { rty.clone() } else { t },
+                    );
                 }
                 "unwrap_or_else" | "or_else" => {
                     let body = closure_body(&a(0));
-                    return Ex::new(format!("{} ?? {body}", wrap(&recv, P_NIL + 1)), P_NIL, if name == "or_else" { rty.clone() } else { inner });
+                    return Ex::new(
+                        format!("{} ?? {body}", wrap(&recv, P_NIL + 1)),
+                        P_NIL,
+                        if name == "or_else" {
+                            rty.clone()
+                        } else {
+                            inner
+                        },
+                    );
                 }
                 "unwrap_or_default" => {
                     let d = inner.default_value().unwrap_or_else(|| {
@@ -796,7 +1080,12 @@ impl Translator<'_> {
                     });
                     return Ex::new(format!("{} ?? {d}", wrap(&recv, P_NIL + 1)), P_NIL, inner);
                 }
-                "map" => return prim(format!("{r}.map({})", a(0)), Ty::Option(Box::new(fn_ret(0)))),
+                "map" => {
+                    return prim(
+                        format!("{r}.map({})", a(0)),
+                        Ty::Option(Box::new(fn_ret(0))),
+                    );
+                }
                 "and_then" => {
                     let ret = match fn_ret(0) {
                         Ty::Option(t) => *t,
@@ -804,10 +1093,26 @@ impl Translator<'_> {
                     };
                     return prim(format!("{r}.flatMap({})", a(0)), Ty::Option(Box::new(ret)));
                 }
-                "map_or" => return Ex::new(format!("{r}.map({}) ?? {}", a(1), wrap(&args[0], P_NIL)), P_NIL, ty_a(0)),
-                "map_or_else" => return Ex::new(format!("{r}.map({}) ?? {}", a(1), closure_body(&a(0))), P_NIL, fn_ret(1)),
-                "is_some_and" => return Ex::new(format!("{r}.map({}) ?? false", a(0)), P_NIL, Ty::Bool),
-                "is_none_or" => return Ex::new(format!("{r}.map({}) ?? true", a(0)), P_NIL, Ty::Bool),
+                "map_or" => {
+                    return Ex::new(
+                        format!("{r}.map({}) ?? {}", a(1), wrap(&args[0], P_NIL)),
+                        P_NIL,
+                        ty_a(0),
+                    );
+                }
+                "map_or_else" => {
+                    return Ex::new(
+                        format!("{r}.map({}) ?? {}", a(1), closure_body(&a(0))),
+                        P_NIL,
+                        fn_ret(1),
+                    );
+                }
+                "is_some_and" => {
+                    return Ex::new(format!("{r}.map({}) ?? false", a(0)), P_NIL, Ty::Bool);
+                }
+                "is_none_or" => {
+                    return Ex::new(format!("{r}.map({}) ?? true", a(0)), P_NIL, Ty::Bool);
+                }
                 "filter" => {
                     self.helper("option");
                     return prim(format!("{r}.filter({})", a(0)), rty);
@@ -821,19 +1126,35 @@ impl Translator<'_> {
                     return prim(format!("{r}.replace({})", a(0)), rty);
                 }
                 "ok_or" | "ok_or_else" => {
-                    let e = if name == "ok_or" { a(0) } else { closure_body(&a(0)) };
+                    let e = if name == "ok_or" {
+                        a(0)
+                    } else {
+                        closure_body(&a(0))
+                    };
                     self.helper("option");
-                    return prim(format!("{r}.okOr({e})"), Ty::Result(Box::new(inner), Box::new(ty_a(0))));
+                    return prim(
+                        format!("{r}.okOr({e})"),
+                        Ty::Result(Box::new(inner), Box::new(ty_a(0))),
+                    );
                 }
                 // `s.parse::<T>().map_err(|_| E)`: the optional becomes a `Result`.
                 "map_err" if recv.parsed => {
                     self.helper("option");
                     let e = closure_body(&a(0));
-                    return prim(format!("{r}.okOr({e})"), Ty::Result(Box::new(inner), Box::new(fn_ret(0))));
+                    return prim(
+                        format!("{r}.okOr({e})"),
+                        Ty::Result(Box::new(inner), Box::new(fn_ret(0))),
+                    );
                 }
-                "ok" | "cloned" | "copied" | "as_ref" | "as_mut" | "as_deref" | "as_deref_mut" | "clone" | "map_err" => return recv,
+                "ok" | "cloned" | "copied" | "as_ref" | "as_mut" | "as_deref" | "as_deref_mut"
+                | "clone" | "map_err" => return recv,
                 "flatten" => return prim(format!("{r}.flatMap {{ $0 }}"), inner),
-                "iter" | "into_iter" => return prim(format!("({r}.map {{ [$0] }} ?? [])"), Ty::Vec(Box::new(inner))),
+                "iter" | "into_iter" => {
+                    return prim(
+                        format!("({r}.map {{ [$0] }} ?? [])"),
+                        Ty::Vec(Box::new(inner)),
+                    );
+                }
                 "unwrap_or_else_default" => {}
                 _ => {}
             }
@@ -849,22 +1170,41 @@ impl Translator<'_> {
                 "unwrap_err" | "expect_err" => return prim(format!("{r}.err()!"), err),
                 "ok" => return prim(format!("{r}.ok()"), Ty::Option(Box::new(ok))),
                 "err" => return prim(format!("{r}.err()"), Ty::Option(Box::new(err))),
-                "unwrap_or" => return Ex::new(format!("{r}.ok() ?? {}", wrap(&args[0], P_NIL)), P_NIL, ok),
+                "unwrap_or" => {
+                    return Ex::new(format!("{r}.ok() ?? {}", wrap(&args[0], P_NIL)), P_NIL, ok);
+                }
                 "unwrap_or_default" => {
                     let d = ok.default_value().unwrap_or_else(|| "fatalError()".into());
                     return Ex::new(format!("{r}.ok() ?? {d}"), P_NIL, ok);
                 }
                 "unwrap_or_else" => return prim(format!("{r}.unwrapOrElse({})", a(0)), ok),
-                "map" => return prim(format!("{r}.map({})", a(0)), Ty::Result(Box::new(fn_ret(0)), Box::new(err))),
-                "map_err" => return prim(format!("{r}.mapError({})", a(0)), Ty::Result(Box::new(ok), Box::new(fn_ret(0)))),
+                "map" => {
+                    return prim(
+                        format!("{r}.map({})", a(0)),
+                        Ty::Result(Box::new(fn_ret(0)), Box::new(err)),
+                    );
+                }
+                "map_err" => {
+                    return prim(
+                        format!("{r}.mapError({})", a(0)),
+                        Ty::Result(Box::new(ok), Box::new(fn_ret(0))),
+                    );
+                }
                 "and_then" => return prim(format!("{r}.flatMap({})", a(0)), fn_ret(0)),
-                "is_ok_and" => return Ex::new(format!("{r}.ok().map({}) ?? false", a(0)), P_NIL, Ty::Bool),
+                "is_ok_and" => {
+                    return Ex::new(format!("{r}.ok().map({}) ?? false", a(0)), P_NIL, Ty::Bool);
+                }
                 _ => {}
             }
         }
         // Universal conversions.
         match name {
-            "clone" | "to_owned" | "cloned" | "copied" | "as_ref" | "as_mut" | "borrow" | "borrow_mut" | "as_slice" | "as_mut_slice" | "by_ref" | "iter" | "into_iter" | "as_str" | "into_boxed_slice" | "into_owned" | "lock" | "read" | "write" | "get_ref" if args.is_empty() => {
+            "clone" | "to_owned" | "cloned" | "copied" | "as_ref" | "as_mut" | "borrow"
+            | "borrow_mut" | "as_slice" | "as_mut_slice" | "by_ref" | "iter" | "into_iter"
+            | "as_str" | "into_boxed_slice" | "into_owned" | "lock" | "read" | "write"
+            | "get_ref"
+                if args.is_empty() =>
+            {
                 if matches!(name, "lock" | "read" | "write") {
                     return recv;
                 }
@@ -878,7 +1218,12 @@ impl Translator<'_> {
                 }
                 return Ex { ty, ..recv };
             }
-            "to_vec" => return Ex { ty: Ty::Vec(Box::new(item)), ..recv },
+            "to_vec" => {
+                return Ex {
+                    ty: Ty::Vec(Box::new(item)),
+                    ..recv
+                };
+            }
             "to_string" if args.is_empty() => {
                 return match &rty {
                     Ty::Str => recv,
@@ -899,7 +1244,11 @@ impl Translator<'_> {
             let str_arg = |i: usize| -> String {
                 let e = &args[i];
                 if e.ty == Ty::Char {
-                    match e.code.strip_prefix("Character(").and_then(|s| s.strip_suffix(')')) {
+                    match e
+                        .code
+                        .strip_prefix("Character(")
+                        .and_then(|s| s.strip_suffix(')'))
+                    {
                         Some(lit) if lit.starts_with('"') => lit.to_string(),
                         _ => format!("String({})", e.code),
                     }
@@ -910,24 +1259,62 @@ impl Translator<'_> {
             match name {
                 "len" => return prim(format!("{r}.utf8.count"), usize_ty),
                 "is_empty" => return prim(format!("{r}.isEmpty"), Ty::Bool),
-                "push_str" => return Ex::new(format!("{} += {}", recv.code, a(0)), crate::expr::P_ASSIGN, Ty::Unit),
+                "push_str" => {
+                    return Ex::new(
+                        format!("{} += {}", recv.code, a(0)),
+                        crate::expr::P_ASSIGN,
+                        Ty::Unit,
+                    );
+                }
                 "push" => return prim(format!("{r}.append({})", a(0)), Ty::Unit),
                 "pop" => return prim(format!("{r}.popLast()"), Ty::Option(Box::new(Ty::Char))),
                 "clear" => return prim(format!("{r}.removeAll()"), Ty::Unit),
-                "chars" => return Ex { ty: Ty::Iter(Box::new(Ty::Char)), ..recv },
-                "bytes" => return prim(format!("{r}.utf8"), Ty::Iter(Box::new(Ty::Int(IntKind::U8)))),
-                "as_bytes" | "into_bytes" => return prim(format!("Array({r}.utf8)"), Ty::Vec(Box::new(Ty::Int(IntKind::U8)))),
-                "to_uppercase" | "to_ascii_uppercase" => return prim(format!("{r}.uppercased()"), Ty::Str),
-                "to_lowercase" | "to_ascii_lowercase" => return prim(format!("{r}.lowercased()"), Ty::Str),
-                "trim" => return prim(format!("{r}.trimmingCharacters(in: .whitespacesAndNewlines)"), Ty::Str),
+                "chars" => {
+                    return Ex {
+                        ty: Ty::Iter(Box::new(Ty::Char)),
+                        ..recv
+                    };
+                }
+                "bytes" => {
+                    return prim(
+                        format!("{r}.utf8"),
+                        Ty::Iter(Box::new(Ty::Int(IntKind::U8))),
+                    );
+                }
+                "as_bytes" | "into_bytes" => {
+                    return prim(
+                        format!("Array({r}.utf8)"),
+                        Ty::Vec(Box::new(Ty::Int(IntKind::U8))),
+                    );
+                }
+                "to_uppercase" | "to_ascii_uppercase" => {
+                    return prim(format!("{r}.uppercased()"), Ty::Str);
+                }
+                "to_lowercase" | "to_ascii_lowercase" => {
+                    return prim(format!("{r}.lowercased()"), Ty::Str);
+                }
+                "trim" => {
+                    return prim(
+                        format!("{r}.trimmingCharacters(in: .whitespacesAndNewlines)"),
+                        Ty::Str,
+                    );
+                }
                 "trim_start" | "trim_end" | "trim_left" | "trim_right" => {
                     self.helper("string");
-                    let f = if name.ends_with("start") || name.ends_with("left") { "trimStart" } else { "trimEnd" };
+                    let f = if name.ends_with("start") || name.ends_with("left") {
+                        "trimStart"
+                    } else {
+                        "trimEnd"
+                    };
                     return prim(format!("{r}.{f}()"), Ty::Str);
                 }
                 "trim_start_matches" | "trim_end_matches" => {
                     self.helper("string");
-                    let f = if name.starts_with("trim_start") { "trimStartMatches" } else { "trimEndMatches" };
+                    let f = if name.starts_with("trim_start") {
+                        "trimStartMatches"
+                    } else {
+                        "trimEndMatches"
+                    };
                     return prim(format!("{r}.{f}({})", str_arg(0)), Ty::Str);
                 }
                 "starts_with" => return prim(format!("{r}.hasPrefix({})", str_arg(0)), Ty::Bool),
@@ -936,17 +1323,41 @@ impl Translator<'_> {
                 "find" | "rfind" => {
                     self.helper("string");
                     let f = if name == "find" { "find" } else { "rfind" };
-                    return prim(format!("{r}.{f}({})", str_arg(0)), Ty::Option(Box::new(usize_ty)));
+                    return prim(
+                        format!("{r}.{f}({})", str_arg(0)),
+                        Ty::Option(Box::new(usize_ty)),
+                    );
                 }
-                "replace" | "replacen" => return prim(format!("{r}.replacingOccurrences(of: {}, with: {})", str_arg(0), a(1)), Ty::Str),
+                "replace" | "replacen" => {
+                    return prim(
+                        format!(
+                            "{r}.replacingOccurrences(of: {}, with: {})",
+                            str_arg(0),
+                            a(1)
+                        ),
+                        Ty::Str,
+                    );
+                }
                 "split" => {
                     if matches!(ty_a(0), Ty::Fn(..)) {
-                        return prim(format!("{r}.split(omittingEmptySubsequences: false, whereSeparator: {}).map(String.init)", a(0)), Ty::Vec(Box::new(Ty::Str)));
+                        return prim(
+                            format!(
+                                "{r}.split(omittingEmptySubsequences: false, whereSeparator: {}).map(String.init)",
+                                a(0)
+                            ),
+                            Ty::Vec(Box::new(Ty::Str)),
+                        );
                     }
-                    return prim(format!("{r}.components(separatedBy: {})", str_arg(0)), Ty::Vec(Box::new(Ty::Str)));
+                    return prim(
+                        format!("{r}.components(separatedBy: {})", str_arg(0)),
+                        Ty::Vec(Box::new(Ty::Str)),
+                    );
                 }
                 "split_whitespace" | "split_ascii_whitespace" => {
-                    return prim(format!("{r}.split(whereSeparator: \\.isWhitespace).map(String.init)"), Ty::Vec(Box::new(Ty::Str)));
+                    return prim(
+                        format!("{r}.split(whereSeparator: \\.isWhitespace).map(String.init)"),
+                        Ty::Vec(Box::new(Ty::Str)),
+                    );
                 }
                 "lines" => {
                     self.helper("string");
@@ -954,31 +1365,63 @@ impl Translator<'_> {
                 }
                 "split_once" | "rsplit_once" => {
                     self.helper("string");
-                    let f = if name == "split_once" { "splitOnce" } else { "rsplitOnce" };
-                    return prim(format!("{r}.{f}({})", str_arg(0)), Ty::Option(Box::new(Ty::Tuple(vec![Ty::Str, Ty::Str]))));
+                    let f = if name == "split_once" {
+                        "splitOnce"
+                    } else {
+                        "rsplitOnce"
+                    };
+                    return prim(
+                        format!("{r}.{f}({})", str_arg(0)),
+                        Ty::Option(Box::new(Ty::Tuple(vec![Ty::Str, Ty::Str]))),
+                    );
                 }
                 "strip_prefix" | "strip_suffix" => {
                     self.helper("string");
-                    let f = if name == "strip_prefix" { "stripPrefix" } else { "stripSuffix" };
-                    return prim(format!("{r}.{f}({})", str_arg(0)), Ty::Option(Box::new(Ty::Str)));
+                    let f = if name == "strip_prefix" {
+                        "stripPrefix"
+                    } else {
+                        "stripSuffix"
+                    };
+                    return prim(
+                        format!("{r}.{f}({})", str_arg(0)),
+                        Ty::Option(Box::new(Ty::Str)),
+                    );
                 }
                 "char_indices" => {
                     self.helper("string");
-                    return prim(format!("{r}.charIndices()"), Ty::Vec(Box::new(Ty::Tuple(vec![usize_ty, Ty::Char]))));
+                    return prim(
+                        format!("{r}.charIndices()"),
+                        Ty::Vec(Box::new(Ty::Tuple(vec![usize_ty, Ty::Char]))),
+                    );
                 }
-                "repeat" => return prim(format!("String(repeating: {}, count: {})", recv.code, a(0)), Ty::Str),
+                "repeat" => {
+                    return prim(
+                        format!("String(repeating: {}, count: {})", recv.code, a(0)),
+                        Ty::Str,
+                    );
+                }
                 "parse" => {
-                    let target = turbofish.first().cloned().unwrap_or_else(|| match expected {
-                        Ty::Result(t, _) | Ty::Option(t) => (**t).clone(),
-                        t => t.clone(),
-                    });
+                    let target = turbofish
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| match expected {
+                            Ty::Result(t, _) | Ty::Option(t) => (**t).clone(),
+                            t => t.clone(),
+                        });
                     let code = match &target {
-                        Ty::Int(_) | Ty::Float(_) | Ty::Bool => format!("{}({})", target.swift_lossy(), recv.code),
+                        Ty::Int(_) | Ty::Float(_) | Ty::Bool => {
+                            format!("{}({})", target.swift_lossy(), recv.code)
+                        }
                         Ty::Char => format!("({}.count == 1 ? {}.first : nil)", r, r),
                         Ty::Str => format!("Optional({})", recv.code),
-                        Ty::Named(n, _) if self.generics.contains(n) => format!("{n}({})", recv.code),
+                        Ty::Named(n, _) if self.generics.contains(n) => {
+                            format!("{n}({})", recv.code)
+                        }
                         _ => {
-                            self.error(span, "parse(): write the target type, e.g. `s.parse::<i32>()`");
+                            self.error(
+                                span,
+                                "parse(): write the target type, e.g. `s.parse::<i32>()`",
+                            );
                             format!("Int({})", recv.code)
                         }
                     };
@@ -986,10 +1429,22 @@ impl Translator<'_> {
                     ex.parsed = true;
                     return ex;
                 }
-                "eq_ignore_ascii_case" => return Ex::new(format!("{r}.lowercased() == {}.lowercased()", wrap(&args[0], P_PRIMARY)), P_CMP, Ty::Bool),
+                "eq_ignore_ascii_case" => {
+                    return Ex::new(
+                        format!(
+                            "{r}.lowercased() == {}.lowercased()",
+                            wrap(&args[0], P_PRIMARY)
+                        ),
+                        P_CMP,
+                        Ty::Bool,
+                    );
+                }
                 "get" => {
                     self.helper("string");
-                    return prim(format!("{r}.rsSlice({})", a(0).replace("..<", ", ")), Ty::Option(Box::new(Ty::Str)));
+                    return prim(
+                        format!("{r}.rsSlice({})", a(0).replace("..<", ", ")),
+                        Ty::Option(Box::new(Ty::Str)),
+                    );
                 }
                 "insert" => {
                     self.helper("string");
@@ -1007,12 +1462,20 @@ impl Translator<'_> {
                     self.helper("string");
                     return prim(format!("{r}.truncate({})", a(0)), Ty::Unit);
                 }
-                "matches" => return prim(format!("{r}.components(separatedBy: {}).dropFirst()", str_arg(0)), Ty::Iter(Box::new(Ty::Str))),
+                "matches" => {
+                    return prim(
+                        format!("{r}.components(separatedBy: {}).dropFirst()", str_arg(0)),
+                        Ty::Iter(Box::new(Ty::Str)),
+                    );
+                }
                 "next" => return prim(format!("{r}.first"), Ty::Option(Box::new(Ty::Char))),
                 "char_count" => return prim(format!("{r}.count"), usize_ty),
                 "cmp" => {
                     self.helper("Ordering");
-                    return prim(format!("rsCmp({}, {})", recv.code, a(0)), Ty::Named("Ordering".into(), vec![]));
+                    return prim(
+                        format!("rsCmp({}, {})", recv.code, a(0)),
+                        Ty::Named("Ordering".into(), vec![]),
+                    );
                 }
                 "is_char_boundary" => return prim("true".into(), Ty::Bool),
                 _ => {}
@@ -1024,46 +1487,101 @@ impl Translator<'_> {
             match name {
                 "is_alphabetic" => return p("isLetter", Ty::Bool),
                 "is_numeric" => return p("isNumber", Ty::Bool),
-                "is_alphanumeric" => return Ex::new(format!("({r}.isLetter || {r}.isNumber)"), P_PRIMARY, Ty::Bool),
+                "is_alphanumeric" => {
+                    return Ex::new(
+                        format!("({r}.isLetter || {r}.isNumber)"),
+                        P_PRIMARY,
+                        Ty::Bool,
+                    );
+                }
                 "is_whitespace" | "is_ascii_whitespace" => return p("isWhitespace", Ty::Bool),
                 "is_uppercase" => return p("isUppercase", Ty::Bool),
                 "is_lowercase" => return p("isLowercase", Ty::Bool),
                 "is_ascii" => return p("isASCII", Ty::Bool),
-                "is_control" | "is_ascii_control" => return Ex::new(format!("{r}.unicodeScalars.allSatisfy {{ $0.properties.generalCategory == .control }}"), P_PRIMARY, Ty::Bool),
-                "is_ascii_digit" | "is_ascii_alphabetic" | "is_ascii_alphanumeric" | "is_ascii_uppercase" | "is_ascii_lowercase" | "is_ascii_punctuation" | "is_ascii_hexdigit" | "is_digit" => {
+                "is_control" | "is_ascii_control" => {
+                    return Ex::new(
+                        format!(
+                            "{r}.unicodeScalars.allSatisfy {{ $0.properties.generalCategory == .control }}"
+                        ),
+                        P_PRIMARY,
+                        Ty::Bool,
+                    );
+                }
+                "is_ascii_digit"
+                | "is_ascii_alphabetic"
+                | "is_ascii_alphanumeric"
+                | "is_ascii_uppercase"
+                | "is_ascii_lowercase"
+                | "is_ascii_punctuation"
+                | "is_ascii_hexdigit"
+                | "is_digit" => {
                     self.helper("char");
                     if name == "is_digit" {
                         return prim(format!("({r}.toDigit({}) != nil)", a(0)), Ty::Bool);
                     }
-                    let prop = names::lower_camel(name).replace("Ascii", "Ascii");
-                    return p(&prop, Ty::Bool);
+                    return p(&names::lower_camel(name), Ty::Bool);
                 }
-                "to_ascii_uppercase" => return prim(format!("Character({r}.uppercased())"), Ty::Char),
-                "to_ascii_lowercase" => return prim(format!("Character({r}.lowercased())"), Ty::Char),
+                "to_ascii_uppercase" => {
+                    return prim(format!("Character({r}.uppercased())"), Ty::Char);
+                }
+                "to_ascii_lowercase" => {
+                    return prim(format!("Character({r}.lowercased())"), Ty::Char);
+                }
                 "to_uppercase" => return prim(format!("{r}.uppercased()"), Ty::Str),
                 "to_lowercase" => return prim(format!("{r}.lowercased()"), Ty::Str),
                 "to_digit" => {
                     self.helper("char");
-                    return prim(format!("{r}.toDigit({})", a(0)), Ty::Option(Box::new(Ty::Int(IntKind::U32))));
+                    return prim(
+                        format!("{r}.toDigit({})", a(0)),
+                        Ty::Option(Box::new(Ty::Int(IntKind::U32))),
+                    );
                 }
                 "len_utf8" => return prim(format!("String({}).utf8.count", recv.code), usize_ty),
-                "eq_ignore_ascii_case" => return Ex::new(format!("{r}.lowercased() == {}.lowercased()", wrap(&args[0], P_PRIMARY)), P_CMP, Ty::Bool),
+                "eq_ignore_ascii_case" => {
+                    return Ex::new(
+                        format!(
+                            "{r}.lowercased() == {}.lowercased()",
+                            wrap(&args[0], P_PRIMARY)
+                        ),
+                        P_CMP,
+                        Ty::Bool,
+                    );
+                }
                 "cmp" => {
                     self.helper("Ordering");
-                    return prim(format!("rsCmp({}, {})", recv.code, a(0)), Ty::Named("Ordering".into(), vec![]));
+                    return prim(
+                        format!("rsCmp({}, {})", recv.code, a(0)),
+                        Ty::Named("Ordering".into(), vec![]),
+                    );
                 }
                 _ => {}
             }
         }
         // Numbers.
-        if rty.is_numeric() || (rty.is_unknown() && matches!(name, "abs" | "pow" | "powi" | "powf" | "sqrt" | "floor" | "ceil" | "round" | "trunc")) {
-            let float = rty.is_float() || matches!(name, "powi" | "powf" | "sqrt" | "floor" | "ceil" | "round" | "trunc");
-            let fty = if let Ty::Float(_) = rty { rty.clone() } else { Ty::Float(FloatKind::F64) };
+        if rty.is_numeric()
+            || (rty.is_unknown()
+                && matches!(
+                    name,
+                    "abs" | "pow" | "powi" | "powf" | "sqrt" | "floor" | "ceil" | "round" | "trunc"
+                ))
+        {
+            let float = rty.is_float()
+                || matches!(
+                    name,
+                    "powi" | "powf" | "sqrt" | "floor" | "ceil" | "round" | "trunc"
+                );
+            let fty = if let Ty::Float(_) = rty {
+                rty.clone()
+            } else {
+                Ty::Float(FloatKind::F64)
+            };
             let t = if float { fty.clone() } else { rty.clone() };
             let ts = t.swift().unwrap_or_else(|| "Double".into());
             match name {
                 "abs" => return prim(format!("abs({})", recv.code), t),
-                "min" | "max" if args.len() == 1 => return prim(format!("{name}({}, {})", recv.code, a(0)), t),
+                "min" | "max" if args.len() == 1 => {
+                    return prim(format!("{name}({}, {})", recv.code, a(0)), t);
+                }
                 "clamp" => return prim(format!("min(max({}, {}), {})", recv.code, a(0), a(1)), t),
                 "pow" if !float => {
                     self.helper("int");
@@ -1072,7 +1590,8 @@ impl Translator<'_> {
                 "powi" => return prim(format!("pow({}, {ts}({}))", recv.code, a(0)), t),
                 "powf" | "pow" => return prim(format!("pow({}, {})", recv.code, a(0)), t),
                 "sqrt" => return prim(format!("{r}.squareRoot()"), t),
-                "cbrt" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" | "exp" | "exp2" | "log10" | "log2" => {
+                "cbrt" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh"
+                | "tanh" | "exp" | "exp2" | "log10" | "log2" => {
                     return prim(format!("{name}({})", recv.code), t);
                 }
                 "ln" => return prim(format!("log({})", recv.code), t),
@@ -1083,40 +1602,108 @@ impl Translator<'_> {
                 "ceil" => return prim(format!("{r}.rounded(.up)"), t),
                 "round" => return prim(format!("{r}.rounded()"), t),
                 "trunc" => return prim(format!("{r}.rounded(.towardZero)"), t),
-                "fract" => return Ex::new(format!("{} - {r}.rounded(.towardZero)", recv.code), P_ADD, t),
+                "fract" => {
+                    return Ex::new(
+                        format!("{} - {r}.rounded(.towardZero)", recv.code),
+                        P_ADD,
+                        t,
+                    );
+                }
                 "signum" if float => return prim(format!("({} < 0 ? -1.0 : 1.0)", recv.code), t),
                 "signum" => return prim(format!("{r}.signum()"), t),
                 "is_nan" => return prim(format!("{r}.isNaN"), Ty::Bool),
                 "is_finite" => return prim(format!("{r}.isFinite"), Ty::Bool),
                 "is_infinite" => return prim(format!("{r}.isInfinite"), Ty::Bool),
-                "is_sign_negative" | "is_negative" => return Ex::new(format!("{} < 0", wrap(&recv, P_CMP + 1)), P_CMP, Ty::Bool),
-                "is_sign_positive" | "is_positive" => return Ex::new(format!("{} > 0", wrap(&recv, P_CMP + 1)), P_CMP, Ty::Bool),
-                "to_degrees" => return Ex::new(format!("{} * 180 / .pi", wrap(&recv, P_MUL)), P_MUL, t),
-                "to_radians" => return Ex::new(format!("{} * .pi / 180", wrap(&recv, P_MUL)), P_MUL, t),
-                "mul_add" => return Ex::new(format!("{} * {} + {}", wrap(&recv, P_MUL), wrap(&args[0], P_MUL), wrap(&args[1], P_ADD + 1)), P_ADD, t),
+                "is_sign_negative" | "is_negative" => {
+                    return Ex::new(format!("{} < 0", wrap(&recv, P_CMP + 1)), P_CMP, Ty::Bool);
+                }
+                "is_sign_positive" | "is_positive" => {
+                    return Ex::new(format!("{} > 0", wrap(&recv, P_CMP + 1)), P_CMP, Ty::Bool);
+                }
+                "to_degrees" => {
+                    return Ex::new(format!("{} * 180 / .pi", wrap(&recv, P_MUL)), P_MUL, t);
+                }
+                "to_radians" => {
+                    return Ex::new(format!("{} * .pi / 180", wrap(&recv, P_MUL)), P_MUL, t);
+                }
+                "mul_add" => {
+                    return Ex::new(
+                        format!(
+                            "{} * {} + {}",
+                            wrap(&recv, P_MUL),
+                            wrap(&args[0], P_MUL),
+                            wrap(&args[1], P_ADD + 1)
+                        ),
+                        P_ADD,
+                        t,
+                    );
+                }
                 "count_ones" => return prim(format!("{r}.nonzeroBitCount"), Ty::Int(IntKind::U32)),
-                "leading_zeros" => return prim(format!("{r}.leadingZeroBitCount"), Ty::Int(IntKind::U32)),
-                "trailing_zeros" => return prim(format!("{r}.trailingZeroBitCount"), Ty::Int(IntKind::U32)),
-                "is_power_of_two" => return Ex::new(format!("{} > 0 && {r}.nonzeroBitCount == 1", wrap(&recv, P_CMP + 1)), crate::expr::P_AND, Ty::Bool),
-                "wrapping_add" => return Ex::new(format!("{} &+ {}", wrap(&recv, P_ADD), wrap(&args[0], P_ADD + 1)), P_ADD, t),
-                "wrapping_sub" => return Ex::new(format!("{} &- {}", wrap(&recv, P_ADD), wrap(&args[0], P_ADD + 1)), P_ADD, t),
-                "wrapping_mul" => return Ex::new(format!("{} &* {}", wrap(&recv, P_MUL), wrap(&args[0], P_MUL + 1)), P_MUL, t),
-                "checked_add" | "checked_sub" | "checked_mul" | "checked_div" | "checked_rem" | "saturating_add" | "saturating_sub" | "saturating_mul" | "rem_euclid" | "div_euclid" | "abs_diff" | "isqrt" | "checked_pow" => {
+                "leading_zeros" => {
+                    return prim(format!("{r}.leadingZeroBitCount"), Ty::Int(IntKind::U32));
+                }
+                "trailing_zeros" => {
+                    return prim(format!("{r}.trailingZeroBitCount"), Ty::Int(IntKind::U32));
+                }
+                "is_power_of_two" => {
+                    return Ex::new(
+                        format!("{} > 0 && {r}.nonzeroBitCount == 1", wrap(&recv, P_CMP + 1)),
+                        crate::expr::P_AND,
+                        Ty::Bool,
+                    );
+                }
+                "wrapping_add" => {
+                    return Ex::new(
+                        format!("{} &+ {}", wrap(&recv, P_ADD), wrap(&args[0], P_ADD + 1)),
+                        P_ADD,
+                        t,
+                    );
+                }
+                "wrapping_sub" => {
+                    return Ex::new(
+                        format!("{} &- {}", wrap(&recv, P_ADD), wrap(&args[0], P_ADD + 1)),
+                        P_ADD,
+                        t,
+                    );
+                }
+                "wrapping_mul" => {
+                    return Ex::new(
+                        format!("{} &* {}", wrap(&recv, P_MUL), wrap(&args[0], P_MUL + 1)),
+                        P_MUL,
+                        t,
+                    );
+                }
+                "checked_add" | "checked_sub" | "checked_mul" | "checked_div" | "checked_rem"
+                | "saturating_add" | "saturating_sub" | "saturating_mul" | "rem_euclid"
+                | "div_euclid" | "abs_diff" | "isqrt" | "checked_pow" => {
                     self.helper("int");
-                    let ret = if name.starts_with("checked") { Ty::Option(Box::new(t.clone())) } else { t };
+                    let ret = if name.starts_with("checked") {
+                        Ty::Option(Box::new(t.clone()))
+                    } else {
+                        t
+                    };
                     return prim(format!("{r}.{}({})", names::lower_camel(name), a(0)), ret);
                 }
                 "cmp" => {
                     self.helper("Ordering");
-                    return prim(format!("rsCmp({}, {})", recv.code, a(0)), Ty::Named("Ordering".into(), vec![]));
+                    return prim(
+                        format!("rsCmp({}, {})", recv.code, a(0)),
+                        Ty::Named("Ordering".into(), vec![]),
+                    );
                 }
                 "partial_cmp" => {
                     self.helper("Ordering");
-                    return prim(format!("rsPartialCmp({}, {})", recv.code, a(0)), Ty::Option(Box::new(Ty::Named("Ordering".into(), vec![]))));
+                    return prim(
+                        format!("rsPartialCmp({}, {})", recv.code, a(0)),
+                        Ty::Option(Box::new(Ty::Named("Ordering".into(), vec![]))),
+                    );
                 }
                 "total_cmp" => {
                     self.helper("Ordering");
-                    return prim(format!("rsCmp({}, {})", recv.code, a(0)), Ty::Named("Ordering".into(), vec![]));
+                    return prim(
+                        format!("rsCmp({}, {})", recv.code, a(0)),
+                        Ty::Named("Ordering".into(), vec![]),
+                    );
                 }
                 "to_le_bytes" | "to_be_bytes" | "swap_bytes" => {}
                 _ => {}
@@ -1125,11 +1712,34 @@ impl Translator<'_> {
         // Booleans.
         if rty == Ty::Bool {
             match name {
-                "then" => return Ex::new(format!("{} ? {} : nil", wrap(&recv, crate::expr::P_TERNARY + 1), closure_body(&a(0))), crate::expr::P_TERNARY, Ty::Option(Box::new(fn_ret(0)))),
-                "then_some" => return Ex::new(format!("{} ? {} : nil", wrap(&recv, crate::expr::P_TERNARY + 1), a(0)), crate::expr::P_TERNARY, Ty::Option(Box::new(ty_a(0)))),
+                "then" => {
+                    return Ex::new(
+                        format!(
+                            "{} ? {} : nil",
+                            wrap(&recv, crate::expr::P_TERNARY + 1),
+                            closure_body(&a(0))
+                        ),
+                        crate::expr::P_TERNARY,
+                        Ty::Option(Box::new(fn_ret(0))),
+                    );
+                }
+                "then_some" => {
+                    return Ex::new(
+                        format!(
+                            "{} ? {} : nil",
+                            wrap(&recv, crate::expr::P_TERNARY + 1),
+                            a(0)
+                        ),
+                        crate::expr::P_TERNARY,
+                        Ty::Option(Box::new(ty_a(0))),
+                    );
+                }
                 "cmp" => {
                     self.helper("Ordering");
-                    return prim(format!("rsCmp({}, {})", recv.code, a(0)), Ty::Named("Ordering".into(), vec![]));
+                    return prim(
+                        format!("rsCmp({}, {})", recv.code, a(0)),
+                        Ty::Named("Ordering".into(), vec![]),
+                    );
                 }
                 _ => {}
             }
@@ -1137,34 +1747,69 @@ impl Translator<'_> {
         // Maps.
         if let Ty::Map(k, v, ordered) = &rty {
             let (k, v, ordered) = ((**k).clone(), (**v).clone(), *ordered);
-            let sorted = |s: &str| if ordered { format!("{s}.sorted()") } else { s.to_string() };
+            let sorted = |s: &str| {
+                if ordered {
+                    format!("{s}.sorted()")
+                } else {
+                    s.to_string()
+                }
+            };
             match name {
                 "len" => return prim(format!("{r}.count"), usize_ty),
                 "is_empty" => return prim(format!("{r}.isEmpty"), Ty::Bool),
                 "insert" => {
-                    self.pending_refine = Some(Ty::Map(Box::new(ty_a(0)), Box::new(ty_a(1)), ordered));
-                    return prim(format!("{r}.updateValue({}, forKey: {})", a(1), a(0)), Ty::Option(Box::new(v)));
+                    self.pending_refine =
+                        Some(Ty::Map(Box::new(ty_a(0)), Box::new(ty_a(1)), ordered));
+                    return prim(
+                        format!("{r}.updateValue({}, forKey: {})", a(1), a(0)),
+                        Ty::Option(Box::new(v)),
+                    );
                 }
                 "get" => return prim(format!("{r}[{}]", a(0)), Ty::Option(Box::new(v))),
                 "get_mut" => return prim(format!("{r}[{}]", a(0)), Ty::Option(Box::new(v))),
                 "contains_key" => return Ex::new(format!("{r}[{}] != nil", a(0)), P_CMP, Ty::Bool),
-                "remove" => return prim(format!("{r}.removeValue(forKey: {})", a(0)), Ty::Option(Box::new(v))),
-                "keys" | "into_keys" => return prim(sorted(&format!("{r}.keys")), Ty::Iter(Box::new(k))),
+                "remove" => {
+                    return prim(
+                        format!("{r}.removeValue(forKey: {})", a(0)),
+                        Ty::Option(Box::new(v)),
+                    );
+                }
+                "keys" | "into_keys" => {
+                    return prim(sorted(&format!("{r}.keys")), Ty::Iter(Box::new(k)));
+                }
                 "values" | "into_values" | "values_mut" => {
                     if ordered {
-                        return prim(format!("{r}.sorted(by: {{ $0.key < $1.key }}).map(\\.value)"), Ty::Iter(Box::new(v)));
+                        return prim(
+                            format!("{r}.sorted(by: {{ $0.key < $1.key }}).map(\\.value)"),
+                            Ty::Iter(Box::new(v)),
+                        );
                     }
                     return prim(format!("{r}.values"), Ty::Iter(Box::new(v)));
                 }
                 "clear" => return prim(format!("{r}.removeAll()"), Ty::Unit),
-                "extend" => return prim(format!("{r}.merge({}, uniquingKeysWith: {{ _, new in new }})", a(0)), Ty::Unit),
+                "extend" => {
+                    return prim(
+                        format!("{r}.merge({}, uniquingKeysWith: {{ _, new in new }})", a(0)),
+                        Ty::Unit,
+                    );
+                }
                 "retain" => {
                     self.helper("map");
                     return prim(format!("{r}.retain({})", a(0)), Ty::Unit);
                 }
                 "iter_mut" => return recv,
-                "first_key_value" => return prim(format!("{r}.min(by: {{ $0.key < $1.key }}).map {{ ($0.key, $0.value) }}"), Ty::Option(Box::new(Ty::Tuple(vec![k, v])))),
-                "last_key_value" => return prim(format!("{r}.max(by: {{ $0.key < $1.key }}).map {{ ($0.key, $0.value) }}"), Ty::Option(Box::new(Ty::Tuple(vec![k, v])))),
+                "first_key_value" => {
+                    return prim(
+                        format!("{r}.min(by: {{ $0.key < $1.key }}).map {{ ($0.key, $0.value) }}"),
+                        Ty::Option(Box::new(Ty::Tuple(vec![k, v]))),
+                    );
+                }
+                "last_key_value" => {
+                    return prim(
+                        format!("{r}.max(by: {{ $0.key < $1.key }}).map {{ ($0.key, $0.value) }}"),
+                        Ty::Option(Box::new(Ty::Tuple(vec![k, v]))),
+                    );
+                }
                 _ => {}
             }
         }
@@ -1176,20 +1821,29 @@ impl Translator<'_> {
                     self.pending_refine = Some(Ty::Set(Box::new(ty_a(0)), ordered));
                     return prim(format!("{r}.insert({}).inserted", a(0)), Ty::Bool);
                 }
-                "remove" => return Ex::new(format!("{r}.remove({}) != nil", a(0)), P_CMP, Ty::Bool),
+                "remove" => {
+                    return Ex::new(format!("{r}.remove({}) != nil", a(0)), P_CMP, Ty::Bool);
+                }
                 "contains" => return prim(format!("{r}.contains({})", a(0)), Ty::Bool),
                 "len" => return prim(format!("{r}.count"), usize_ty),
                 "is_empty" => return prim(format!("{r}.isEmpty"), Ty::Bool),
                 "union" => return prim(format!("{r}.union({})", a(0)), rty.clone()),
                 "intersection" => return prim(format!("{r}.intersection({})", a(0)), rty.clone()),
                 "difference" => return prim(format!("{r}.subtracting({})", a(0)), rty.clone()),
-                "symmetric_difference" => return prim(format!("{r}.symmetricDifference({})", a(0)), rty.clone()),
+                "symmetric_difference" => {
+                    return prim(format!("{r}.symmetricDifference({})", a(0)), rty.clone());
+                }
                 "is_subset" => return prim(format!("{r}.isSubset(of: {})", a(0)), Ty::Bool),
                 "is_superset" => return prim(format!("{r}.isSuperset(of: {})", a(0)), Ty::Bool),
                 "is_disjoint" => return prim(format!("{r}.isDisjoint(with: {})", a(0)), Ty::Bool),
                 "extend" => return prim(format!("{r}.formUnion({})", a(0)), Ty::Unit),
                 "clear" => return prim(format!("{r}.removeAll()"), Ty::Unit),
-                "retain" => return prim(format!("{r}.formIntersection({r}.filter({}))", a(0)), Ty::Unit),
+                "retain" => {
+                    return prim(
+                        format!("{r}.formIntersection({r}.filter({}))", a(0)),
+                        Ty::Unit,
+                    );
+                }
                 _ if ordered && matches!(name, "first" | "last") => {
                     let f = if name == "first" { "min" } else { "max" };
                     return prim(format!("{r}.{f}()"), Ty::Option(Box::new(t)));
@@ -1207,7 +1861,11 @@ impl Translator<'_> {
         match name {
             "cmp" | "partial_cmp" | "total_cmp" => {
                 self.helper("Ordering");
-                let f = if name == "partial_cmp" { "rsPartialCmp" } else { "rsCmp" };
+                let f = if name == "partial_cmp" {
+                    "rsPartialCmp"
+                } else {
+                    "rsCmp"
+                };
                 let ty = if name == "partial_cmp" {
                     Ty::Option(Box::new(Ty::Named("Ordering".into(), vec![])))
                 } else {
@@ -1215,15 +1873,54 @@ impl Translator<'_> {
                 };
                 return prim(format!("{f}({}, {})", recv.code, a(0)), ty);
             }
-            "eq" => return Ex::new(format!("{} == {}", wrap(&recv, P_CMP + 1), wrap(&args[0], P_CMP + 1)), P_CMP, Ty::Bool),
-            "ne" => return Ex::new(format!("{} != {}", wrap(&recv, P_CMP + 1), wrap(&args[0], P_CMP + 1)), P_CMP, Ty::Bool),
-            "lt" | "le" | "gt" | "ge" => {
-                let op = match name { "lt" => "<", "le" => "<=", "gt" => ">", _ => ">=" };
-                return Ex::new(format!("{} {op} {}", wrap(&recv, P_CMP + 1), wrap(&args[0], P_CMP + 1)), P_CMP, Ty::Bool);
+            "eq" => {
+                return Ex::new(
+                    format!(
+                        "{} == {}",
+                        wrap(&recv, P_CMP + 1),
+                        wrap(&args[0], P_CMP + 1)
+                    ),
+                    P_CMP,
+                    Ty::Bool,
+                );
             }
-            "reverse" if rty == Ty::Named("Ordering".into(), vec![]) => return prim(format!("{r}.reverse()"), rty),
-            "then" if rty == Ty::Named("Ordering".into(), vec![]) => return prim(format!("{r}.then({})", a(0)), rty),
-            "then_with" if rty == Ty::Named("Ordering".into(), vec![]) => return prim(format!("{r}.thenWith({})", a(0)), rty),
+            "ne" => {
+                return Ex::new(
+                    format!(
+                        "{} != {}",
+                        wrap(&recv, P_CMP + 1),
+                        wrap(&args[0], P_CMP + 1)
+                    ),
+                    P_CMP,
+                    Ty::Bool,
+                );
+            }
+            "lt" | "le" | "gt" | "ge" => {
+                let op = match name {
+                    "lt" => "<",
+                    "le" => "<=",
+                    "gt" => ">",
+                    _ => ">=",
+                };
+                return Ex::new(
+                    format!(
+                        "{} {op} {}",
+                        wrap(&recv, P_CMP + 1),
+                        wrap(&args[0], P_CMP + 1)
+                    ),
+                    P_CMP,
+                    Ty::Bool,
+                );
+            }
+            "reverse" if rty == Ty::Named("Ordering".into(), vec![]) => {
+                return prim(format!("{r}.reverse()"), rty);
+            }
+            "then" if rty == Ty::Named("Ordering".into(), vec![]) => {
+                return prim(format!("{r}.then({})", a(0)), rty);
+            }
+            "then_with" if rty == Ty::Named("Ordering".into(), vec![]) => {
+                return prim(format!("{r}.thenWith({})", a(0)), rty);
+            }
             "is_lt" | "is_le" | "is_gt" | "is_ge" | "is_eq" | "is_ne" => {
                 self.helper("Ordering");
                 return prim(format!("{r}.{}", names::lower_camel(name)), Ty::Bool);
@@ -1235,15 +1932,43 @@ impl Translator<'_> {
         }
         // Anything else: same name, in lowerCamelCase.
         if !rty.is_unknown() && !matches!(rty, Ty::Named(..) | Ty::Dyn(_) | Ty::Opaque(_)) {
-            self.warn(span, format!("no Swift equivalent known for `.{name}()` on `{}`: translated as is", rty.swift_lossy()));
+            self.warn(
+                span,
+                format!(
+                    "no Swift equivalent known for `.{name}()` on `{}`: translated as is",
+                    rty.swift_lossy()
+                ),
+            );
         }
         let codes: Vec<String> = args.iter().map(|a| a.code.clone()).collect();
-        prim(format!("{r}.{}({})", names::lower_camel(name), codes.join(", ")), Ty::Unknown)
+        // A method of `self` in a protocol extension: no `self.` needed.
+        if recv.code == "self"
+            && self
+                .imp
+                .as_ref()
+                .is_some_and(|i| i.kind != TypeKind::Observable)
+        {
+            return prim(
+                format!("{}({})", names::lower_camel(name), codes.join(", ")),
+                Ty::Unknown,
+            );
+        }
+        prim(
+            format!("{r}.{}({})", names::lower_camel(name), codes.join(", ")),
+            Ty::Unknown,
+        )
     }
 
     /// Methods shared by vectors, slices, ranges and iterators.
     #[allow(clippy::too_many_lines)]
-    fn seq_method(&mut self, recv: &Ex, name: &str, args: &[Ex], turbofish: &[Ty], expected: &Ty) -> Option<Ex> {
+    fn seq_method(
+        &mut self,
+        recv: &Ex,
+        name: &str,
+        args: &[Ex],
+        turbofish: &[Ty],
+        expected: &Ty,
+    ) -> Option<Ex> {
         let r = wrap(recv, P_PRIMARY);
         let rty = recv.ty.clone();
         let item = rty.item();
@@ -1266,36 +1991,53 @@ impl Translator<'_> {
             }
             "push_front" => prim(format!("{r}.insert({}, at: 0)", a(0)), Ty::Unit),
             "pop" | "pop_back" => prim(format!("{r}.popLast()"), Ty::Option(Box::new(item))),
-            "pop_front" => Ex::new(format!("{r}.isEmpty ? nil : {r}.removeFirst()"), crate::expr::P_TERNARY, Ty::Option(Box::new(item))),
+            "pop_front" => Ex::new(
+                format!("{r}.isEmpty ? nil : {r}.removeFirst()"),
+                crate::expr::P_TERNARY,
+                Ty::Option(Box::new(item)),
+            ),
             "insert" if args.len() == 2 => {
                 if matches!(rty, Ty::Vec(_)) {
                     prim(format!("{r}.insert({}, at: {})", a(1), a(0)), Ty::Unit)
                 } else {
-                    self.pending_refine = Some(Ty::Map(Box::new(ty_a(0)), Box::new(ty_a(1)), false));
-                    prim(format!("{r}.updateValue({}, forKey: {})", a(1), a(0)), Ty::Option(Box::new(ty_a(1))))
+                    self.pending_refine =
+                        Some(Ty::Map(Box::new(ty_a(0)), Box::new(ty_a(1)), false));
+                    prim(
+                        format!("{r}.updateValue({}, forKey: {})", a(1), a(0)),
+                        Ty::Option(Box::new(ty_a(1))),
+                    )
                 }
             }
             "insert" if args.len() == 1 => prim(format!("{r}.insert({}).inserted", a(0)), Ty::Bool),
-            "remove" if matches!(rty, Ty::Vec(_)) || rty.is_unknown() => prim(format!("{r}.remove(at: {})", a(0)), item),
+            "remove" if matches!(rty, Ty::Vec(_)) || rty.is_unknown() => {
+                prim(format!("{r}.remove(at: {})", a(0)), item)
+            }
             "swap_remove" => {
                 self.helper("vec");
                 prim(format!("{r}.swapRemove({})", a(0)), item)
             }
-            "truncate" | "dedup" | "resize" | "fill" | "rotate_left" | "rotate_right" | "split_off" | "drain" => {
+            "truncate" | "dedup" | "resize" | "fill" | "rotate_left" | "rotate_right"
+            | "split_off" | "drain" => {
                 self.helper("vec");
                 let codes: Vec<String> = args.iter().map(|a| a.code.clone()).collect();
                 let ret = match name {
                     "split_off" | "drain" => Ty::Vec(Box::new(item)),
                     _ => Ty::Unit,
                 };
-                let call = if name == "drain" { "drain()".to_string() } else { format!("{}({})", names::lower_camel(name), codes.join(", ")) };
+                let call = if name == "drain" {
+                    "drain()".to_string()
+                } else {
+                    format!("{}({})", names::lower_camel(name), codes.join(", "))
+                };
                 prim(format!("{r}.{call}"), ret)
             }
             "clear" => prim(format!("{r}.removeAll()"), Ty::Unit),
             "contains" => prim(format!("{r}.contains({})", a(0)), Ty::Bool),
             "swap" if args.len() == 2 => prim(format!("{r}.swapAt({}, {})", a(0), a(1)), Ty::Unit),
             "reverse" => prim(format!("{r}.reverse()"), Ty::Unit),
-            "sort" | "sort_unstable" if matches!(item, Ty::Tuple(_)) => prim(format!("{r}.sort(by: <)"), Ty::Unit),
+            "sort" | "sort_unstable" if matches!(item, Ty::Tuple(_)) => {
+                prim(format!("{r}.sort(by: <)"), Ty::Unit)
+            }
             "sort" | "sort_unstable" => prim(format!("{r}.sort()"), Ty::Unit),
             "sort_by" | "sort_unstable_by" => {
                 self.helper("vec");
@@ -1327,30 +2069,52 @@ impl Translator<'_> {
             }
             "split_at" => {
                 self.helper("vec");
-                prim(format!("{r}.splitAt({})", a(0)), Ty::Tuple(vec![rty.clone(), rty.clone()]))
+                prim(
+                    format!("{r}.splitAt({})", a(0)),
+                    Ty::Tuple(vec![rty.clone(), rty.clone()]),
+                )
             }
             "windows" | "chunks" | "chunks_exact" => {
                 self.helper("vec");
-                let f = if name == "windows" { "windows" } else { "chunks" };
+                let f = if name == "windows" {
+                    "windows"
+                } else {
+                    "chunks"
+                };
                 prim(format!("{r}.{f}({})", a(0)), iter(Ty::Vec(Box::new(item))))
             }
             "concat" => {
                 if item == Ty::Str {
                     prim(format!("{r}.joined()"), Ty::Str)
                 } else {
-                    prim(format!("{r}.flatMap {{ $0 }}"), Ty::Vec(Box::new(item.item())))
+                    prim(
+                        format!("{r}.flatMap {{ $0 }}"),
+                        Ty::Vec(Box::new(item.item())),
+                    )
                 }
             }
             "join" => prim(format!("{r}.joined(separator: {})", a(0)), Ty::Str),
             "starts_with" => prim(format!("{r}.starts(with: {})", a(0)), Ty::Bool),
-            "ends_with" => prim(format!("{r}.reversed().starts(with: {}.reversed())", a(0)), Ty::Bool),
+            "ends_with" => prim(
+                format!("{r}.reversed().starts(with: {}.reversed())", a(0)),
+                Ty::Bool,
+            ),
             "remove_offsets" => prim(format!("{r}.remove(atOffsets: {})", a(0)), Ty::Unit),
-            "move_offsets" => prim(format!("{r}.move(fromOffsets: {}, toOffset: {})", a(0), a(1)), Ty::Unit),
+            "move_offsets" => prim(
+                format!("{r}.move(fromOffsets: {}, toOffset: {})", a(0), a(1)),
+                Ty::Unit,
+            ),
             "binary_search" => {
                 self.helper("vec");
-                prim(format!("{r}.binarySearch({})", a(0)), Ty::Result(Box::new(usize_ty.clone()), Box::new(usize_ty)))
+                prim(
+                    format!("{r}.binarySearch({})", a(0)),
+                    Ty::Result(Box::new(usize_ty.clone()), Box::new(usize_ty)),
+                )
             }
-            "iter_mut" | "chars" => Ex { ty: iter(item), ..recv.clone() },
+            "iter_mut" | "chars" => Ex {
+                ty: iter(item),
+                ..recv.clone()
+            },
             // Iterator adapters.
             "map" => prim(format!("{r}.map({})", a(0)), iter(fn_ret(0))),
             "filter" => prim(format!("{r}.filter({})", a(0)), iter(item)),
@@ -1369,8 +2133,14 @@ impl Translator<'_> {
                     prim(format!("{r}.flatMap {{ $0 }}"), iter(item.item()))
                 }
             }
-            "enumerate" => prim(format!("{r}.enumerated()"), iter(Ty::Tuple(vec![usize_ty, item]))),
-            "zip" => prim(format!("zip({}, {})", recv.code, a(0)), iter(Ty::Tuple(vec![item, ty_a(0).item()]))),
+            "enumerate" => prim(
+                format!("{r}.enumerated()"),
+                iter(Ty::Tuple(vec![usize_ty, item])),
+            ),
+            "zip" => prim(
+                format!("zip({}, {})", recv.code, a(0)),
+                iter(Ty::Tuple(vec![item, ty_a(0).item()])),
+            ),
             "rev" => prim(format!("{r}.reversed()"), iter(item)),
             "skip" => prim(format!("{r}.dropFirst({})", a(0)), iter(item)),
             "take" => prim(format!("{r}.prefix({})", a(0)), iter(item)),
@@ -1380,33 +2150,57 @@ impl Translator<'_> {
                 if is_range {
                     if let Some((lo, hi, closed)) = split_range(&recv.code) {
                         let to = if closed { "through" } else { "to" };
-                        return Some(prim(format!("stride(from: {lo}, {to}: {hi}, by: {})", a(0)), iter(item)));
+                        return Some(prim(
+                            format!("stride(from: {lo}, {to}: {hi}, by: {})", a(0)),
+                            iter(item),
+                        ));
                     }
                 }
                 self.helper("vec");
                 prim(format!("{r}.stepBy({})", a(0)), iter(item))
             }
-            "chain" => Ex::new(format!("Array({}) + Array({})", recv.code, a(0)), P_ADD, iter(item)),
+            "chain" => Ex::new(
+                format!("Array({}) + Array({})", recv.code, a(0)),
+                P_ADD,
+                iter(item),
+            ),
             "cycle" | "peekable" | "fuse" => recv.clone(),
             "inspect" => recv.clone(),
             "sum" => {
-                let t = turbofish.first().cloned().filter(|t| !t.is_unknown()).unwrap_or(item);
+                let t = turbofish
+                    .first()
+                    .cloned()
+                    .filter(|t| !t.is_unknown())
+                    .unwrap_or(item);
                 prim(format!("{r}.reduce(0, +)"), t)
             }
             "product" => {
-                let t = turbofish.first().cloned().filter(|t| !t.is_unknown()).unwrap_or(item);
+                let t = turbofish
+                    .first()
+                    .cloned()
+                    .filter(|t| !t.is_unknown())
+                    .unwrap_or(item);
                 prim(format!("{r}.reduce(1, *)"), t)
             }
             "count" => prim(format!("{r}.count"), usize_ty),
-            "min" | "max" if args.is_empty() && matches!(item, Ty::Tuple(_)) => prim(format!("{r}.{name}(by: <)"), Ty::Option(Box::new(item))),
-            "min" | "max" if args.is_empty() => prim(format!("{r}.{name}()"), Ty::Option(Box::new(item))),
-            "min" | "max" if args.len() == 1 => prim(format!("{name}({}, {})", recv.code, a(0)), recv.ty.clone()),
+            "min" | "max" if args.is_empty() && matches!(item, Ty::Tuple(_)) => {
+                prim(format!("{r}.{name}(by: <)"), Ty::Option(Box::new(item)))
+            }
+            "min" | "max" if args.is_empty() => {
+                prim(format!("{r}.{name}()"), Ty::Option(Box::new(item)))
+            }
+            "min" | "max" if args.len() == 1 => {
+                prim(format!("{name}({}, {})", recv.code, a(0)), recv.ty.clone())
+            }
             "min_by_key" | "max_by_key" | "min_by" | "max_by" => {
                 self.helper("vec");
                 if name.ends_with("by") {
                     self.helper("Ordering");
                 }
-                prim(format!("{r}.{}({})", names::lower_camel(name), a(0)), Ty::Option(Box::new(item)))
+                prim(
+                    format!("{r}.{}({})", names::lower_camel(name), a(0)),
+                    Ty::Option(Box::new(item)),
+                )
             }
             "fold" => {
                 let t = ty_a(0);
@@ -1414,34 +2208,64 @@ impl Translator<'_> {
             }
             "reduce" => {
                 self.helper("vec");
-                prim(format!("{r}.reduceFirst({})", a(0)), Ty::Option(Box::new(item)))
+                prim(
+                    format!("{r}.reduceFirst({})", a(0)),
+                    Ty::Option(Box::new(item)),
+                )
             }
             "any" => prim(format!("{r}.contains(where: {})", a(0)), Ty::Bool),
             "all" => prim(format!("{r}.allSatisfy({})", a(0)), Ty::Bool),
-            "find" => prim(format!("{r}.first(where: {})", a(0)), Ty::Option(Box::new(item))),
+            "find" => prim(
+                format!("{r}.first(where: {})", a(0)),
+                Ty::Option(Box::new(item)),
+            ),
             "find_map" => {
                 let ret = match fn_ret(0) {
                     Ty::Option(t) => *t,
                     t => t,
                 };
-                prim(format!("{r}.lazy.compactMap({}).first", a(0)), Ty::Option(Box::new(ret)))
+                prim(
+                    format!("{r}.lazy.compactMap({}).first", a(0)),
+                    Ty::Option(Box::new(ret)),
+                )
             }
-            "position" => prim(format!("{r}.firstIndex(where: {})", a(0)), Ty::Option(Box::new(usize_ty))),
-            "rposition" => prim(format!("{r}.lastIndex(where: {})", a(0)), Ty::Option(Box::new(usize_ty))),
+            "position" => prim(
+                format!("{r}.firstIndex(where: {})", a(0)),
+                Ty::Option(Box::new(usize_ty)),
+            ),
+            "rposition" => prim(
+                format!("{r}.lastIndex(where: {})", a(0)),
+                Ty::Option(Box::new(usize_ty)),
+            ),
             "for_each" => prim(format!("{r}.forEach({})", a(0)), Ty::Unit),
             "partition" => {
                 self.helper("vec");
-                prim(format!("{r}.partitioned({})", a(0)), Ty::Tuple(vec![Ty::Vec(Box::new(item.clone())), Ty::Vec(Box::new(item))]))
+                prim(
+                    format!("{r}.partitioned({})", a(0)),
+                    Ty::Tuple(vec![
+                        Ty::Vec(Box::new(item.clone())),
+                        Ty::Vec(Box::new(item)),
+                    ]),
+                )
             }
             "unzip" => {
                 let (x, y) = match &item {
                     Ty::Tuple(ts) if ts.len() == 2 => (ts[0].clone(), ts[1].clone()),
                     _ => (Ty::Unknown, Ty::Unknown),
                 };
-                prim(format!("({r}.map {{ $0.0 }}, {r}.map {{ $0.1 }})"), Ty::Tuple(vec![Ty::Vec(Box::new(x)), Ty::Vec(Box::new(y))]))
+                prim(
+                    format!("({r}.map {{ $0.0 }}, {r}.map {{ $0.1 }})"),
+                    Ty::Tuple(vec![Ty::Vec(Box::new(x)), Ty::Vec(Box::new(y))]),
+                )
             }
             "collect" => return Some(self.collect(recv, turbofish, expected)),
-            "is_sorted" => prim(format!("zip({}, {}.dropFirst()).allSatisfy {{ $0 <= $1 }}", recv.code, r), Ty::Bool),
+            "is_sorted" => prim(
+                format!(
+                    "zip({}, {}.dropFirst()).allSatisfy {{ $0 <= $1 }}",
+                    recv.code, r
+                ),
+                Ty::Bool,
+            ),
             "dedup_by_key" | "group_by" | "chunk_by" => return None,
             _ => return None,
         })
@@ -1456,11 +2280,20 @@ impl Translator<'_> {
             .unwrap_or_else(|| expected.clone());
         let item = recv.ty.item();
         let code = recv.code.clone();
-        let is_array_chain = [".map(", ".filter(", ".compactMap(", ".flatMap(", ".map {", ".filter {", ".compactMap {", ".flatMap {", ".sorted("]
-            .iter()
-            .any(|s| code.contains(s))
-            && !code.ends_with(".reversed()")
-            && !code.contains(".enumerated()") || code.starts_with('[');
+        // These methods already return an `Array`.
+        let is_array_chain = code.starts_with('[')
+            || matches!(
+                last_member(&code).as_deref(),
+                Some(
+                    "map"
+                        | "filter"
+                        | "compactMap"
+                        | "flatMap"
+                        | "sorted"
+                        | "components"
+                        | "shuffled"
+                )
+            );
         match &target {
             Ty::Str => Ex::primary(format!("String({code})"), Ty::Str),
             Ty::Map(..) => {
@@ -1470,9 +2303,14 @@ impl Translator<'_> {
                 };
                 let mut ty = target.clone();
                 ty.merge(&Ty::Map(Box::new(k), Box::new(v), false));
-                Ex::primary(format!("Dictionary({code}, uniquingKeysWith: {{ _, last in last }})"), ty)
+                Ex::primary(
+                    format!("Dictionary({code}, uniquingKeysWith: {{ _, last in last }})"),
+                    ty,
+                )
             }
-            Ty::Set(_, ordered) => Ex::primary(format!("Set({code})"), Ty::Set(Box::new(item), *ordered)),
+            Ty::Set(_, ordered) => {
+                Ex::primary(format!("Set({code})"), Ty::Set(Box::new(item), *ordered))
+            }
             Ty::Result(inner, err) => {
                 // The closures throw; the whole chain is a throwing call.
                 let mut ex = Ex::primary(code, (**inner).clone());
@@ -1573,15 +2411,62 @@ pub fn trailing_closure(code: String) -> String {
     code
 }
 
+/// The last member called at the top level of `code`: `map` for `xs.filter { … }.map(f)`.
+fn last_member(code: &str) -> Option<String> {
+    let chars: Vec<char> = code.chars().collect();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut last = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_str {
+            if c == '\\' {
+                i += 2;
+                continue;
+            }
+            if c == '"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '(' | '{' | '[' => depth += 1,
+            ')' | '}' | ']' => depth -= 1,
+            '.' if depth == 0 => {
+                let name: String = chars[i + 1..]
+                    .iter()
+                    .take_while(|c| c.is_alphanumeric() || **c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    last = Some(name);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    last
+}
+
 /// Binds the generic parameters of `param` to the parts of `arg`.
-fn unify(param: &Ty, arg: &Ty, generics: &[String], out: &mut std::collections::HashMap<String, Ty>) {
+fn unify(
+    param: &Ty,
+    arg: &Ty,
+    generics: &[String],
+    out: &mut std::collections::HashMap<String, Ty>,
+) {
     match (param, arg) {
         (Ty::Named(g, a), _) if a.is_empty() && generics.contains(g) => {
             if arg.is_complete() && !out.contains_key(g) {
                 out.insert(g.clone(), arg.clone());
             }
         }
-        (Ty::Vec(p), Ty::Vec(a)) | (Ty::Option(p), Ty::Option(a)) | (Ty::Set(p, _), Ty::Set(a, _)) => unify(p, a, generics, out),
+        (Ty::Vec(p), Ty::Vec(a))
+        | (Ty::Option(p), Ty::Option(a))
+        | (Ty::Set(p, _), Ty::Set(a, _)) => unify(p, a, generics, out),
         (Ty::Map(pk, pv, _), Ty::Map(ak, av, _)) | (Ty::Result(pk, pv), Ty::Result(ak, av)) => {
             unify(pk, ak, generics, out);
             unify(pv, av, generics, out);
@@ -1605,7 +2490,22 @@ fn unify(param: &Ty, arg: &Ty, generics: &[String], out: &mut std::collections::
 fn std_method_name(name: &str) -> bool {
     matches!(
         name,
-        "len" | "is_empty" | "push" | "pop" | "iter" | "map" | "filter" | "collect" | "clone" | "to_string" | "unwrap" | "insert" | "remove" | "get" | "contains" | "next"
+        "len"
+            | "is_empty"
+            | "push"
+            | "pop"
+            | "iter"
+            | "map"
+            | "filter"
+            | "collect"
+            | "clone"
+            | "to_string"
+            | "unwrap"
+            | "insert"
+            | "remove"
+            | "get"
+            | "contains"
+            | "next"
     )
 }
 

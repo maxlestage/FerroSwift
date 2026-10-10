@@ -148,7 +148,10 @@ fn parse_spec(s: &str) -> Result<Spec, String> {
         }
     }
     spec.kind = chars[i..].iter().collect();
-    if !matches!(spec.kind.as_str(), "" | "?" | "#?" | "x" | "X" | "b" | "o" | "e" | "E" | "x?" | "X?") {
+    if !matches!(
+        spec.kind.as_str(),
+        "" | "?" | "#?" | "x" | "X" | "b" | "o" | "e" | "E" | "x?" | "X?"
+    ) {
         return Err(format!("unsupported format `{{:{s}}}`"));
     }
     if spec.kind == "#?" {
@@ -161,7 +164,11 @@ fn parse_spec(s: &str) -> Result<Spec, String> {
 impl Translator<'_> {
     /// A `format!`-like macro: the format string literal and its arguments.
     pub fn format_args(&mut self, args: &[Expr], span: proc_macro2::Span) -> Ex {
-        let Some(Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(fmt), .. })) = args.first() else {
+        let Some(Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(fmt),
+            ..
+        })) = args.first()
+        else {
             let code = self.unsupported(span, "a format string that is not a literal");
             return Ex::primary(code, Ty::Str);
         };
@@ -201,14 +208,35 @@ impl Translator<'_> {
                     out.push_str(&lit[1..lit.len() - 1]);
                 }
                 Piece::Arg(r, spec) => {
-                    let value = self.format_value(r, &mut next, &positional, &named, &mut translated, span);
+                    let value =
+                        self.format_value(r, &mut next, &positional, &named, &mut translated, span);
                     let precision = spec.precision.as_ref().map(|c| match c {
                         Count::Value(n) => n.to_string(),
-                        Count::Arg(r) => self.format_value(r, &mut next, &positional, &named, &mut translated, span).code,
+                        Count::Arg(r) => {
+                            self.format_value(
+                                r,
+                                &mut next,
+                                &positional,
+                                &named,
+                                &mut translated,
+                                span,
+                            )
+                            .code
+                        }
                     });
                     let width = spec.width.as_ref().map(|c| match c {
                         Count::Value(n) => n.to_string(),
-                        Count::Arg(r) => self.format_value(r, &mut next, &positional, &named, &mut translated, span).code,
+                        Count::Arg(r) => {
+                            self.format_value(
+                                r,
+                                &mut next,
+                                &positional,
+                                &named,
+                                &mut translated,
+                                span,
+                            )
+                            .code
+                        }
                     });
                     let text = self.format_piece(&value, spec, precision, width);
                     if only_one && text.0 && value.ty == Ty::Str {
@@ -255,7 +283,10 @@ impl Translator<'_> {
             }
         };
         let Some(i) = index.filter(|i| *i < positional.len()) else {
-            let code = self.unsupported(span, "a format string with more placeholders than arguments");
+            let code = self.unsupported(
+                span,
+                "a format string with more placeholders than arguments",
+            );
             return Ex::primary(code, Ty::Unknown);
         };
         if let Some(v) = &translated[i] {
@@ -279,7 +310,13 @@ impl Translator<'_> {
     }
 
     /// The interpolated expression of one placeholder; `true` when it is the plain value.
-    fn format_piece(&mut self, v: &Ex, spec: &Spec, precision: Option<String>, width: Option<String>) -> (bool, String) {
+    fn format_piece(
+        &mut self,
+        v: &Ex,
+        spec: &Spec,
+        precision: Option<String>,
+        width: Option<String>,
+    ) -> (bool, String) {
         let x = &v.code;
         let mut plain = false;
         let mut s = match spec.kind.as_str() {
@@ -304,7 +341,11 @@ impl Translator<'_> {
                     "b" => 2,
                     _ => 8,
                 };
-                let upper = if spec.kind == "X" { ", uppercase: true" } else { "" };
+                let upper = if spec.kind == "X" {
+                    ", uppercase: true"
+                } else {
+                    ""
+                };
                 let base = format!("String({x}, radix: {radix}{upper})");
                 if spec.alternate {
                     let prefix = match radix {
@@ -346,7 +387,11 @@ impl Translator<'_> {
         if let Some(w) = width {
             self.helper("pad");
             let numeric = v.ty.is_numeric();
-            let as_string = if s == *x && v.ty != Ty::Str { format!("\"\\({s})\"") } else { s.clone() };
+            let as_string = if s == *x && v.ty != Ty::Str {
+                format!("\"\\({s})\"")
+            } else {
+                s.clone()
+            };
             if spec.zero && spec.align.is_none() {
                 s = format!("rsPadZero({as_string}, {w})");
             } else {
@@ -371,7 +416,9 @@ mod tests {
         assert_eq!(p.len(), 7);
         assert_eq!(p[0], Piece::Text("a ".into()));
         assert!(matches!(&p[3], Piece::Arg(ArgRef::Name(n), s) if n == "x" && s.kind == "?"));
-        assert!(matches!(&p[5], Piece::Arg(ArgRef::Index(0), s) if s.align == Some('>') && s.width == Some(Count::Value(8)) && s.precision == Some(Count::Value(2))));
+        assert!(
+            matches!(&p[5], Piece::Arg(ArgRef::Index(0), s) if s.align == Some('>') && s.width == Some(Count::Value(8)) && s.precision == Some(Count::Value(2)))
+        );
         assert_eq!(p[6], Piece::Text(" {}".into()));
         let z = parse("{:08.3}").unwrap();
         assert!(matches!(&z[0], Piece::Arg(_, s) if s.zero && s.width == Some(Count::Value(8))));

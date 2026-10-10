@@ -2,9 +2,9 @@
 
 use std::ops::RangeInclusive;
 
+use crate::View;
 use crate::element::Element;
 use crate::style::ButtonRole;
-use crate::View;
 
 /// `Text(content)`. With `format!`, `Text("Count: \(count)")`.
 pub fn text(_content: impl Into<String>) -> Element {
@@ -17,11 +17,7 @@ pub fn button(_label: impl Into<String>, _action: impl FnMut()) -> Element {
 }
 
 /// `Button(label, role: role) { action }`.
-pub fn button_role(
-    _label: impl Into<String>,
-    _role: ButtonRole,
-    _action: impl FnMut(),
-) -> Element {
+pub fn button_role(_label: impl Into<String>, _role: ButtonRole, _action: impl FnMut()) -> Element {
     Element::new()
 }
 

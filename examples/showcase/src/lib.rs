@@ -19,7 +19,12 @@ pub struct RootView {
 impl View for RootView {
     fn body(&mut self) -> impl View {
         tab_view()
-            .child(library::LibraryView { library: self.library.clone() }.tab_item("Books", "books.vertical"))
+            .child(
+                library::LibraryView {
+                    library: self.library.clone(),
+                }
+                .tab_item("Books", "books.vertical"),
+            )
             .child(shapes::ShapesView::default().tab_item("Shapes", "circle.hexagongrid"))
             .child(settings::SettingsView::default().tab_item("Settings", "gearshape"))
     }

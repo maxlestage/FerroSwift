@@ -29,10 +29,7 @@ impl ContentView {
     fn composer(&mut self) -> impl View {
         section()
             .header("New task")
-            .child(
-                text_field("What needs to be done?", &mut self.draft)
-                    .on_submit(|| self.add()),
-            )
+            .child(text_field("What needs to be done?", &mut self.draft).on_submit(|| self.add()))
             .child(
                 picker("Priority", &mut self.priority)
                     .child(text("Low").tag(Priority::Low))
@@ -50,18 +47,22 @@ impl View for ContentView {
             list()
                 .child(self.composer())
                 .child(
-                    section()
-                        .header(self.list.summary())
-                        .child(
-                            for_each(&mut self.list.items, |todo| TodoRow { todo: todo.clone() })
-                                .on_delete(|offsets| self.list.items.remove_offsets(offsets)),
-                        ),
+                    section().header(self.list.summary()).child(
+                        for_each(&mut self.list.items, |todo| TodoRow { todo: todo.clone() })
+                            .on_delete(|offsets| self.list.items.remove_offsets(offsets)),
+                    ),
                 )
                 .navigation_title("To do")
                 .toolbar(
                     hstack()
-                        .child(button("Clear done", || self.list.clear_done()).disabled(self.list.remaining() == self.list.items.len()))
-                        .child(button_label(|| self.show_about = true, system_image("info.circle"))),
+                        .child(
+                            button("Clear done", || self.list.clear_done())
+                                .disabled(self.list.remaining() == self.list.items.len()),
+                        )
+                        .child(button_label(
+                            || self.show_about = true,
+                            system_image("info.circle"),
+                        )),
                 )
                 .sheet(&mut self.show_about, about()),
         )
@@ -82,7 +83,11 @@ impl View for TodoRow {
             .child(
                 text(&self.todo.title)
                     .strikethrough(self.todo.done)
-                    .foreground(if self.todo.done { Color::Secondary } else { Color::Primary }),
+                    .foreground(if self.todo.done {
+                        Color::Secondary
+                    } else {
+                        Color::Primary
+                    }),
             )
             .child(spacer())
             .child(system_image(self.todo.priority.symbol()).foreground(Color::Orange))
@@ -93,7 +98,11 @@ impl View for TodoRow {
 fn about() -> impl View {
     vstack()
         .spacing(12.0)
-        .child(system_image("checklist").font(Font::LargeTitle).foreground(Color::Accent))
+        .child(
+            system_image("checklist")
+                .font(Font::LargeTitle)
+                .foreground(Color::Accent),
+        )
         .child(text("Written in Rust").font(Font::Headline))
         .child(text("Translated to SwiftUI by FerroSwift.").foreground(Color::Secondary))
         .padding()

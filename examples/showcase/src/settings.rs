@@ -33,7 +33,12 @@ impl SettingsView {
             Theme::Light => "light",
             Theme::Dark => "dark",
         };
-        format!("{} reminders, {}% volume, {} theme", self.reminders, (self.volume * 100.0).round(), theme)
+        format!(
+            "{} reminders, {}% volume, {} theme",
+            self.reminders,
+            (self.volume * 100.0).round(),
+            theme
+        )
     }
 }
 
@@ -55,20 +60,31 @@ impl View for SettingsView {
                     section()
                         .header("Notifications")
                         .child(toggle("Notifications", &mut self.notifications))
-                        .child(stepper(format!("Reminders: {}", self.reminders), &mut self.reminders, 0..=10).disabled(!self.notifications))
+                        .child(
+                            stepper(
+                                format!("Reminders: {}", self.reminders),
+                                &mut self.reminders,
+                                0..=10,
+                            )
+                            .disabled(!self.notifications),
+                        )
                         .child(slider(&mut self.volume, 0.0..=1.0).step(0.1)),
                 )
                 .child(
-                    section()
-                        .header("Appearance")
-                        .child(
-                            picker("Theme", &mut self.theme)
-                                .child(text("System").tag(Theme::System))
-                                .child(text("Light").tag(Theme::Light))
-                                .child(text("Dark").tag(Theme::Dark)),
-                        ),
+                    section().header("Appearance").child(
+                        picker("Theme", &mut self.theme)
+                            .child(text("System").tag(Theme::System))
+                            .child(text("Light").tag(Theme::Light))
+                            .child(text("Dark").tag(Theme::Dark)),
+                    ),
                 )
-                .child(section().child(text(self.summary()).font(Font::Footnote).foreground(Color::Secondary)))
+                .child(
+                    section().child(
+                        text(self.summary())
+                            .font(Font::Footnote)
+                            .foreground(Color::Secondary),
+                    ),
+                )
                 .navigation_title("Settings"),
         )
     }

@@ -63,9 +63,19 @@ fn parse_args() -> Result<Args, String> {
     let command = command.ok_or("missing command (try --help)")?;
     // `ferroswift app.rs` is `ferroswift file app.rs`.
     if command.ends_with(".rs") && path.is_none() {
-        return Ok(Args { command: "file".into(), path: Some(PathBuf::from(command)), out, previews });
+        return Ok(Args {
+            command: "file".into(),
+            path: Some(PathBuf::from(command)),
+            out,
+            previews,
+        });
     }
-    Ok(Args { command, path, out, previews })
+    Ok(Args {
+        command,
+        path,
+        out,
+        previews,
+    })
 }
 
 fn main() -> ExitCode {
@@ -118,7 +128,10 @@ fn succeeded(ok: bool) -> Result<(), String> {
 
 /// `ferroswift file app.rs`.
 fn file(args: &Args, options: &Options) -> Result<(), String> {
-    let path = args.path.as_ref().ok_or("ferroswift file needs a .rs file")?;
+    let path = args
+        .path
+        .as_ref()
+        .ok_or("ferroswift file needs a .rs file")?;
     let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let out = ferroswift_transpiler::transpile_with(&source, options);
     for d in &out.diagnostics {
@@ -128,7 +141,11 @@ fn file(args: &Args, options: &Options) -> Result<(), String> {
         Some(o) => std::fs::write(o, &out.swift).map_err(|e| format!("{}: {e}", o.display()))?,
         None => print!("{}", out.swift),
     }
-    if out.has_errors() { Err(String::new()) } else { Ok(()) }
+    if out.has_errors() {
+        Err(String::new())
+    } else {
+        Ok(())
+    }
 }
 
 /// The Rust files of a crate (`src/**/*.rs`, or the file itself).
@@ -138,7 +155,10 @@ fn sources(root: &Path) -> Result<Vec<PathBuf>, String> {
     }
     let src = root.join("src");
     if !src.is_dir() {
-        return Err(format!("{} has no src/ directory: is it a Rust crate?", root.display()));
+        return Err(format!(
+            "{} has no src/ directory: is it a Rust crate?",
+            root.display()
+        ));
     }
     let mut files = Vec::new();
     let mut dirs = vec![src];
@@ -180,7 +200,9 @@ fn crate_name(root: &Path) -> String {
         .filter(|w| !w.is_empty())
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
         })
         .collect()
 }
@@ -189,7 +211,11 @@ fn out_dir(root: &Path, args: &Args) -> PathBuf {
     if let Some(o) = &args.out {
         return o.clone();
     }
-    let base = if root.is_file() { root.parent().unwrap_or(Path::new(".")) } else { root };
+    let base = if root.is_file() {
+        root.parent().unwrap_or(Path::new("."))
+    } else {
+        root
+    };
     let swift = base.join("swift");
     if swift.join("Package.swift").is_file() {
         swift.join("Sources").join(crate_name(base))
@@ -206,11 +232,19 @@ fn build(args: &Args, options: &Options, check_only: bool) -> Result<bool, Strin
     if files.is_empty() {
         return Err(format!("no Rust file in {}", root.display()));
     }
-    let base = if root.is_file() { root.parent().unwrap_or(Path::new(".")).to_path_buf() } else { root.clone() };
+    let base = if root.is_file() {
+        root.parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        root.clone()
+    };
     let mut inputs = Vec::new();
     for f in &files {
         let source = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
-        let rel = f.strip_prefix(&base).unwrap_or(f).to_string_lossy().replace('\\', "/");
+        let rel = f
+            .strip_prefix(&base)
+            .unwrap_or(f)
+            .to_string_lossy()
+            .replace('\\', "/");
         inputs.push(SourceFile { path: rel, source });
     }
     let entry = inputs
@@ -218,7 +252,10 @@ fn build(args: &Args, options: &Options, check_only: bool) -> Result<bool, Strin
         .find(|f| f.path == "src/main.rs")
         .map(|f| f.path.clone());
     let out = ferroswift_transpiler::transpile_crate(&inputs, entry.as_deref(), options);
-    let sources: BTreeMap<&str, &str> = inputs.iter().map(|f| (f.path.as_str(), f.source.as_str())).collect();
+    let sources: BTreeMap<&str, &str> = inputs
+        .iter()
+        .map(|f| (f.path.as_str(), f.source.as_str()))
+        .collect();
     for d in &out.diagnostics {
         let file = d.file.as_deref().unwrap_or("");
         let src = sources.get(file).copied().unwrap_or("");
@@ -282,7 +319,13 @@ fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
 
 fn report(errors: usize, warnings: usize, files: usize, dir: Option<&Path>, started: Instant) {
     let ms = started.elapsed().as_millis();
-    let plural = |n: usize, w: &str| if n == 1 { format!("{n} {w}") } else { format!("{n} {w}s") };
+    let plural = |n: usize, w: &str| {
+        if n == 1 {
+            format!("{n} {w}")
+        } else {
+            format!("{n} {w}s")
+        }
+    };
     let status = if errors > 0 {
         paint(&plural(errors, "error"), Color::Red)
     } else {
@@ -294,8 +337,15 @@ fn report(errors: usize, warnings: usize, files: usize, dir: Option<&Path>, star
         String::new()
     };
     match dir {
-        Some(d) => eprintln!("{status}{warnings}: {} translated into {} in {ms} ms", plural(files, "file"), d.display()),
-        None => eprintln!("{status}{warnings}: {} checked in {ms} ms", plural(files, "file")),
+        Some(d) => eprintln!(
+            "{status}{warnings}: {} translated into {} in {ms} ms",
+            plural(files, "file"),
+            d.display()
+        ),
+        None => eprintln!(
+            "{status}{warnings}: {} checked in {ms} ms",
+            plural(files, "file")
+        ),
     }
 }
 
@@ -314,7 +364,10 @@ fn watch(args: &Args, options: &Options) -> Result<(), String> {
     };
     let mut last = snapshot(&root);
     let _ = build(args, options, false)?;
-    eprintln!("watching {} for changes (Ctrl-C to stop)", root.join("src").display());
+    eprintln!(
+        "watching {} for changes (Ctrl-C to stop)",
+        root.join("src").display()
+    );
     loop {
         std::thread::sleep(Duration::from_millis(300));
         let now = snapshot(&root);
@@ -334,7 +387,13 @@ fn render(d: &Diagnostic, path: &str, source: &str) -> String {
         Severity::Error => ("error", Color::Red),
         Severity::Warning => ("warning", Color::Yellow),
     };
-    let mut out = format!("{}: {}\n  --> {path}:{}:{}\n", paint(label, color), d.message, d.line, d.column);
+    let mut out = format!(
+        "{}: {}\n  --> {path}:{}:{}\n",
+        paint(label, color),
+        d.message,
+        d.line,
+        d.column
+    );
     if let Some(line) = source.lines().nth(d.line.saturating_sub(1)) {
         let n = d.line.to_string();
         let pad = " ".repeat(n.len());
@@ -343,7 +402,10 @@ fn render(d: &Diagnostic, path: &str, source: &str) -> String {
             .take(d.column.saturating_sub(1))
             .map(|c| if c == '\t' { '\t' } else { ' ' })
             .collect();
-        out.push_str(&format!("{pad} |\n{n} | {line}\n{pad} | {caret_at}{}\n", paint("^", color)));
+        out.push_str(&format!(
+            "{pad} |\n{n} | {line}\n{pad} | {caret_at}{}\n",
+            paint("^", color)
+        ));
     }
     out
 }
@@ -371,7 +433,9 @@ fn capitalize(s: &str) -> String {
     s.split(['_', '-'])
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
         })
         .collect()
 }
