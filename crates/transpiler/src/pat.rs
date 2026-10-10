@@ -309,7 +309,7 @@ impl Translator<'_> {
             let parts: Vec<String> = ts
                 .elems
                 .iter()
-                .map(|p| t.pat(p, inner_ty, cx, false))
+                .map(|p| t.payload_pat(p, inner_ty, "value", cx))
                 .collect();
             format!(".{case}({})", parts.join(", "))
         };
@@ -373,7 +373,8 @@ impl Translator<'_> {
                         continue;
                     }
                     let fty = field_tys.get(index).cloned().unwrap_or(Ty::Unknown);
-                    parts.push(self.pat(p, &fty, cx, false));
+                    let code = self.payload_pat(p, &fty, &format!("field{index}"), cx);
+                    parts.push(code);
                     index += 1;
                 }
                 let _ = rest;
@@ -403,6 +404,40 @@ impl Translator<'_> {
             format!("unknown variant `{last}` in this pattern"),
         );
         "_".into()
+    }
+
+    /// A pattern on the payload of an enum variant. A struct or slice pattern there needs
+    /// the payload bound to a name first: `case .click(let at, 1) where at.x == 0`.
+    fn payload_pat(&mut self, p: &Pat, ty: &Ty, hint: &str, cx: &mut PatCx) -> String {
+        let nested = match p {
+            Pat::Struct(st) => {
+                let last = st.path.segments.last().map(|s| s.ident.to_string());
+                last.is_some_and(|l| self.syms.structs.contains_key(&self.rust_type_name(&l)))
+            }
+            Pat::TupleStruct(ts) => {
+                let last = ts.path.segments.last().map(|s| s.ident.to_string());
+                last.is_some_and(|l| self.syms.structs.contains_key(&self.rust_type_name(&l)))
+            }
+            Pat::Slice(_) => true,
+            _ => false,
+        };
+        if !nested {
+            return self.pat(p, ty, cx, false);
+        }
+        let name = self.fresh(&names::lower_camel(hint));
+        let mut inner = PatCx {
+            subject: name.clone(),
+            guards: Vec::new(),
+            lets: Vec::new(),
+            declare: cx.declare,
+        };
+        let code = self.pat(p, ty, &mut inner, false);
+        cx.guards.append(&mut inner.guards);
+        cx.lets.append(&mut inner.lets);
+        if code != "_" {
+            cx.guards.push(format!("{code} ~= {name}"));
+        }
+        format!("let {name}")
     }
 
     /// `Point { x: 0, y }`: Swift has no struct patterns. Literal fields become `where`
@@ -441,7 +476,10 @@ impl Translator<'_> {
                         .iter()
                         .find(|f| crate::expr::member_name(&f.member) == *fname)
                     {
-                        Some(fp) => parts.push(self.pat(&fp.pat, fty, cx, false)),
+                        Some(fp) => {
+                            let code = self.payload_pat(&fp.pat, fty, fname, cx);
+                            parts.push(code);
+                        }
                         None => parts.push("_".into()),
                     }
                 }
@@ -473,19 +511,45 @@ impl Translator<'_> {
     /// A sub-pattern applied to a field: a binding becomes `let`, anything else a condition.
     fn field_subpattern(&mut self, p: &Pat, ty: &Ty, inner: &mut PatCx, cx: &mut PatCx) {
         match p {
+            // `None` on a field: a condition.
+            Pat::Ident(id) if id.subpat.is_none() && id.ident == "None" => {
+                cx.guards.push(format!("{} == nil", inner.subject));
+            }
             Pat::Ident(id)
                 if id.subpat.is_none()
                     && self.unit_variant_named(&id.ident.to_string(), ty).is_none() =>
             {
+                // The name stands for the field (`p.x`), so that a guard can use it.
+                if id.mutability.is_none() {
+                    if cx.declare {
+                        self.declare_alias(
+                            &id.ident.to_string(),
+                            inner.subject.clone(),
+                            ty.clone(),
+                        );
+                    }
+                    return;
+                }
                 let n = self.bind(&id.ident.to_string(), ty, inner);
-                let kw = if id.mutability.is_some() {
-                    "var"
-                } else {
-                    "let"
-                };
-                cx.lets.push(format!("{kw} {n} = {}", inner.subject));
+                cx.lets.push(format!("var {n} = {}", inner.subject));
             }
             Pat::Wild(_) | Pat::Rest(_) => {}
+            // `Some(x)` on a field: a condition, and `x` stands for the unwrapped field.
+            Pat::TupleStruct(ts)
+                if ts.path.is_ident("Some")
+                    && ts.elems.len() == 1
+                    && matches!(&ts.elems[0], Pat::Ident(id) if id.subpat.is_none() && id.mutability.is_none()) =>
+            {
+                let Pat::Ident(id) = &ts.elems[0] else { return };
+                cx.guards.push(format!("{} != nil", inner.subject));
+                if cx.declare {
+                    self.declare_alias(
+                        &id.ident.to_string(),
+                        format!("{}!", inner.subject),
+                        ty.item(),
+                    );
+                }
+            }
             other => {
                 let code = self.pat(other, ty, inner, false);
                 if code != "_" {
