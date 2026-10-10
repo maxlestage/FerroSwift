@@ -178,6 +178,25 @@ impl Translator<'_> {
         declared: Option<Ty>,
         value: &Expr,
     ) -> Vec<String> {
+        // `let max = …`: inside the initializer, `max(a, b)` must already say `Swift.max`.
+        let swift_name = names::lower_camel(rust);
+        if names::shadows_global(&swift_name) {
+            self.pending_locals.push(swift_name.clone());
+        }
+        let lines = self.let_ident_inner(rust, mutable, declared, value);
+        if names::shadows_global(&swift_name) {
+            self.pending_locals.pop();
+        }
+        lines
+    }
+
+    fn let_ident_inner(
+        &mut self,
+        rust: &str,
+        mutable: bool,
+        declared: Option<Ty>,
+        value: &Expr,
+    ) -> Vec<String> {
         // `RefCell::new(…)` is mutated through a shared reference: a `var` in Swift.
         let mutable = mutable || interior_mutable(value);
         let kw = if mutable { "var" } else { "let" };
@@ -240,6 +259,28 @@ impl Translator<'_> {
             if let Some(place) = self.entry_place(m) {
                 self.declare_alias(rust, place, ty);
                 return vec![];
+            }
+            // `let v = opt.get_or_insert(0);`: `v` stands for `opt!`.
+            let method = m.method.to_string();
+            if matches!(method.as_str(), "get_or_insert" | "get_or_insert_with")
+                && m.args.len() == 1
+            {
+                if let Ty::Option(inner) = self.place_ty(&m.receiver) {
+                    let place = self.place(&m.receiver);
+                    let v = match (&m.args[0], method.as_str()) {
+                        (Expr::Closure(c), "get_or_insert_with") if c.inputs.is_empty() => {
+                            self.expr_with(&c.body, &inner)
+                        }
+                        (e, "get_or_insert") => self.expr_with(e, &inner),
+                        (e, _) => {
+                            let f = self.expr(e);
+                            Ex::primary(format!("({})()", f.code), (*inner).clone())
+                        }
+                    };
+                    let v = self.settle(v);
+                    self.declare_alias(rust, format!("{place}!"), *inner);
+                    return vec![format!("if {place} == nil {{ {place} = {} }}", v.code)];
+                }
             }
         }
         // `let x = opt?;` → `guard let x = opt else { return nil }`.
@@ -526,6 +567,21 @@ impl Translator<'_> {
 
     /// An expression evaluated for its effect.
     pub fn expr_stmt(&mut self, e: &Expr) -> Vec<String> {
+        // `Ok(())` on its own line: nothing happens.
+        if let Expr::Call(c) = e {
+            if let Expr::Path(p) = &*c.func {
+                if p.path.is_ident("Ok")
+                    && c.args.len() == 1
+                    && matches!(c.args[0], Expr::Tuple(ref t) if t.elems.is_empty())
+                {
+                    return vec![];
+                }
+            }
+        }
+        // `acct.deposit(100).deposit(-30)`: builder methods, one statement each.
+        if let Some(lines) = self.builder_chain(e) {
+            return lines;
+        }
         match e {
             Expr::If(_) | Expr::Match(_) | Expr::Block(_) | Expr::Unsafe(_) => {
                 self.tail(e, &Sink::Discard)
@@ -697,10 +753,53 @@ impl Translator<'_> {
     }
 
     /// `return e`, with `Ok`/`Err`/`Some`/`None` mapped to the Swift function's conventions.
+    /// `a.b(…).c(…)` where `b` returns `&mut Self`: `a.b(…)` then `a.c(…)`.
+    fn builder_chain(&mut self, e: &Expr) -> Option<Vec<String>> {
+        let Expr::MethodCall(outer) = e else {
+            return None;
+        };
+        let Expr::MethodCall(inner) = &*outer.receiver else {
+            return None;
+        };
+        let root = crate::expr::root_receiver(e);
+        let root_ty = self.place_ty(root);
+        let is_builder = |t: &mut Self, name: &str| {
+            t.user_method(&root_ty, name)
+                .is_some_and(|(sig, _)| sig.returns_self_mut)
+        };
+        if !is_builder(self, &inner.method.to_string()) {
+            return None;
+        }
+        // The calls, from the root outwards.
+        let mut calls: Vec<&syn::ExprMethodCall> = vec![outer];
+        let mut cur = inner;
+        loop {
+            calls.push(cur);
+            match &*cur.receiver {
+                Expr::MethodCall(m) if is_builder(self, &m.method.to_string()) => cur = m,
+                _ => break,
+            }
+        }
+        calls.reverse();
+        let mut lines = Vec::new();
+        for call in calls {
+            let mut one = call.clone();
+            *one.receiver = root.clone();
+            let v = self.method_call(&one, &Ty::Unknown);
+            let v = self.settle(v);
+            lines.push(v.code);
+        }
+        Some(lines)
+    }
+
     pub fn return_stmt(&mut self, e: Option<&Expr>) -> Vec<String> {
         let Some(cx) = self.fn_cx().cloned() else {
             return vec!["return".into()];
         };
+        // `return self` of a builder method returning `&mut Self`: nothing to return.
+        if cx.ret == Ty::Unit && e.is_some_and(crate::expr::is_self) {
+            return vec!["return".into()];
+        }
         if cx.init {
             return match e {
                 Some(e) => {
@@ -1123,7 +1222,10 @@ impl Translator<'_> {
         };
         let v = self.expr(inner);
         let v = self.settle(v);
-        let item = v.ty.item();
+        let item = match &v.ty {
+            Ty::Named(n, _) => self.syms.iterators.get(n).cloned().unwrap_or(Ty::Unknown),
+            t => t.item(),
+        };
         let code = match &v.ty {
             Ty::Map(_, _, true) if !v.code.contains(".sorted(") => format!(
                 "{}.sorted(by: {{ $0.key < $1.key }})",
@@ -1270,6 +1372,15 @@ impl Translator<'_> {
                     }
                     _ => None,
                 }
+            }
+            // `if let Some(x) = opt.as_mut()`: `x` stands for `opt!`.
+            "as_mut" if m.args.is_empty() => {
+                let Ty::Option(inner) = self.place_ty(&m.receiver) else {
+                    return None;
+                };
+                let place = self.place(&m.receiver);
+                self.declare_alias(&name, format!("{place}!"), *inner);
+                Some(format!("{place} != nil"))
             }
             "last_mut" | "first_mut" if m.args.is_empty() => {
                 let coll = self.expr(&m.receiver);

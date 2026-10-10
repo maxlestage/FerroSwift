@@ -14,6 +14,9 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("string", &[], STRING),
     ("char", &[], CHAR),
     ("vec", &["Ordering"], VEC),
+    ("reverse", &[], REVERSE),
+    ("try_from", &["debug"], TRY_FROM),
+    ("exp", &[], EXP),
     ("map", &[], MAP),
     ("iter", &[], ITER),
     ("option", &[], OPTION),
@@ -95,6 +98,20 @@ func rsFixed<F: BinaryFloatingPoint>(_ x: F, _ decimals: Int) -> String {
 
 const DEBUG: &str = r#"
 /// A value as Rust's `{:?}` writes it: `Some(1)`, `Point { x: 1, y: 2 }`, `"text"`.
+/// `{:?}` of a `BTreeSet`, given its elements in order.
+func rsDebugSet<T>(_ items: [T], pretty: Bool = false) -> String {
+    let inner = rsDebug(items, pretty: pretty)
+    return "{" + inner.dropFirst().dropLast() + "}"
+}
+
+/// `{:?}` of `s.parse::<T>()`: `Ok(v)` or `Err(…)`.
+func rsDebugParsed<T>(_ value: T?, _ error: String) -> String {
+    value.map { "Ok(" + rsDebug($0) + ")" } ?? "Err(" + error + ")"
+}
+
+/// Support types with their own `{:?}` text.
+protocol RsDebugCustom { var rsDebugText: String { get } }
+
 func rsDebug<T>(_ value: T, pretty: Bool = false) -> String {
     var out = ""
     rsDebugWrite(value as Any, pretty, 0, &out)
@@ -114,12 +131,61 @@ private func rsSnake(_ name: String) -> String {
     return out
 }
 
+/// Values of a comparable type, in order; anything else as given.
+private func rsSorted(_ values: [Any]) -> [Any] {
+    func attempt<T: Comparable>(_: T.Type) -> [Any]? {
+        let typed = values.compactMap { $0 as? T }
+        return typed.count == values.count ? typed.sorted() : nil
+    }
+    if let s = attempt(String.self) { return s }
+    if let s = attempt(Int.self) { return s }
+    if let s = attempt(Double.self) { return s }
+    if let s = attempt(Character.self) { return s }
+    if let s = attempt(UInt.self) { return s }
+    if let s = attempt(Int32.self) { return s }
+    if let s = attempt(UInt32.self) { return s }
+    if let s = attempt(Int64.self) { return s }
+    if let s = attempt(UInt64.self) { return s }
+    if let s = attempt(Int8.self) { return s }
+    if let s = attempt(UInt8.self) { return s }
+    if let s = attempt(Int16.self) { return s }
+    if let s = attempt(UInt16.self) { return s }
+    if let s = attempt(Float.self) { return s }
+    return values
+}
+
+private func rsSameKey(_ a: Any, _ b: Any) -> Bool {
+    func same<T: Equatable>(_: T.Type) -> Bool? {
+        guard let x = a as? T, let y = b as? T else { return nil }
+        return x == y
+    }
+    if let r = same(String.self) { return r }
+    if let r = same(Int.self) { return r }
+    if let r = same(Double.self) { return r }
+    if let r = same(Character.self) { return r }
+    if let r = same(UInt.self) { return r }
+    if let r = same(Int32.self) { return r }
+    if let r = same(UInt32.self) { return r }
+    if let r = same(Int64.self) { return r }
+    if let r = same(UInt64.self) { return r }
+    if let r = same(Int8.self) { return r }
+    if let r = same(UInt8.self) { return r }
+    if let r = same(Int16.self) { return r }
+    if let r = same(UInt16.self) { return r }
+    if let r = same(Float.self) { return r }
+    return String(reflecting: a) == String(reflecting: b)
+}
+
 private func rsTypeName(_ value: Any) -> String {
     let name = String(describing: type(of: value))
     return String(name.prefix { $0 != "<" })
 }
 
 private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: inout String) {
+    if let custom = value as? RsDebugCustom {
+        out += custom.rsDebugText
+        return
+    }
     let mirror = Mirror(reflecting: value)
     if mirror.displayStyle == .optional {
         if let some = mirror.children.first {
@@ -194,11 +260,15 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
         break
     }
     switch mirror.displayStyle {
-    case .collection, .set:
+    case .collection:
         list("[", "]", mirror.children.map { (nil, $0.value) })
+    case .set:
+        // In order when the elements can be compared (a `BTreeSet`; a `HashSet` has no order).
+        list("{", "}", rsSorted(mirror.children.map(\.value)).map { (nil, $0) })
     case .dictionary:
         out += "{"
-        let pairs = mirror.children.map { Mirror(reflecting: $0.value).children.map(\.value) }
+        var pairs = mirror.children.map { Mirror(reflecting: $0.value).children.map(\.value) }
+        pairs = rsSorted(pairs.map(\.[0])).compactMap { key in pairs.first { rsSameKey($0[0], key) } }
         if pretty && !pairs.isEmpty {
             out += "\n"
             for pair in pairs {
@@ -221,7 +291,8 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
     case .tuple:
         list("(", ")", mirror.children.map { (nil, $0.value) })
     case .enum:
-        if let custom = value as? CustomDebugStringConvertible {
+        // Payloads are laid out here when pretty; the type's own text otherwise.
+        if let custom = value as? CustomDebugStringConvertible, !pretty || mirror.children.first == nil {
             out += custom.debugDescription
             return
         }
@@ -387,6 +458,52 @@ extension String {
         return s
     }
 
+    func trimMatches(_ p: String) -> String { trimStartMatches(p).trimEndMatches(p) }
+
+    /// `s.replacen(from, to, n)`: the first `n` occurrences.
+    func replacen(_ from: String, _ to: String, _ n: Int) -> String {
+        var out = ""
+        var rest = self[...]
+        var left = n
+        while left > 0, !from.isEmpty, let r = rest.range(of: from) {
+            out += rest[..<r.lowerBound] + to
+            rest = rest[r.upperBound...]
+            left -= 1
+        }
+        return out + rest
+    }
+
+    /// `s.splitn(n, p)`: at most `n` pieces.
+    func splitn(_ n: Int, _ p: String) -> [String] {
+        var out: [String] = []
+        var rest = self[...]
+        while out.count < n - 1, let r = rest.range(of: p) {
+            out.append(String(rest[..<r.lowerBound]))
+            rest = rest[r.upperBound...]
+        }
+        if n > 0 { out.append(String(rest)) }
+        return out
+    }
+
+    /// `s.rsplitn(n, p)`: at most `n` pieces, from the end.
+    func rsplitn(_ n: Int, _ p: String) -> [String] {
+        var out: [String] = []
+        var rest = self[...]
+        while out.count < n - 1, let r = rest.range(of: p, options: .backwards) {
+            out.append(String(rest[r.upperBound...]))
+            rest = rest[..<r.lowerBound]
+        }
+        if n > 0 { out.append(String(rest)) }
+        return out
+    }
+
+    /// `s.split_terminator(p)`: like `split`, without a last empty piece.
+    func splitTerminator(_ p: String) -> [String] {
+        var parts = components(separatedBy: p)
+        if parts.last == "" { parts.removeLast() }
+        return parts
+    }
+
     /// `s.lines()`.
     func lines() -> [String] {
         var parts = components(separatedBy: "\n").map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
@@ -469,15 +586,62 @@ extension Character {
         return Character(String(d, radix: Int(radix)))
     }
 }
+
+/// `'a'..='z'`: the characters between two scalars.
+func rsChars(_ a: Character, _ b: Character, through: Bool) -> [Character] {
+    let lo = a.rsCode, hi = b.rsCode
+    guard through ? lo <= hi : lo < hi else { return [] }
+    return (lo...(through ? hi : hi - 1)).compactMap { UnicodeScalar($0).map(Character.init) }
+}
+"#;
+
+const REVERSE: &str = r#"
+/// `std::cmp::Reverse`: the opposite order.
+struct RsReverse<T: Comparable>: Comparable {
+    let value: T
+    init(_ value: T) { self.value = value }
+    static func < (a: RsReverse, b: RsReverse) -> Bool { a.value > b.value }
+}
+"#;
+
+const EXP: &str = r#"
+/// `{:e}`: Rust's scientific notation (`1.2345e3`, `1e-7`), with a precision when given.
+func rsExp<F: BinaryFloatingPoint>(_ x: F, _ precision: Int? = nil, upper: Bool = false) -> String {
+    let d = Double(x)
+    var mantissa: String
+    var exponent: Int
+    if let p = precision {
+        let parts = String(format: "%.\(p)e", d).split(separator: "e")
+        mantissa = String(parts[0])
+        exponent = Int(parts[1]) ?? 0
+    } else {
+        // The shortest digits that read back as the same number, like Rust.
+        var text = "\(d.magnitude)"
+        var e = 0
+        if let i = text.firstIndex(where: { $0 == "e" || $0 == "E" }) {
+            e = Int(text[text.index(after: i)...]) ?? 0
+            text = String(text[..<i])
+        }
+        let int = text.split(separator: ".", omittingEmptySubsequences: false)[0]
+        var digits = text.replacingOccurrences(of: ".", with: "")
+        exponent = int.count - 1 + e
+        while digits.hasPrefix("0") && digits.count > 1 { digits.removeFirst(); exponent -= 1 }
+        while digits.hasSuffix("0") && digits.count > 1 { digits.removeLast() }
+        if digits == "0" { exponent = 0 }
+        mantissa = (d < 0 ? "-" : "") + String(digits.prefix(1)) + (digits.count > 1 ? "." + digits.dropFirst() : "")
+    }
+    return mantissa + (upper ? "E" : "e") + String(exponent)
+}
+
+func rsExp<I: BinaryInteger>(_ x: I, _ precision: Int? = nil, upper: Bool = false) -> String {
+    rsExp(Double(x), precision, upper: upper)
+}
 "#;
 
 const VEC: &str = r#"
 extension Array {
     /// `v.get(i)`.
     func get(_ i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
-
-    /// `iter.nth(n)`.
-    func nth(_ n: Int) -> Element? { get(n) }
 
     mutating func retain(_ keep: (Element) throws -> Bool) rethrows {
         try removeAll { try !keep($0) }
@@ -523,6 +687,13 @@ extension Array {
         return self
     }
 
+    /// `v.drain(a..b)`: the removed elements.
+    mutating func drain(_ r: some RangeExpression<Int>) -> [Element] {
+        let range = r.relative(to: self)
+        defer { removeSubrange(range) }
+        return Array(self[range])
+    }
+
     func splitAt(_ i: Int) -> ([Element], [Element]) { (Array(self[..<i]), Array(self[i...])) }
 
     func windows(_ size: Int) -> [[Element]] {
@@ -534,16 +705,45 @@ extension Array {
         stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
     }
 
-    func stepBy(_ step: Int) -> [Element] {
-        stride(from: 0, to: count, by: step).map { self[$0] }
-    }
-
     mutating func sortBy(_ compare: (Element, Element) throws -> Ordering) rethrows {
         try sort { try compare($0, $1) == .less }
     }
 
     mutating func sortByKey<K: Comparable>(_ key: (Element) throws -> K) rethrows {
         try sort { try key($0) < key($1) }
+    }
+}
+
+extension Sequence {
+    /// `iter.nth(n)`.
+    func nth(_ n: Int) -> Element? {
+        var i = 0
+        for x in self {
+            if i == n { return x }
+            i += 1
+        }
+        return nil
+    }
+
+    func stepBy(_ step: Int) -> [Element] {
+        var out: [Element] = []
+        var i = 0
+        for x in self {
+            if i % step == 0 { out.append(x) }
+            i += 1
+        }
+        return out
+    }
+
+    /// `iter.scan(state, f)`: `f` changes the state and gives the next value, `nil` to stop.
+    func rsScan<S, T>(_ initial: S, _ f: (inout S, Element) throws -> T?) rethrows -> [T] {
+        var state = initial
+        var out: [T] = []
+        for x in self {
+            guard let v = try f(&state, x) else { break }
+            out.append(v)
+        }
+        return out
     }
 
     func minByKey<K: Comparable>(_ key: (Element) throws -> K) rethrows -> Element? {
@@ -579,8 +779,9 @@ extension Array {
 
     /// `iter.reduce(f)`: `nil` for an empty sequence.
     func reduceFirst(_ f: (Element, Element) throws -> Element) rethrows -> Element? {
-        guard var acc = first else { return nil }
-        for x in dropFirst() { acc = try f(acc, x) }
+        var it = makeIterator()
+        guard var acc = it.next() else { return nil }
+        while let x = it.next() { acc = try f(acc, x) }
         return acc
     }
 
@@ -616,6 +817,20 @@ struct RsNotFound: Error { let index: Int }
 "#;
 
 const ITER: &str = r#"
+/// `std::iter::successors(first, next)`.
+func rsSuccessors<T>(_ first: T?, _ next: @escaping (T) -> T?) -> UnfoldSequence<T, T?> {
+    sequence(state: first) { state in
+        guard let current = state else { return nil }
+        state = next(current)
+        return current
+    }
+}
+
+/// `std::iter::repeat(x)`.
+func rsRepeat<T>(_ x: T) -> UnfoldFirstSequence<T> {
+    sequence(first: x) { _ in x }
+}
+
 /// A Rust iterator kept in a variable: `it.next()`, `it.peek()`.
 struct RsIter<Element>: Sequence, IteratorProtocol {
     private var items: [Element]
@@ -683,6 +898,30 @@ extension Optional {
     func okOr<E: Error>(_ error: E) -> Result<Wrapped, E> {
         map { .success($0) } ?? .failure(error)
     }
+
+    /// `a.xor(b)`: the one that is `Some`, if exactly one is.
+    func xor(_ other: Wrapped?) -> Wrapped? {
+        switch (self, other) {
+        case (.some, .none): self
+        case (.none, .some): other
+        default: nil
+        }
+    }
+
+    /// `a.zip(b)`.
+    func zip<U>(_ other: U?) -> (Wrapped, U)? {
+        if let a = self, let b = other { (a, b) } else { nil }
+    }
+}
+
+/// `iter.collect::<Option<Vec<_>>>()`: every value, or `nil` at the first `None`.
+func rsAllSome<T>(_ values: some Sequence<T?>) -> [T]? {
+    var out: [T] = []
+    for v in values {
+        guard let v else { return nil }
+        out.append(v)
+    }
+    return out
 }
 "#;
 
@@ -698,6 +937,38 @@ extension Result {
         case .failure(let e): f(e)
         }
     }
+
+    /// `r.and_then(f)`.
+    func andThen<T>(_ f: (Success) throws(Failure) -> T) -> Result<T, Failure> {
+        switch self {
+        case .success(let v):
+            do { return .success(try f(v)) } catch { return .failure(error) }
+        case .failure(let e):
+            return .failure(e)
+        }
+    }
+
+    /// `r.or_else(f)`.
+    func orElse<F: Error>(_ f: (Failure) throws(F) -> Success) -> Result<Success, F> {
+        switch self {
+        case .success(let v):
+            return .success(v)
+        case .failure(let e):
+            do { return .success(try f(e)) } catch { return .failure(error) }
+        }
+    }
+}
+"#;
+
+const TRY_FROM: &str = r#"
+/// `u8::try_from(x)`: `TryFromIntError` when the value does not fit.
+struct RsTryFromIntError: Error, RsDebugCustom, CustomStringConvertible {
+    var rsDebugText: String { "TryFromIntError(())" }
+    var description: String { "out of range integral type conversion attempted" }
+}
+
+func rsTryFrom<T: FixedWidthInteger>(_: T.Type, _ x: some BinaryInteger) -> Result<T, RsTryFromIntError> {
+    T(exactly: x).map { .success($0) } ?? .failure(RsTryFromIntError())
 }
 "#;
 
@@ -721,6 +992,17 @@ extension BinaryInteger {
     func absDiff(_ other: Self) -> Self { self > other ? self - other : other - self }
 }
 
+/// `(i32, bool)` of an `overflowing_*` operation, as Swift's `Int`.
+func rsWiden(_ r: (Int32, Bool)) -> (Int, Bool) { (Int(r.0), r.1) }
+
+/// `x as i32` for a float: toward zero, saturating, 0 for NaN.
+func rsInt<T: FixedWidthInteger>(_: T.Type, _ x: some BinaryFloatingPoint) -> T {
+    if x.isNaN { return 0 }
+    if x >= .init(T.max) { return T.max }
+    if x <= .init(T.min) { return T.min }
+    return T(x)
+}
+
 extension FixedWidthInteger {
     func checkedAdd(_ o: Self) -> Self? { let (v, overflow) = addingReportingOverflow(o); return overflow ? nil : v }
     func checkedSub(_ o: Self) -> Self? { let (v, overflow) = subtractingReportingOverflow(o); return overflow ? nil : v }
@@ -730,6 +1012,9 @@ extension FixedWidthInteger {
     func saturatingAdd(_ o: Self) -> Self { let (v, overflow) = addingReportingOverflow(o); return overflow ? (o > 0 ? .max : .min) : v }
     func saturatingSub(_ o: Self) -> Self { let (v, overflow) = subtractingReportingOverflow(o); return overflow ? (o > 0 ? .min : .max) : v }
     func saturatingMul(_ o: Self) -> Self { let (v, overflow) = multipliedReportingOverflow(by: o); return overflow ? ((self < 0) != (o < 0) ? .min : .max) : v }
+    func overflowingAdd(_ o: Self) -> (Self, Bool) { let r = addingReportingOverflow(o); return (r.partialValue, r.overflow) }
+    func overflowingSub(_ o: Self) -> (Self, Bool) { let r = subtractingReportingOverflow(o); return (r.partialValue, r.overflow) }
+    func overflowingMul(_ o: Self) -> (Self, Bool) { let r = multipliedReportingOverflow(by: o); return (r.partialValue, r.overflow) }
 }
 "#;
 

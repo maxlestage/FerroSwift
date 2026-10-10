@@ -531,6 +531,21 @@ impl Translator<'_> {
                 Some(r) if i > r => format!("{subject}[{subject}.count - {}]", n - i),
                 _ => format!("{subject}[{i}]"),
             };
+            // `[first, .., last] if first == last`: the names stand for the elements, so
+            // that the guard can use them before any `let`.
+            if let Pat::Ident(id) = p {
+                if id.subpat.is_none()
+                    && id.mutability.is_none()
+                    && self
+                        .unit_variant_named(&id.ident.to_string(), &item)
+                        .is_none()
+                {
+                    if cx.declare {
+                        self.declare_alias(&id.ident.to_string(), index, item.clone());
+                    }
+                    continue;
+                }
+            }
             let mut inner = PatCx {
                 subject: index,
                 guards: Vec::new(),

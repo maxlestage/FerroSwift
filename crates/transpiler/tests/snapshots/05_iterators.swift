@@ -1,9 +1,9 @@
 import Foundation
 
 func stats(_ values: [Double]) -> (Double, Double) {
-    let total = values.reduce(0, +)
+    let total = values.reduce(0.0, +)
     let mean = total / Double(values.count)
-    let max = values.reduce(-Double.greatestFiniteMagnitude, max)
+    let max = values.reduce(-Double.greatestFiniteMagnitude) { x, y in Swift.max(x, y) }
     return (mean, max)
 }
 
@@ -23,7 +23,10 @@ func evensSquared(_ limit: UInt32) -> [UInt32] {
 }
 
 func report(_ names: [String]) -> String {
-    names.enumerated().map { (i, name) in "\(rsPad("\(i + 1)", 2, ">", " ")). \(name)" }.joined(separator: "\n")
+    names.enumerated().map { pair1 in
+        let (i, name) = pair1
+        return "\(rsPad("\(i + 1)", 2, ">", " ")). \(name)"
+    }.joined(separator: "\n")
 }
 
 // MARK: - FerroSwift support
@@ -100,9 +103,6 @@ extension Array {
     /// `v.get(i)`.
     func get(_ i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 
-    /// `iter.nth(n)`.
-    func nth(_ n: Int) -> Element? { get(n) }
-
     mutating func retain(_ keep: (Element) throws -> Bool) rethrows {
         try removeAll { try !keep($0) }
     }
@@ -147,6 +147,13 @@ extension Array {
         return self
     }
 
+    /// `v.drain(a..b)`: the removed elements.
+    mutating func drain(_ r: some RangeExpression<Int>) -> [Element] {
+        let range = r.relative(to: self)
+        defer { removeSubrange(range) }
+        return Array(self[range])
+    }
+
     func splitAt(_ i: Int) -> ([Element], [Element]) { (Array(self[..<i]), Array(self[i...])) }
 
     func windows(_ size: Int) -> [[Element]] {
@@ -158,16 +165,45 @@ extension Array {
         stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
     }
 
-    func stepBy(_ step: Int) -> [Element] {
-        stride(from: 0, to: count, by: step).map { self[$0] }
-    }
-
     mutating func sortBy(_ compare: (Element, Element) throws -> Ordering) rethrows {
         try sort { try compare($0, $1) == .less }
     }
 
     mutating func sortByKey<K: Comparable>(_ key: (Element) throws -> K) rethrows {
         try sort { try key($0) < key($1) }
+    }
+}
+
+extension Sequence {
+    /// `iter.nth(n)`.
+    func nth(_ n: Int) -> Element? {
+        var i = 0
+        for x in self {
+            if i == n { return x }
+            i += 1
+        }
+        return nil
+    }
+
+    func stepBy(_ step: Int) -> [Element] {
+        var out: [Element] = []
+        var i = 0
+        for x in self {
+            if i % step == 0 { out.append(x) }
+            i += 1
+        }
+        return out
+    }
+
+    /// `iter.scan(state, f)`: `f` changes the state and gives the next value, `nil` to stop.
+    func rsScan<S, T>(_ initial: S, _ f: (inout S, Element) throws -> T?) rethrows -> [T] {
+        var state = initial
+        var out: [T] = []
+        for x in self {
+            guard let v = try f(&state, x) else { break }
+            out.append(v)
+        }
+        return out
     }
 
     func minByKey<K: Comparable>(_ key: (Element) throws -> K) rethrows -> Element? {
@@ -203,8 +239,9 @@ extension Array {
 
     /// `iter.reduce(f)`: `nil` for an empty sequence.
     func reduceFirst(_ f: (Element, Element) throws -> Element) rethrows -> Element? {
-        guard var acc = first else { return nil }
-        for x in dropFirst() { acc = try f(acc, x) }
+        var it = makeIterator()
+        guard var acc = it.next() else { return nil }
+        while let x = it.next() { acc = try f(acc, x) }
         return acc
     }
 

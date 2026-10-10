@@ -99,6 +99,10 @@ pub struct FnSig {
     pub self_kind: SelfKind,
     /// `fn new(…) -> Self` translated as an initializer.
     pub is_init: bool,
+    /// `fn count(&self) -> usize` next to a field `count`: a computed property in Swift.
+    pub property: bool,
+    /// `fn add(&mut self, …) -> &mut Self`: a builder method, chained as statements.
+    pub returns_self_mut: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +124,9 @@ pub struct Symbols {
     pub aliases: HashMap<String, Ty>,
     /// Types that implement `Display` (their `description`).
     pub display: HashSet<String>,
+    /// Display impls that forward the formatter (`f.pad(…)`, `self.0.fmt(f)`): the width
+    /// applies to them, unlike `write!`-based impls.
+    pub display_pads: HashSet<String>,
     /// Types used as the error of a `Result`: they conform to `Error`.
     pub errors: HashSet<String>,
     /// Types with a `From<…>` implementation, by target.
@@ -128,6 +135,8 @@ pub struct Symbols {
     pub ui: bool,
     /// Names brought in by `use` (`PI` → `std::f64::consts::PI`), without the globs.
     pub imports: HashMap<String, Vec<String>>,
+    /// Types implementing `Iterator`, with their `Item` type (by Rust and by Swift name).
+    pub iterators: HashMap<String, Ty>,
 }
 
 /// The names of a `use` tree with their full paths.
@@ -185,7 +194,27 @@ impl Symbols {
         for file in files {
             s.walk(&file.items, &mut |s, item| s.declare_impl(item));
         }
+        s.properties_for_clashes();
         s
+    }
+
+    /// A field `count` and a method `count(&self)` cannot share a name in Swift: the method
+    /// becomes a computed property `count`, the stored field `_count`.
+    fn properties_for_clashes(&mut self) {
+        for (type_name, st) in &mut self.structs {
+            let Some(methods) = self.methods.get_mut(type_name) else {
+                continue;
+            };
+            for field in &mut st.fields {
+                let clash = methods.get_mut(&field.rust).filter(|m| {
+                    m.params.is_empty() && matches!(m.self_kind, SelfKind::Ref | SelfKind::Value)
+                });
+                if let Some(m) = clash {
+                    m.property = true;
+                    field.swift = format!("_{}", field.swift);
+                }
+            }
+        }
     }
 
     fn walk(&mut self, items: &[Item], f: &mut dyn FnMut(&mut Symbols, &Item)) {
@@ -340,6 +369,29 @@ impl Symbols {
             }
             Some("Display") => {
                 self.display.insert(type_name.clone());
+                let text = quote::quote!(#imp).to_string();
+                if text.contains(". pad (")
+                    || text.contains("pad_integral")
+                    || text.contains(". fmt (")
+                {
+                    self.display_pads.insert(type_name.clone());
+                }
+            }
+            Some("Iterator") => {
+                let item = imp
+                    .items
+                    .iter()
+                    .find_map(|it| match it {
+                        syn::ImplItem::Type(t) if t.ident == "Item" => {
+                            Some(self.ty(&t.ty, Some(&self_ty)))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(Ty::Unknown);
+                self.iterators.insert(type_name.clone(), item.clone());
+                if let Ty::Named(swift, _) = &self_ty {
+                    self.iterators.insert(swift.clone(), item);
+                }
             }
             Some("Error") => {
                 self.errors.insert(type_name.clone());
@@ -464,11 +516,20 @@ impl Symbols {
             ReturnType::Default => Ty::Unit,
             ReturnType::Type(_, t) => self.ty(t, self_ty),
         };
+        let returns_self_mut = match &sig.output {
+            syn::ReturnType::Type(_, t) => {
+                matches!(&**t, Type::Reference(r) if r.mutability.is_some())
+                    && self_ty.is_some_and(|st| returns_self(&ret, st))
+            }
+            syn::ReturnType::Default => false,
+        };
         FnSig {
             params,
             ret,
             self_kind,
             is_init: false,
+            property: false,
+            returns_self_mut,
         }
     }
 
@@ -642,6 +703,10 @@ pub fn type_name(t: &Type) -> Option<String> {
         Type::Reference(r) => type_name(&r.elem),
         _ => None,
     }
+}
+
+pub fn returns_self_ty(ret: &Ty, self_ty: &Ty) -> bool {
+    returns_self(ret, self_ty)
 }
 
 fn returns_self(ret: &Ty, self_ty: &Ty) -> bool {
