@@ -33,7 +33,8 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 - **Structs** become `struct`s with their memberwise initializer; tuple structs get fields `_0`, `_1`… `#[derive(Default)]` gives every field its default value.
 - **Derives:** `PartialEq`/`Eq` → `Equatable`, `Hash` → `Hashable`, `PartialOrd`/`Ord` → `Comparable`. `Clone` and `Copy` need nothing: Swift structs are values. `Debug` is handled by `{:?}` (see below).
 - **Enums** become `enum`s; variants with data get associated values (`Card { last4: String }` → `case card(last4: String)`).
-- **`impl` blocks** become `extension`s. `fn new(…) -> Self` becomes an `init`, `&mut self` methods become `mutating func`, associated `const`s become `static let`.
+- **`impl` blocks** become `extension`s. `fn new(…) -> Self` becomes an `init`, `&mut self` methods become `mutating func`, associated `const`s become `static let`. A method returning `&mut Self` (a builder) is called as a statement, so `a.b().c()` becomes `a.b()` then `a.c()`. A method with the name of a field (`fn count(&self)` next to `count`) becomes a computed property, the field being stored as `_count`.
+- **`impl Iterator for Type`** makes the type a `Sequence`: `for x in Counter { … }`, `.filter`, `.sum()` work on it.
 - **Traits** become `protocol`s; default methods go into a protocol extension, associated types into `associatedtype`. `impl Trait for Type` adds the conformance.
 - **Operator traits** (`Add`, `Sub`, `Mul`, `Neg`…) become operator functions; `impl Display` becomes `CustomStringConvertible`.
 - **Generics** keep their bounds: `fn largest<T: Describe>(items: &[T])` → `func largest<T: Describe>(_ items: [T])`. `where` clauses are kept.
@@ -89,7 +90,7 @@ Error enums conform to `Error`. Typed `throws` needs Swift 6 (Xcode 16).
 
 ## Comments
 
-Comments and `///` documentation are kept, next to the code they describe, so the generated Swift stays readable. Comments placed inside a chain of method calls are not kept.
+Comments and `///` documentation are kept, next to the code they describe, so the generated Swift stays readable: before and after statements, between the children and the modifiers of a view, and blank lines between groups of statements stay. Comments inside other chains of method calls (`v.iter() // … .map(…)`) are not kept.
 
 ## The support file
 

@@ -10,7 +10,7 @@ Le crate `ferroswift` décrit SwiftUI en Rust. Ses fonctions renvoient des build
 use ferroswift::prelude::*;
 ```
 
-> **Note :** le transpileur reconnaît les vues d’un fichier grâce à cette ligne `use`. Sans elle, `vstack()` et les autres sont traduits comme des appels de fonction ordinaires.
+> **Note :** le transpileur reconnaît les vues d’un crate grâce à cette ligne `use`, ou à `#[derive(View)]`, `impl View` et `impl App`. Dans un fichier sans aucun d’eux, `vstack()` et les autres sont traduits comme des appels de fonction ordinaires.
 
 ## Une vue
 
