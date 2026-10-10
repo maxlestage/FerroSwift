@@ -1444,6 +1444,14 @@ impl<'a> Translator<'a> {
                 );
             }
         }
+        // A `match` whose arms each write once: a `switch` giving the string.
+        if let Some(switch) = switch_of_writes(&body, &out_name) {
+            return format!(
+                "{}var {property}: String {{\n{}\n}}",
+                docs(&f.attrs),
+                indent_lines(&switch)
+            );
+        }
         let body = indent_lines(&body);
         format!(
             "{}var {property}: String {{\n{INDENT}var {out_name} = \"\"\n{body}\n{INDENT}return {out_name}\n}}",
@@ -2099,6 +2107,36 @@ fn debug_description(info: &crate::symbols::EnumInfo) -> String {
             cases.join("\n")
         )))
     )
+}
+
+/// `switch x {\ncase …:\n    out += "a"\n…}` → the same `switch` with `"a"` as the value of
+/// each case, when every case writes exactly once.
+fn switch_of_writes(body: &str, out: &str) -> Option<String> {
+    let lines: Vec<&str> = body.lines().collect();
+    if !lines.first()?.starts_with("switch ") || *lines.last()? != "}" {
+        return None;
+    }
+    let prefix = format!("{INDENT}{out} += ");
+    let mut result = vec![lines[0].to_string()];
+    let mut writes_in_case = 0;
+    for line in &lines[1..lines.len() - 1] {
+        if line.starts_with("case ") || line.starts_with("default:") {
+            if result.len() > 1 && writes_in_case != 1 {
+                return None;
+            }
+            writes_in_case = 0;
+            result.push((*line).to_string());
+        } else {
+            let value = line.strip_prefix(&prefix)?;
+            writes_in_case += 1;
+            result.push(format!("{INDENT}{value}"));
+        }
+    }
+    if writes_in_case != 1 {
+        return None;
+    }
+    result.push("}".into());
+    Some(result.join("\n"))
 }
 
 /// Protocols Swift synthesizes from the members.
