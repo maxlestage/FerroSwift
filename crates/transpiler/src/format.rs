@@ -132,8 +132,10 @@ fn parse_spec(s: &str) -> Result<Spec, String> {
         match word.parse() {
             Ok(n) => Some(Count::Value(n)),
             Err(_) => {
-                *i = start;
-                None
+                // `08b`: the width, then the kind.
+                let digits = word.chars().take_while(char::is_ascii_digit).count();
+                *i = start + digits;
+                (digits > 0).then(|| Count::Value(word[..digits].parse().unwrap_or(0)))
             }
         }
     };
@@ -208,22 +210,40 @@ impl Translator<'_> {
                     out.push_str(&lit[1..lit.len() - 1]);
                 }
                 Piece::Arg(r, spec) => {
-                    let value =
-                        self.format_value(r, &mut next, &positional, &named, &mut translated, span);
-                    let precision = spec.precision.as_ref().map(|c| match c {
-                        Count::Value(n) => n.to_string(),
-                        Count::Arg(r) => {
+                    // `{:.*}` takes the precision from the next argument, then the value.
+                    let star = matches!(spec.precision, Some(Count::Arg(ArgRef::Next)));
+                    let mut precision = None;
+                    if star {
+                        precision = Some(
                             self.format_value(
-                                r,
+                                &ArgRef::Next,
                                 &mut next,
                                 &positional,
                                 &named,
                                 &mut translated,
                                 span,
                             )
-                            .code
-                        }
-                    });
+                            .code,
+                        );
+                    }
+                    let value =
+                        self.format_value(r, &mut next, &positional, &named, &mut translated, span);
+                    if !star {
+                        precision = spec.precision.as_ref().map(|c| match c {
+                            Count::Value(n) => n.to_string(),
+                            Count::Arg(r) => {
+                                self.format_value(
+                                    r,
+                                    &mut next,
+                                    &positional,
+                                    &named,
+                                    &mut translated,
+                                    span,
+                                )
+                                .code
+                            }
+                        });
+                    }
                     let width = spec.width.as_ref().map(|c| match c {
                         Count::Value(n) => n.to_string(),
                         Count::Arg(r) => {
@@ -319,9 +339,43 @@ impl Translator<'_> {
     ) -> (bool, String) {
         let x = &v.code;
         let mut plain = false;
+        // A `Display` written with `write!` ignores the width and precision it is given
+        // (only `f.pad` and forwarding honor them); Rust's derived `Debug` pads numbers only.
+        let user_display = match &v.ty {
+            Ty::Named(n, _) => self.rust_name_of_swift(n).map(|rust| {
+                self.syms.display.contains(&rust) && !self.syms.display_pads.contains(&rust)
+            }),
+            _ => None,
+        };
+        let (precision, width) = match (spec.kind.as_str(), user_display, &v.ty) {
+            ("", Some(true), _) => (None, None),
+            ("?" | "x?" | "X?", _, Ty::Int(_) | Ty::Float(_)) => (precision, width),
+            ("?" | "x?" | "X?", _, _) => (precision, None),
+            _ => (precision, width),
+        };
         let mut s = match spec.kind.as_str() {
             "?" | "x?" | "X?" => match &v.ty {
                 Ty::Int(_) | Ty::Bool => x.clone(),
+                // `s.parse::<i32>()` is an optional in Swift, a `Result` in Rust.
+                Ty::Option(inner) if v.parsed => {
+                    self.helper("debug");
+                    let error = match &**inner {
+                        Ty::Int(_) => "ParseIntError { kind: InvalidDigit }",
+                        Ty::Float(_) => "ParseFloatError { kind: Invalid }",
+                        Ty::Bool => "ParseBoolError",
+                        Ty::Char => "CharTryFromError(())",
+                        _ => "ParseError",
+                    };
+                    format!("rsDebugParsed({x}, \"{error}\")")
+                }
+                // A `BTreeSet` prints in order; Swift's `Set` has none.
+                Ty::Set(_, true) => {
+                    self.helper("debug");
+                    format!(
+                        "rsDebugSet({x}.sorted(){})",
+                        if spec.alternate { ", pretty: true" } else { "" }
+                    )
+                }
                 Ty::Float(_) if precision.is_some() => {
                     self.helper("fixed");
                     format!("rsFixed({x}, {})", precision.clone().unwrap_or_default())
@@ -353,12 +407,28 @@ impl Translator<'_> {
                         2 => "0b",
                         _ => "0o",
                     };
+                    // `{:#010x}`: the zeros come after the prefix, which counts in the width.
+                    if let (true, Some(w)) = (spec.zero, &width) {
+                        self.helper("pad");
+                        return (false, format!("\"{prefix}\" + rsPadZero({base}, {w} - 2)"));
+                    }
                     format!("\"{prefix}\" + {base}")
                 } else {
                     base
                 }
             }
-            "e" | "E" => format!("String(format: \"%{}\", {x})", spec.kind),
+            "e" | "E" => {
+                self.helper("exp");
+                let upper = if spec.kind == "E" {
+                    ", upper: true"
+                } else {
+                    ""
+                };
+                match &precision {
+                    Some(p) => format!("rsExp({x}, {p}{upper})"),
+                    None => format!("rsExp({x}{upper})"),
+                }
+            }
             _ => match (&v.ty, &precision) {
                 (Ty::Float(_), Some(p)) => {
                     self.helper("fixed");
@@ -392,7 +462,8 @@ impl Translator<'_> {
             } else {
                 s.clone()
             };
-            if spec.zero && spec.align.is_none() {
+            // The `0` flag pads with zeros whatever the alignment asks.
+            if spec.zero {
                 s = format!("rsPadZero({as_string}, {w})");
             } else {
                 let align = spec.align.unwrap_or(if numeric { '>' } else { '<' });

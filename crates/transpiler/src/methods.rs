@@ -31,6 +31,18 @@ impl Translator<'_> {
             .collect();
         let last = segs.last().cloned().unwrap_or_default();
         let turbofish = generic_args(&p.path);
+        if last == "Reverse"
+            && c.args.len() == 1
+            && (segs.len() == 1 || segs[0] == "std" || segs[0] == "cmp")
+        {
+            self.helper("reverse");
+            let v = self.expr(&c.args[0]);
+            let v = self.settle(v);
+            return Ex::primary(
+                format!("RsReverse({})", v.code),
+                Ty::Named("RsReverse".into(), vec![v.ty]),
+            );
+        }
         if segs.len() == 1 {
             match last.as_str() {
                 "Some" if c.args.len() == 1 => {
@@ -95,6 +107,7 @@ impl Translator<'_> {
             }
             if let Some(st) = self.syms.structs.get(&last).cloned() {
                 if st.tuple {
+                    let mut bound = std::collections::HashMap::new();
                     let args: Vec<String> = c
                         .args
                         .iter()
@@ -102,12 +115,20 @@ impl Translator<'_> {
                         .map(|(i, a)| {
                             let t = st.fields.get(i).map_or(Ty::Unknown, |f| f.ty.clone());
                             let v = self.expr_with(a, &t);
-                            self.settle(v).code
+                            let v = self.settle(v);
+                            unify(&t, &v.ty, &st.generics, &mut bound);
+                            v.code
                         })
+                        .collect();
+                    // `Pair("x", 1.5)` is a `Pair<String, Double>`.
+                    let type_args: Vec<Ty> = st
+                        .generics
+                        .iter()
+                        .map(|g| bound.get(g).cloned().unwrap_or(Ty::Unknown))
                         .collect();
                     return Ex::primary(
                         format!("{}({})", st.swift, args.join(", ")),
-                        Ty::Named(st.swift.clone(), vec![]),
+                        Ty::Named(st.swift.clone(), type_args),
                     );
                 }
             }
@@ -394,13 +415,21 @@ impl Translator<'_> {
                 let a = self.settle(a);
                 let b = self.expr_with(&args[1], &a.ty);
                 let b = self.settle(b);
-                Some(Ex::primary(format!("{last}({}, {})", a.code, b.code), a.ty))
+                let f = self.global_fn(last);
+                Some(Ex::primary(format!("{f}({}, {})", a.code, b.code), a.ty))
             }
             "drop" if args.len() == 1 => Some(Ex::primary("", Ty::Unit)),
             "swap" | "take" | "replace" => {
                 self.std_path_call(&["mem".into(), last.into()], args, expected, &[])
             }
-            _ => None,
+            _ => {
+                // `use std::iter::once;` then `once(x)`.
+                let full = self.syms.imports.get(last).cloned()?;
+                if full.len() < 2 || full[0] != "std" {
+                    return None;
+                }
+                self.std_path_call(&full, args, expected, &[])
+            }
         }
     }
 
@@ -512,7 +541,8 @@ impl Translator<'_> {
             ("cmp", "max" | "min") | ("std", "max" | "min") if args.len() == 2 => {
                 let a = arg(self, 0, expected);
                 let b = arg(self, 1, &a.ty);
-                Some(Ex::primary(format!("{last}({}, {})", a.code, b.code), a.ty))
+                let f = self.global_fn(last);
+                Some(Ex::primary(format!("{f}({}, {})", a.code, b.code), a.ty))
             }
             ("mem", "swap") if args.len() == 2 => {
                 let a = self.place(strip_ref(&args[0]));
@@ -586,6 +616,18 @@ impl Translator<'_> {
                 }
                 Some(Ex::primary(format!("{ts}({})", v.code), t))
             }
+            (o, "try_from") if args.len() == 1 && IntKind::parse(o).is_some() => {
+                self.helper("try_from");
+                let t = crate::ty::from_name(o, vec![]);
+                let v = arg(self, 0, &Ty::Unknown);
+                Some(Ex::primary(
+                    format!("rsTryFrom({}.self, {})", t.swift_lossy(), v.code),
+                    Ty::Result(
+                        Box::new(t),
+                        Box::new(Ty::Named("RsTryFromIntError".into(), vec![])),
+                    ),
+                ))
+            }
             (o, "from_str_radix") if args.len() == 2 && IntKind::parse(o).is_some() => {
                 let t = crate::ty::from_name(o, vec![]);
                 let s = arg(self, 0, &Ty::Str);
@@ -628,6 +670,49 @@ impl Translator<'_> {
                 }
             }
             ("Instant", "now") => Some(Ex::primary("Date()", Ty::Named("Date".into(), vec![]))),
+            ("iter", "successors") if args.len() == 2 => {
+                self.helper("iter");
+                let first = arg(self, 0, &Ty::Unknown);
+                let item = first.ty.item();
+                let f = arg(
+                    self,
+                    1,
+                    &Ty::Fn(
+                        vec![item.clone()],
+                        Box::new(Ty::Option(Box::new(item.clone()))),
+                    ),
+                );
+                Some(Ex::primary(
+                    format!("rsSuccessors({}, {})", first.code, f.code),
+                    Ty::Iter(Box::new(item)),
+                ))
+            }
+            ("iter", "repeat") if args.len() == 1 => {
+                self.helper("iter");
+                let v = arg(self, 0, &expected.item());
+                Some(Ex::primary(
+                    format!("rsRepeat({})", v.code),
+                    Ty::Iter(Box::new(v.ty)),
+                ))
+            }
+            ("iter", "repeat_n") if args.len() == 2 => {
+                let v = arg(self, 0, &expected.item());
+                let n = arg(self, 1, &Ty::Int(IntKind::Usize));
+                Some(Ex::primary(
+                    format!("repeatElement({}, count: {})", v.code, n.code),
+                    Ty::Iter(Box::new(v.ty)),
+                ))
+            }
+            ("iter", "once") if args.len() == 1 => {
+                let v = arg(self, 0, &expected.item());
+                Some(Ex::primary(
+                    format!("[{}]", v.code),
+                    Ty::Vec(Box::new(v.ty)),
+                ))
+            }
+            ("iter", "empty") if args.is_empty() => {
+                Some(Ex::primary("[]", Ty::Vec(Box::new(expected.item()))))
+            }
             _ => None,
         }
     }
@@ -642,8 +727,31 @@ impl Translator<'_> {
         if name == "into" && m.args.is_empty() {
             return self.convert_into(m, expected);
         }
+        let collect_target = if name == "collect" {
+            self.method_turbofish(m)
+                .first()
+                .cloned()
+                .filter(|t| !t.is_unknown())
+                .unwrap_or_else(|| expected.clone())
+        } else {
+            Ty::Unknown
+        };
         // `"42".parse().unwrap()` with an `i32` expected: the receiver is an `Option<i32>`.
         let recv_expected = match name.as_str() {
+            // `.map(|s| parse(s)).collect::<Result<Vec<_>, _>>()`: the items are Results.
+            "collect" => match &collect_target {
+                Ty::Result(inner, err) => {
+                    Ty::Iter(Box::new(Ty::Result(Box::new(inner.item()), err.clone())))
+                }
+                Ty::Option(inner) if matches!(**inner, Ty::Vec(_)) => {
+                    Ty::Iter(Box::new(Ty::Option(Box::new(inner.item()))))
+                }
+                Ty::Vec(t) | Ty::Set(t, _) if !t.is_unknown() => Ty::Iter(t.clone()),
+                Ty::Map(k, v, _) => {
+                    Ty::Iter(Box::new(Ty::Tuple(vec![(**k).clone(), (**v).clone()])))
+                }
+                _ => Ty::Unknown,
+            },
             "unwrap" | "expect" | "unwrap_or" | "unwrap_or_default" | "unwrap_or_else"
                 if !expected.is_unknown() =>
             {
@@ -653,6 +761,9 @@ impl Translator<'_> {
             "map_err" | "ok" | "or" | "or_else" | "ok_or" | "ok_or_else" => expected.clone(),
             _ => Ty::Unknown,
         };
+        if let Some(ex) = self.entry_modify(m) {
+            return ex;
+        }
         // `map.entry(k).or_insert_with(Vec::new).push(x)`: the receiver is a place.
         let recv = if let Expr::MethodCall(inner) = &*m.receiver {
             match self.entry_place(inner) {
@@ -700,7 +811,13 @@ impl Translator<'_> {
                 format!("{}.{}", wrap(&recv, P_PRIMARY), names::lower_camel(&name))
             };
             let (codes, arg_tys) = self.call_args_typed(&m.args, Some(&sig.params));
+            if sig.property {
+                return Ex::primary(callee, sig.ret.clone());
+            }
             let mut ex = self.sig_result(format!("{callee}({})", codes.join(", ")), &sig);
+            if sig.returns_self_mut {
+                ex.ty = Ty::Unit;
+            }
             if ex.ty == Ty::Named("Self".into(), vec![]) {
                 ex.ty = recv.ty.clone();
             }
@@ -729,19 +846,7 @@ impl Translator<'_> {
             }
             return ex;
         }
-        let turbofish: Vec<Ty> = m
-            .turbofish
-            .as_ref()
-            .map(|t| {
-                t.args
-                    .iter()
-                    .filter_map(|a| match a {
-                        syn::GenericArgument::Type(t) => Some(self.ty(t)),
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let turbofish = self.method_turbofish(m);
         // Results of throwing calls.
         if recv.throws.is_some() {
             if let Some(ex) = self.throwing_receiver(recv.clone(), &name, m, expected) {
@@ -756,7 +861,7 @@ impl Translator<'_> {
         {
             return Ex::primary(format!("{}()", wrap(&recv, P_PRIMARY)), Ty::Unit);
         }
-        let args = self.method_args(&recv, &name, m);
+        let args = self.method_args(&recv, &name, m, expected);
         let mut ex = self.std_method(recv, &name, args, &turbofish, expected, m.span());
         if self.no_trailing == 0 {
             ex.code = trailing_closure(ex.code);
@@ -772,6 +877,101 @@ impl Translator<'_> {
         }
         self.pending_refine = None;
         ex
+    }
+
+    /// The types of `collect::<Vec<i32>>()`.
+    fn method_turbofish(&mut self, m: &ExprMethodCall) -> Vec<Ty> {
+        m.turbofish
+            .as_ref()
+            .map(|t| {
+                t.args
+                    .iter()
+                    .filter_map(|a| match a {
+                        syn::GenericArgument::Type(t) => Some(self.ty(t)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `map.entry(k).and_modify(|v| …).or_insert(x)`: an `if` on the presence of the key.
+    fn entry_modify(&mut self, m: &ExprMethodCall) -> Option<Ex> {
+        let last = m.method.to_string();
+        if !matches!(last.as_str(), "or_insert" | "or_insert_with" | "or_default") {
+            return None;
+        }
+        let Expr::MethodCall(modify) = &*m.receiver else {
+            return None;
+        };
+        if modify.method != "and_modify" || modify.args.len() != 1 {
+            return None;
+        }
+        let Expr::MethodCall(entry) = &*modify.receiver else {
+            return None;
+        };
+        if entry.method != "entry" || entry.args.len() != 1 {
+            return None;
+        }
+        let Expr::Closure(c) = &modify.args[0] else {
+            return None;
+        };
+        let map = self.expr(&entry.receiver);
+        let map = self.settle(map);
+        let (key_ty, value_ty) = match &map.ty {
+            Ty::Map(k, v, _) => ((**k).clone(), (**v).clone()),
+            _ => (Ty::Unknown, Ty::Unknown),
+        };
+        let key = self.expr_with(&entry.args[0], &key_ty);
+        let key = self.settle(key);
+        let place = format!("{}[{}]", wrap(&map, P_PRIMARY), key.code);
+        // The closure's parameter stands for the value in the map.
+        self.push_scope();
+        if let Some(p) = c.inputs.first() {
+            let pat = match p {
+                syn::Pat::Type(pt) => &*pt.pat,
+                p => p,
+            };
+            if let syn::Pat::Ident(id) = pat {
+                self.declare_alias(&id.ident.to_string(), format!("{place}!"), value_ty.clone());
+            }
+        }
+        let body = match &*c.body {
+            Expr::Block(b) => self.block_lines(&b.block, crate::stmt::Sink::Discard),
+            e => self.expr_stmt(e),
+        };
+        self.pop_scope();
+        let default = match last.as_str() {
+            "or_insert" => {
+                let v = self.expr_with(&m.args[0], &value_ty);
+                self.settle(v).code
+            }
+            "or_insert_with" => match &m.args[0] {
+                Expr::Closure(f) if f.inputs.is_empty() => {
+                    let v = self.expr_with(&f.body, &value_ty);
+                    self.settle(v).code
+                }
+                f => {
+                    let v = self.expr(f);
+                    format!("{}()", wrap(&v, P_PRIMARY))
+                }
+            },
+            _ => value_ty.default_value().unwrap_or_else(|| {
+                self.error(
+                    m.span(),
+                    "or_default(): the value type of this map is unknown",
+                );
+                "fatalError()".into()
+            }),
+        };
+        Some(Ex::new(
+            format!(
+                "if {place} != nil {{\n{}\n}} else {{\n    {place} = {default}\n}}",
+                crate::translate::indent_lines(&body.join("\n"))
+            ),
+            crate::expr::P_ASSIGN,
+            Ty::Unit,
+        ))
     }
 
     pub fn entry_value_ty(&mut self, m: &ExprMethodCall) -> Ty {
@@ -818,6 +1018,10 @@ impl Translator<'_> {
         }
         match (expected, &v.ty) {
             (Ty::Str, Ty::Char) => Ex::primary(format!("String({})", v.code), Ty::Str),
+            // `impl From<Version> for String`: `String(version)`.
+            (Ty::Str, Ty::Named(..)) if self.syms.from_impls.contains_key("String") => {
+                Ex::primary(format!("String({})", v.code), Ty::Str)
+            }
             (Ty::Int(_) | Ty::Float(_), t) if t.swift() != expected.swift() && t.is_numeric() => {
                 Ex::primary(
                     format!("{}({})", expected.swift_lossy(), v.code),
@@ -833,7 +1037,7 @@ impl Translator<'_> {
     }
 
     /// The signature of a method of the crate's types, for a receiver of type `ty`.
-    fn user_method(&self, ty: &Ty, name: &str) -> Option<(FnSig, String)> {
+    pub fn user_method(&self, ty: &Ty, name: &str) -> Option<(FnSig, String)> {
         match ty {
             Ty::Named(n, _) => {
                 let rust = if n == "Self" {
@@ -873,8 +1077,22 @@ impl Translator<'_> {
     }
 
     /// Arguments of a standard method, with the expected types its receiver implies.
-    fn method_args(&mut self, recv: &Ex, name: &str, m: &ExprMethodCall) -> Vec<Ex> {
-        let item = recv.ty.item();
+    fn method_args(
+        &mut self,
+        recv: &Ex,
+        name: &str,
+        m: &ExprMethodCall,
+        call_expected: &Ty,
+    ) -> Vec<Ex> {
+        // `result.map(|ok| …)`, `result.map_err(|e| …)`.
+        let item = match (&recv.ty, name) {
+            (
+                Ty::Result(_, e),
+                "map_err" | "or_else" | "unwrap_or_else" | "is_err_and" | "inspect_err",
+            ) => (**e).clone(),
+            (Ty::Result(ok, _), _) => (**ok).clone(),
+            _ => recv.ty.item(),
+        };
         let (key, value) = match &recv.ty {
             Ty::Map(k, v, _) => ((**k).clone(), (**v).clone()),
             _ => (Ty::Unknown, Ty::Unknown),
@@ -893,6 +1111,15 @@ impl Translator<'_> {
                 ("insert", 1, Ty::Map(..)) => value.clone(),
                 ("insert", 1, Ty::Vec(_)) => item.clone(),
                 ("insert" | "contains" | "remove", 0, Ty::Set(..)) => item.clone(),
+                // `result.and_then(|v| …)` and `result.or_else(|e| …)` give a `Result` back.
+                ("and_then", 0, Ty::Result(ok, err)) => Ty::Fn(
+                    vec![(**ok).clone()],
+                    Box::new(Ty::Result(Box::new(Ty::Unknown), err.clone())),
+                ),
+                ("or_else", 0, Ty::Result(ok, err)) => Ty::Fn(
+                    vec![(**err).clone()],
+                    Box::new(Ty::Result(ok.clone(), Box::new(Ty::Unknown))),
+                ),
                 (
                     "map" | "filter" | "filter_map" | "flat_map" | "any" | "all" | "find"
                     | "position" | "for_each" | "take_while" | "skip_while" | "max_by_key"
@@ -902,28 +1129,39 @@ impl Translator<'_> {
                     _,
                     _,
                 ) => {
-                    let param = match (&recv.ty, name) {
-                        (Ty::Map(..), "retain") => item.clone(),
-                        _ => item.clone(),
+                    let param = item.clone();
+                    // `.map(|s| parse(s)).collect::<Result<Vec<_>, _>>()`: the closure throws.
+                    let ret = match (name, call_expected) {
+                        ("map", Ty::Iter(t) | Ty::Vec(t)) if !t.is_unknown() => (**t).clone(),
+                        _ => Ty::Unknown,
                     };
                     if name == "map_or" && i == 0 {
                         Ty::Unknown
                     } else {
-                        Ty::Fn(vec![param], Box::new(Ty::Unknown))
+                        Ty::Fn(vec![param], Box::new(ret))
                     }
                 }
+
                 ("sort_by" | "max_by" | "min_by" | "sort_unstable_by", 0, _) => Ty::Fn(
                     vec![item.clone(), item.clone()],
                     Box::new(Ty::Named("Ordering".into(), vec![])),
                 ),
-                ("fold", 0, _) => Ty::Unknown,
+                // `fold(BTreeMap::new(), …)` with the result's type known: the same type.
+                ("fold", 0, _) => call_expected.clone(),
                 ("unwrap_or" | "or", 0, Ty::Option(t)) => (**t).clone(),
                 ("unwrap_or_else" | "or_else", 0, Ty::Option(t)) => Ty::Fn(vec![], t.clone()),
+                ("unwrap_or", 0, Ty::Result(t, _)) => (**t).clone(),
+                (
+                    "map_err" | "unwrap_or_else" | "is_err_and" | "inspect_err" | "is_ok_and",
+                    0,
+                    Ty::Result(..),
+                ) => Ty::Fn(vec![item.clone()], Box::new(Ty::Unknown)),
                 (
                     "min" | "max" | "pow" | "powi" | "powf" | "abs_diff" | "atan2" | "hypot"
                     | "checked_add" | "checked_sub" | "checked_mul" | "checked_div"
                     | "wrapping_add" | "wrapping_sub" | "wrapping_mul" | "saturating_add"
-                    | "saturating_sub" | "saturating_mul" | "rem_euclid" | "div_euclid" | "clamp",
+                    | "saturating_sub" | "saturating_mul" | "rem_euclid" | "div_euclid" | "clamp"
+                    | "overflowing_add" | "overflowing_sub" | "overflowing_mul",
                     _,
                     t,
                 ) if t.is_numeric() => {
@@ -941,10 +1179,18 @@ impl Translator<'_> {
                 (
                     "push_str" | "contains" | "starts_with" | "ends_with" | "rfind" | "split"
                     | "replace" | "strip_prefix" | "strip_suffix" | "split_once"
-                    | "trim_start_matches" | "trim_end_matches" | "matches",
+                    | "trim_start_matches" | "trim_end_matches" | "trim_matches" | "matches"
+                    | "rsplit" | "split_terminator",
                     _,
                     Ty::Str,
                 ) => Ty::Str,
+                ("splitn" | "rsplitn", 1, Ty::Str) => Ty::Str,
+                ("splitn" | "rsplitn", 0, Ty::Str) => Ty::Int(IntKind::Usize),
+                // `scan(state, |state, x| …)`: the closure changes the state in place.
+                ("scan", 1, _) => {
+                    let state = out.first().map_or(Ty::Unknown, |e: &Ex| e.ty.clone());
+                    Ty::Fn(vec![state, item.clone()], Box::new(Ty::Unknown))
+                }
                 _ => Ty::Unknown,
             };
             // `fold(init, |acc, x| …)`: the accumulator has the type of `init`.
@@ -1024,6 +1270,17 @@ impl Translator<'_> {
         span: proc_macro2::Span,
     ) -> Ex {
         let args: Vec<Ex> = args.into_iter().map(|a| self.settle(a)).collect();
+        // A type of the crate implementing `Iterator` is a sequence.
+        let recv = match &recv.ty {
+            Ty::Named(n, _) => match self.syms.iterators.get(n) {
+                Some(item) => Ex {
+                    ty: Ty::Iter(Box::new(item.clone())),
+                    ..recv
+                },
+                None => recv,
+            },
+            _ => recv,
+        };
         let r = wrap(&recv, P_PRIMARY);
         let rty = recv.ty.clone();
         let item = rty.item();
@@ -1037,6 +1294,23 @@ impl Translator<'_> {
             _ => Ty::Unknown,
         };
         let prim = |code: String, ty: Ty| Ex::primary(code, ty);
+        // `f.precision()`, `f.width()`, `f.alternate()` in a `Display` impl: Swift's
+        // `description` knows nothing of the format spec.
+        if rty == Ty::Named("Formatter".into(), vec![]) {
+            match name {
+                "precision" | "width" => {
+                    self.warn(span, format!("`{name}()` of the formatter is always `None` in Swift: `description` does not know the format spec"));
+                    return Ex::primary(
+                        "(nil as Int?)",
+                        Ty::Option(Box::new(Ty::Int(IntKind::Usize))),
+                    );
+                }
+                "alternate" | "sign_plus" | "sign_minus" | "sign_aware_zero_pad" => {
+                    return Ex::primary("false", Ty::Bool);
+                }
+                _ => {}
+            }
+        }
         // An iterator kept in a variable (`RsIter`).
         if let Ty::Named(n, targs) = &rty {
             if n == "RsIter" {
@@ -1113,10 +1387,12 @@ impl Translator<'_> {
                     return Ex::new(format!("{} ?? {d}", wrap(&recv, P_NIL + 1)), P_NIL, inner);
                 }
                 "map" => {
-                    return prim(
+                    let mut ex = prim(
                         format!("{r}.map({})", a(0)),
                         Ty::Option(Box::new(fn_ret(0))),
                     );
+                    ex.parsed = recv.parsed;
+                    return ex;
                 }
                 "and_then" => {
                     let ret = match fn_ret(0) {
@@ -1156,6 +1432,30 @@ impl Translator<'_> {
                 "replace" => {
                     self.helper("option");
                     return prim(format!("{r}.replace({})", a(0)), rty);
+                }
+                "xor" => {
+                    self.helper("option");
+                    return prim(format!("{r}.xor({})", a(0)), rty);
+                }
+                "zip" => {
+                    self.helper("option");
+                    return prim(
+                        format!("{r}.zip({})", a(0)),
+                        Ty::Option(Box::new(Ty::Tuple(vec![inner, ty_a(0).item()]))),
+                    );
+                }
+                // As a statement; as a `let` initializer, `let_ident` makes an alias.
+                "get_or_insert" | "get_or_insert_with" => {
+                    let v = if name == "get_or_insert" {
+                        a(0)
+                    } else {
+                        closure_body(&a(0))
+                    };
+                    return Ex::new(
+                        format!("if {r} == nil {{ {r} = {v} }}"),
+                        crate::expr::P_ASSIGN,
+                        Ty::Unit,
+                    );
                 }
                 "ok_or" | "ok_or_else" => {
                     let e = if name == "ok_or" {
@@ -1222,9 +1522,25 @@ impl Translator<'_> {
                         Ty::Result(Box::new(ok), Box::new(fn_ret(0))),
                     );
                 }
-                "and_then" => return prim(format!("{r}.flatMap({})", a(0)), fn_ret(0)),
+                "and_then" => {
+                    let ret = match fn_ret(0) {
+                        Ty::Result(o, _) => Ty::Result(o, Box::new(err)),
+                        t => Ty::Result(Box::new(t), Box::new(err)),
+                    };
+                    return prim(format!("{r}.andThen({})", a(0)), ret);
+                }
+                "or_else" => {
+                    let ret = match fn_ret(0) {
+                        Ty::Result(_, e) => Ty::Result(Box::new(ok), e),
+                        _ => Ty::Result(Box::new(ok), Box::new(Ty::Unknown)),
+                    };
+                    return prim(format!("{r}.orElse({})", a(0)), ret);
+                }
                 "is_ok_and" => {
                     return Ex::new(format!("{r}.ok().map({}) ?? false", a(0)), P_NIL, Ty::Bool);
+                }
+                "is_err_and" => {
+                    return Ex::new(format!("{r}.err().map({}) ?? false", a(0)), P_NIL, Ty::Bool);
                 }
                 _ => {}
             }
@@ -1241,12 +1557,16 @@ impl Translator<'_> {
                     return recv;
                 }
                 let ty = match (&rty, name) {
-                    (Ty::Map(..), "iter" | "into_iter") => Ty::Iter(Box::new(item)),
-                    (Ty::Range(_), "iter" | "into_iter") => Ty::Iter(Box::new(item)),
-                    _ => rty,
+                    (Ty::Map(..), "iter" | "into_iter") => Ty::Iter(Box::new(item.clone())),
+                    (Ty::Range(_), "iter" | "into_iter") => Ty::Iter(Box::new(item.clone())),
+                    _ => rty.clone(),
                 };
                 if matches!(recv.ty, Ty::Map(_, _, true)) && matches!(name, "iter" | "into_iter") {
                     return prim(format!("{r}.sorted(by: {{ $0.key < $1.key }})"), ty);
+                }
+                // A `BTreeSet` iterates in order.
+                if matches!(recv.ty, Ty::Set(_, true)) && matches!(name, "iter" | "into_iter") {
+                    return prim(format!("{r}.sorted()"), Ty::Iter(Box::new(item)));
                 }
                 return Ex { ty, ..recv };
             }
@@ -1340,14 +1660,34 @@ impl Translator<'_> {
                     };
                     return prim(format!("{r}.{f}()"), Ty::Str);
                 }
-                "trim_start_matches" | "trim_end_matches" => {
+                "trim_start_matches" | "trim_end_matches" | "trim_matches" => {
                     self.helper("string");
-                    let f = if name.starts_with("trim_start") {
-                        "trimStartMatches"
-                    } else {
-                        "trimEndMatches"
+                    let f = match name {
+                        "trim_start_matches" => "trimStartMatches",
+                        "trim_end_matches" => "trimEndMatches",
+                        _ => "trimMatches",
                     };
                     return prim(format!("{r}.{f}({})", str_arg(0)), Ty::Str);
+                }
+                "splitn" | "rsplitn" if args.len() == 2 => {
+                    self.helper("string");
+                    return prim(
+                        format!("{r}.{name}({}, {})", a(0), str_arg(1)),
+                        Ty::Iter(Box::new(Ty::Str)),
+                    );
+                }
+                "rsplit" => {
+                    return prim(
+                        format!("{r}.components(separatedBy: {}).reversed()", str_arg(0)),
+                        Ty::Iter(Box::new(Ty::Str)),
+                    );
+                }
+                "split_terminator" => {
+                    self.helper("string");
+                    return prim(
+                        format!("{r}.splitTerminator({})", str_arg(0)),
+                        Ty::Iter(Box::new(Ty::Str)),
+                    );
                 }
                 "starts_with" => return prim(format!("{r}.hasPrefix({})", str_arg(0)), Ty::Bool),
                 "ends_with" => return prim(format!("{r}.hasSuffix({})", str_arg(0)), Ty::Bool),
@@ -1360,13 +1700,20 @@ impl Translator<'_> {
                         Ty::Option(Box::new(usize_ty)),
                     );
                 }
-                "replace" | "replacen" => {
+                "replace" => {
                     return prim(
                         format!(
                             "{r}.replacingOccurrences(of: {}, with: {})",
                             str_arg(0),
                             a(1)
                         ),
+                        Ty::Str,
+                    );
+                }
+                "replacen" if args.len() == 3 => {
+                    self.helper("string");
+                    return prim(
+                        format!("{r}.replacen({}, {}, {})", str_arg(0), a(1), a(2)),
                         Ty::Str,
                     );
                 }
@@ -1610,9 +1957,12 @@ impl Translator<'_> {
             let t = if float { fty.clone() } else { rty.clone() };
             let ts = t.swift().unwrap_or_else(|| "Double".into());
             match name {
-                "abs" => return prim(format!("abs({})", recv.code), t),
+                "abs" => return prim(format!("{}({})", self.global_fn("abs"), recv.code), t),
                 "min" | "max" if args.len() == 1 => {
-                    return prim(format!("{name}({}, {})", recv.code, a(0)), t);
+                    return prim(
+                        format!("{}({}, {})", self.global_fn(name), recv.code, a(0)),
+                        t,
+                    );
                 }
                 "clamp" => return prim(format!("min(max({}, {}), {})", recv.code, a(0), a(1)), t),
                 "pow" if !float => {
@@ -1684,6 +2034,22 @@ impl Translator<'_> {
                         Ty::Bool,
                     );
                 }
+                // `i32` is Swift's 64-bit `Int`: these operations keep the 32-bit limits.
+                "wrapping_add" | "wrapping_sub" | "wrapping_mul" if t == Ty::Int(IntKind::I32) => {
+                    let op = match name {
+                        "wrapping_add" => "&+",
+                        "wrapping_sub" => "&-",
+                        _ => "&*",
+                    };
+                    return prim(
+                        format!(
+                            "Int(Int32(truncatingIfNeeded: {}) {op} Int32(truncatingIfNeeded: {}))",
+                            recv.code,
+                            a(0)
+                        ),
+                        t,
+                    );
+                }
                 "wrapping_add" => {
                     return Ex::new(
                         format!("{} &+ {}", wrap(&recv, P_ADD), wrap(&args[0], P_ADD + 1)),
@@ -1707,13 +2073,36 @@ impl Translator<'_> {
                 }
                 "checked_add" | "checked_sub" | "checked_mul" | "checked_div" | "checked_rem"
                 | "saturating_add" | "saturating_sub" | "saturating_mul" | "rem_euclid"
-                | "div_euclid" | "abs_diff" | "isqrt" | "checked_pow" => {
+                | "div_euclid" | "abs_diff" | "isqrt" | "checked_pow" | "overflowing_add"
+                | "overflowing_sub" | "overflowing_mul" => {
                     self.helper("int");
                     let ret = if name.starts_with("checked") {
                         Ty::Option(Box::new(t.clone()))
+                    } else if name.starts_with("overflowing") {
+                        Ty::Tuple(vec![t.clone(), Ty::Bool])
                     } else {
-                        t
+                        t.clone()
                     };
+                    let narrow = t == Ty::Int(IntKind::I32)
+                        && (name.starts_with("checked")
+                            || name.starts_with("saturating")
+                            || name.starts_with("overflowing"));
+                    if narrow {
+                        let call = format!(
+                            "Int32(truncatingIfNeeded: {}).{}(Int32(truncatingIfNeeded: {}))",
+                            recv.code,
+                            names::lower_camel(name),
+                            a(0)
+                        );
+                        let code = if name.starts_with("checked") {
+                            format!("{call}.map {{ Int($0) }}")
+                        } else if name.starts_with("overflowing") {
+                            format!("rsWiden({call})")
+                        } else {
+                            format!("Int({call})")
+                        };
+                        return prim(code, ret);
+                    }
                     return prim(format!("{r}.{}({})", names::lower_camel(name), a(0)), ret);
                 }
                 "cmp" => {
@@ -2056,7 +2445,7 @@ impl Translator<'_> {
                     "split_off" | "drain" => Ty::Vec(Box::new(item)),
                     _ => Ty::Unit,
                 };
-                let call = if name == "drain" {
+                let call = if name == "drain" && codes.first().is_none_or(|c| c == "...") {
                     "drain()".to_string()
                 } else {
                     format!("{}({})", names::lower_camel(name), codes.join(", "))
@@ -2088,8 +2477,8 @@ impl Translator<'_> {
                 self.helper("vec");
                 prim(format!("{r}.retain({})", a(0)), Ty::Unit)
             }
-            "first" => prim(format!("{r}.first"), Ty::Option(Box::new(item))),
-            "last" => prim(format!("{r}.last"), Ty::Option(Box::new(item))),
+            "first" | "front" => prim(format!("{r}.first"), Ty::Option(Box::new(item))),
+            "last" | "back" => prim(format!("{r}.last"), Ty::Option(Box::new(item))),
             "next" => prim(format!("{r}.first"), Ty::Option(Box::new(item))),
             "get" if !matches!(rty, Ty::Map(..)) => {
                 self.helper("vec");
@@ -2170,7 +2559,7 @@ impl Translator<'_> {
                 iter(Ty::Tuple(vec![usize_ty, item])),
             ),
             "zip" => prim(
-                format!("zip({}, {})", recv.code, a(0)),
+                format!("{}({}, {})", self.global_fn("zip"), recv.code, a(0)),
                 iter(Ty::Tuple(vec![item, ty_a(0).item()])),
             ),
             "rev" => prim(format!("{r}.reversed()"), iter(item)),
@@ -2198,21 +2587,20 @@ impl Translator<'_> {
             ),
             "cycle" | "peekable" | "fuse" => recv.clone(),
             "inspect" => recv.clone(),
-            "sum" => {
+            "sum" | "product" => {
                 let t = turbofish
                     .first()
                     .cloned()
                     .filter(|t| !t.is_unknown())
-                    .unwrap_or(item);
-                prim(format!("{r}.reduce(0, +)"), t)
-            }
-            "product" => {
-                let t = turbofish
-                    .first()
-                    .cloned()
-                    .filter(|t| !t.is_unknown())
-                    .unwrap_or(item);
-                prim(format!("{r}.reduce(1, *)"), t)
+                    .or_else(|| (!item.is_unknown()).then(|| item.clone()))
+                    .unwrap_or_else(|| expected.clone());
+                let (zero, op) = match (name, &t) {
+                    ("sum", Ty::Float(_)) => ("0.0", "+"),
+                    ("sum", _) => ("0", "+"),
+                    (_, Ty::Float(_)) => ("1.0", "*"),
+                    _ => ("1", "*"),
+                };
+                prim(format!("{r}.reduce({zero}, {op})"), t)
             }
             "count" => prim(format!("{r}.count"), usize_ty),
             "min" | "max" if args.is_empty() && matches!(item, Ty::Tuple(_)) => {
@@ -2221,9 +2609,10 @@ impl Translator<'_> {
             "min" | "max" if args.is_empty() => {
                 prim(format!("{r}.{name}()"), Ty::Option(Box::new(item)))
             }
-            "min" | "max" if args.len() == 1 => {
-                prim(format!("{name}({}, {})", recv.code, a(0)), recv.ty.clone())
-            }
+            "min" | "max" if args.len() == 1 => prim(
+                format!("{}({}, {})", self.global_fn(name), recv.code, a(0)),
+                recv.ty.clone(),
+            ),
             "min_by_key" | "max_by_key" | "min_by" | "max_by" => {
                 self.helper("vec");
                 if name.ends_with("by") {
@@ -2237,6 +2626,14 @@ impl Translator<'_> {
             "fold" => {
                 let t = ty_a(0);
                 prim(format!("{r}.reduce({}, {})", a(0), a(1)), t)
+            }
+            "scan" => {
+                self.helper("vec");
+                let ret = match fn_ret(1) {
+                    Ty::Option(t) => *t,
+                    t => t,
+                };
+                prim(format!("{r}.rsScan({}, {})", a(0), a(1)), iter(ret))
             }
             "reduce" => {
                 self.helper("vec");
@@ -2328,6 +2725,13 @@ impl Translator<'_> {
             );
         match &target {
             Ty::Str => Ex::primary(format!("String({code})"), Ty::Str),
+            // `collect::<Option<Vec<_>>>()`: all or nothing.
+            Ty::Option(inner) if matches!(**inner, Ty::Vec(_)) => {
+                self.helper("option");
+                let mut ty = Ty::Vec(Box::new(item.item()));
+                ty.merge(inner);
+                Ex::primary(format!("rsAllSome({code})"), Ty::Option(Box::new(ty)))
+            }
             Ty::Map(..) => {
                 let (k, v) = match &item {
                     Ty::Tuple(ts) if ts.len() == 2 => (ts[0].clone(), ts[1].clone()),

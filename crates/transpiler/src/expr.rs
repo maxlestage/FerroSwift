@@ -67,6 +67,14 @@ pub fn wrap(ex: &Ex, min: u8) -> String {
     }
 }
 
+/// `a.b().c()` → `a`.
+pub fn root_receiver(e: &Expr) -> &Expr {
+    match e {
+        Expr::MethodCall(m) => root_receiver(&m.receiver),
+        e => e,
+    }
+}
+
 /// A Swift string literal.
 pub fn swift_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -439,6 +447,13 @@ impl Translator<'_> {
                 };
             }
         }
+        // The crate's own types first: an enum `Cell` is not `std::cell::Cell`.
+        if let Some(e) = self.syms.enums.get(name) {
+            return e.swift.clone();
+        }
+        if let Some(st) = self.syms.structs.get(name) {
+            return st.swift.clone();
+        }
         match name {
             "String" | "str" => "String".into(),
             "Vec" => "Array".into(),
@@ -463,14 +478,31 @@ impl Translator<'_> {
 
     fn path_expr(&mut self, path: &syn::Path, expected: &Ty, span: proc_macro2::Span) -> Ex {
         let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        if let Some(ex) = self.path_as_closure(&segs, path, expected) {
+            return ex;
+        }
         if segs.len() == 1 {
             let n = segs[0].as_str();
             if n == "self" {
                 return Ex::primary(self.self_code(), self.self_ty());
             }
             if n == "None" {
-                let ty = match expected {
-                    Ty::Option(_) => expected.clone(),
+                // `None::<i32>` where nothing tells the type: `nil as Int?`.
+                let explicit = match &path.segments[0].arguments {
+                    syn::PathArguments::AngleBracketed(a) => a.args.iter().find_map(|g| match g {
+                        syn::GenericArgument::Type(t) => Some(self.ty(t)),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                let ty = match (expected, explicit) {
+                    (Ty::Option(_), _) => expected.clone(),
+                    (_, Some(t)) if t.is_complete() => {
+                        return Ex::primary(
+                            format!("(nil as {}?)", t.swift_lossy()),
+                            Ty::Option(Box::new(t)),
+                        );
+                    }
                     _ => Ty::Option(Box::new(Ty::Unknown)),
                 };
                 return Ex::primary("nil", ty);
@@ -586,6 +618,104 @@ impl Translator<'_> {
         } else {
             Ex::primary(format!("{enum_swift}.{case}"), ty)
         }
+    }
+
+    /// `.map(String::from)`, `.filter(char::is_ascii_digit)`, `.map(Shape::area)`, `.map(Some)`:
+    /// a path used where a function is expected becomes a closure, so that the usual
+    /// translation of the call applies.
+    fn path_as_closure(&mut self, segs: &[String], path: &syn::Path, expected: &Ty) -> Option<Ex> {
+        let Ty::Fn(params, _) = expected else {
+            return None;
+        };
+        let last = segs.last()?.as_str();
+        if segs.len() == 1 && !matches!(last, "Some" | "Ok" | "Err") {
+            return None;
+        }
+        let owner = if segs.len() >= 2 {
+            self.rust_type_name(&segs[segs.len() - 2])
+        } else {
+            String::new()
+        };
+        // A method takes the first argument as its receiver; a function takes them all.
+        let method = if segs.len() < 2 {
+            false
+        } else if let Some(ms) = self.syms.methods.get(&owner) {
+            ms.get(last)
+                .is_some_and(|sig| sig.self_kind != crate::symbols::SelfKind::None)
+        } else {
+            let constructor = matches!(
+                last,
+                "from"
+                    | "new"
+                    | "from_str"
+                    | "from_utf8"
+                    | "from_utf8_lossy"
+                    | "with_capacity"
+                    | "from_digit"
+                    | "from_u32"
+                    | "default"
+                    | "from_iter"
+                    | "try_from"
+            );
+            let receiver_type = matches!(
+                owner.as_str(),
+                "str"
+                    | "String"
+                    | "char"
+                    | "Vec"
+                    | "Option"
+                    | "Result"
+                    | "f64"
+                    | "f32"
+                    | "i8"
+                    | "i16"
+                    | "i32"
+                    | "i64"
+                    | "i128"
+                    | "isize"
+                    | "u8"
+                    | "u16"
+                    | "u32"
+                    | "u64"
+                    | "u128"
+                    | "usize"
+                    | "bool"
+                    | "HashMap"
+                    | "HashSet"
+                    | "BTreeMap"
+                    | "BTreeSet"
+                    | "ToString"
+                    | "Clone"
+                    | "Into"
+                    | "AsRef"
+                    | "Display"
+                    | "Iterator"
+                    | "PartialEq"
+                    | "PartialOrd"
+                    | "Ord"
+                    | "ToOwned"
+            ) || self.syms.traits.contains(&owner);
+            !constructor && receiver_type
+        };
+        let arity = params.len().max(1);
+        let names = ["x", "y", "z", "w"];
+        let args: Vec<syn::Ident> = (0..arity)
+            .map(|i| {
+                let n = names
+                    .get(i)
+                    .map_or_else(|| format!("a{i}"), |n| (*n).to_string());
+                syn::Ident::new(&n, proc_macro2::Span::call_site())
+            })
+            .collect();
+        let closure: syn::ExprClosure = if method {
+            let recv = &args[0];
+            let rest = &args[1..];
+            let m = syn::Ident::new(last, proc_macro2::Span::call_site());
+            syn::parse_quote!(|#(#args),*| #recv.#m(#(#rest),*))
+        } else {
+            syn::parse_quote!(|#(#args),*| #path(#(#args),*))
+        };
+        Some(self.closure(&closure, expected))
     }
 
     /// `i32::MAX`, `f64::consts::PI`, `f64::INFINITY`…
@@ -808,6 +938,10 @@ impl Translator<'_> {
         let target = self.ty(&c.ty);
         let v = self.expr(&c.expr);
         let v = self.settle(v);
+        // `(|a, b| a + b) as fn(i32, i32) -> i32`: the closure itself.
+        if matches!(target, Ty::Fn(..)) {
+            return Ex { ty: target, ..v };
+        }
         let Some(t) = target.swift() else {
             return v;
         };
@@ -844,6 +978,19 @@ impl Translator<'_> {
                     Ex::primary(raw, target)
                 } else {
                     Ex::primary(format!("{t}({raw})"), target)
+                }
+            }
+            // A float to an integer: toward zero, saturating, 0 for NaN, like Rust.
+            (Ty::Float(_), Ty::Int(to)) => {
+                self.helper("int");
+                let exact = match to {
+                    IntKind::I32 => "Int32",
+                    _ => t.as_str(),
+                };
+                if exact == t {
+                    Ex::primary(format!("rsInt({t}.self, {})", v.code), target)
+                } else {
+                    Ex::primary(format!("{t}(rsInt({exact}.self, {}))", v.code), target)
                 }
             }
             // Narrowing, or a negative value made unsigned: Rust's `as` truncates.
@@ -889,13 +1036,25 @@ impl Translator<'_> {
             syn::RangeLimits::HalfOpen(_) => "..<",
             syn::RangeLimits::Closed(_) => "...",
         };
+        // `'a'..='z'`: Swift cannot count characters, a helper lists them.
+        if item_ty == Ty::Char {
+            if let (Some(s), Some(e)) = (&start, &end) {
+                self.helper("char");
+                let through = matches!(r.limits, syn::RangeLimits::Closed(_));
+                return Ex::primary(
+                    format!("rsChars({}, {}, through: {through})", s.code, e.code),
+                    Ty::Vec(Box::new(Ty::Char)),
+                );
+            }
+        }
         let code = match (&start, &end) {
             (Some(s), Some(e)) if e.code.starts_with('-') => {
                 format!("{} {op} {}", wrap(s, P_RANGE + 1), wrap(e, P_RANGE + 1))
             }
             (Some(s), Some(e)) => format!("{}{op}{}", wrap(s, P_RANGE + 1), wrap(e, P_RANGE + 1)),
-            (Some(s), None) => format!("{}...", wrap(s, P_RANGE + 1)),
-            (None, Some(e)) => format!("{op}{}", wrap(e, P_RANGE + 1)),
+            // One-sided ranges are prefix or postfix operators: they bind tighter than `-`.
+            (Some(s), None) => format!("{}...", wrap(s, P_PRIMARY)),
+            (None, Some(e)) => format!("{op}{}", wrap(e, P_PRIMARY)),
             (None, None) => "...".into(),
         };
         Ex::new(code, P_RANGE, Ty::Range(Box::new(item_ty)))
@@ -1085,17 +1244,48 @@ impl Translator<'_> {
             (Ty::Tuple(ts), syn::Member::Unnamed(i)) => {
                 ts.get(i.index as usize).cloned().unwrap_or(Ty::Unknown)
             }
-            (Ty::Named(n, _), m) => {
+            (Ty::Named(n, args), m) => {
                 let rust = match m {
                     syn::Member::Named(id) => id.to_string(),
                     syn::Member::Unnamed(i) => i.index.to_string(),
                 };
-                self.struct_by_swift(n)
-                    .and_then(|s| s.field(&rust).map(|f| f.ty.clone()))
-                    .unwrap_or(Ty::Unknown)
+                let Some(st) = self.struct_by_swift(n) else {
+                    return Ty::Unknown;
+                };
+                let Some(field) = st.field(&rust) else {
+                    return Ty::Unknown;
+                };
+                // `pair.1` of a `Pair<String, Int>`: `B` is `Int` here.
+                if st.generics.is_empty() || args.is_empty() {
+                    return field.ty.clone();
+                }
+                let map: std::collections::HashMap<String, Ty> = st
+                    .generics
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .filter(|(_, t)| !t.is_unknown())
+                    .collect();
+                crate::symbols::substitute(&field.ty, &map)
             }
             _ => Ty::Unknown,
         }
+    }
+
+    /// The Rust name of a struct or enum of the crate, from its Swift name.
+    pub fn rust_name_of_swift(&self, swift: &str) -> Option<String> {
+        self.syms
+            .structs
+            .iter()
+            .find(|(_, s)| s.swift == swift)
+            .map(|(k, _)| k.clone())
+            .or_else(|| {
+                self.syms
+                    .enums
+                    .iter()
+                    .find(|(_, e)| e.swift == swift)
+                    .map(|(k, _)| k.clone())
+            })
     }
 
     pub fn struct_by_swift(&self, swift: &str) -> Option<&crate::symbols::StructInfo> {
@@ -1190,6 +1380,13 @@ impl Translator<'_> {
                 format!("{}[{}]!", wrap(&base, P_PRIMARY), idx.code),
                 (**v).clone(),
             ),
+            // `impl Index<…> for Matrix`: the subscript's type.
+            t @ Ty::Named(..) => {
+                let ty = self
+                    .user_method(t, "index")
+                    .map_or_else(|| t.item(), |(sig, _)| sig.ret);
+                Ex::primary(format!("{}[{}]", wrap(&base, P_PRIMARY), idx.code), ty)
+            }
             t => Ex::primary(
                 format!("{}[{}]", wrap(&base, P_PRIMARY), idx.code),
                 t.item(),
@@ -1433,25 +1630,25 @@ impl Translator<'_> {
         });
         let body_expr = &*c.body;
         let mut body_ty = Ty::Unknown;
-        let single: Option<String> = match body_expr {
+        let single_expr: Option<&Expr> = match body_expr {
             Expr::Block(b) if b.block.stmts.len() == 1 && throws.is_none() => {
                 match &b.block.stmts[0] {
                     syn::Stmt::Expr(e, None) if !needs_statements(e) && !has_control_flow(e) => {
-                        let v = self.closure_value(e, &ret);
-                        body_ty = v.ty.clone();
-                        Some(v.code)
+                        Some(e)
                     }
                     _ => None,
                 }
             }
             Expr::Block(_) => None,
-            e if !needs_statements(e) && !has_control_flow(e) && throws.is_none() => {
-                let v = self.closure_value(e, &ret);
-                body_ty = v.ty.clone();
-                Some(v.code)
-            }
+            e if !needs_statements(e) && !has_control_flow(e) && throws.is_none() => Some(e),
             _ => None,
         };
+        let single: Option<String> = single_expr.map(|e| {
+            let v = self.expr_with(e, &ret);
+            let v = self.settle(v);
+            body_ty = v.ty.clone();
+            v.code
+        });
         let lines = match single {
             Some(code) => {
                 let mut l = prologue.clone();
@@ -1525,49 +1722,35 @@ impl Translator<'_> {
         ex
     }
 
-    fn closure_value(&mut self, e: &Expr, ret: &Ty) -> Ex {
-        let v = self.expr_with(e, ret);
-        let v = self.settle(v);
-        let prelude_empty = self.preludes.last().is_none_or(|p| p.is_empty());
-        let _ = prelude_empty;
-        v
-    }
-
     /// A closure parameter: a name, `(a, b)`, or `_`.
     fn closure_param(
         &mut self,
         pat: &Pat,
         ty: &Ty,
         prologue: &mut Vec<String>,
-        index: usize,
+        _index: usize,
     ) -> String {
         match pat {
             Pat::Ident(id) => {
                 let n = self.declare(&id.ident.to_string(), ty.clone());
                 if id.mutability.is_some() {
-                    prologue.push(format!("var {n} = {n}"));
+                    // A closure parameter cannot be shadowed by its own `var`.
+                    let param = self.fresh(&n);
+                    prologue.push(format!("var {n} = {param}"));
+                    return param;
                 }
                 n
             }
             Pat::Wild(_) => "_".into(),
-            Pat::Reference(r) => self.closure_param(&r.pat, ty, prologue, index),
-            Pat::Tuple(t) => {
-                let tys = match ty {
-                    Ty::Tuple(ts) => ts.clone(),
-                    _ => vec![Ty::Unknown; t.elems.len()],
-                };
-                let parts: Vec<String> = t
-                    .elems
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        self.closure_param(p, tys.get(i).unwrap_or(&Ty::Unknown), prologue, i)
-                    })
-                    .collect();
-                format!("({})", parts.join(", "))
-            }
+            Pat::Reference(r) => self.closure_param(&r.pat, ty, prologue, 0),
+            // `|(k, v)|`: Swift closures take no patterns, the tuple is split on the first line.
             other => {
-                let n = format!("arg{index}");
+                let base = match other {
+                    Pat::Tuple(t) if t.elems.len() == 2 => "pair",
+                    Pat::Tuple(_) => "tuple",
+                    _ => "arg",
+                };
+                let n = self.fresh(base);
                 let (lines, ok) = self.let_pattern(other, &n, ty, false);
                 if !ok {
                     self.error(

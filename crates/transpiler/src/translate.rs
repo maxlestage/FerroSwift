@@ -100,6 +100,8 @@ pub struct Translator<'a> {
     pub prelude_body: Vec<String>,
     /// Inside a condition (`if`, `while`, `guard`, `for … in`): no trailing closures there.
     pub no_trailing: usize,
+    /// Locals being declared (`let max = …`): their initializers already see the shadowing.
+    pub pending_locals: Vec<String>,
     /// For each loop being translated, the variable its `break value` assigns.
     pub loop_values: Vec<Option<String>>,
     /// Nesting of the expression being translated.
@@ -134,6 +136,7 @@ impl<'a> Translator<'a> {
             pending_refine: None,
             prelude_body: Vec::new(),
             no_trailing: 0,
+            pending_locals: Vec::new(),
             loop_values: Vec::new(),
             depth: 0,
         }
@@ -251,6 +254,15 @@ impl<'a> Translator<'a> {
     }
 
     /// Whether a local with this Swift name is visible (then `self.x` keeps its `self.`).
+    /// `max`, `abs`, `zip`… of the Swift standard library, qualified when a local hides them.
+    pub fn global_fn(&self, name: &str) -> String {
+        if self.swift_local_visible(name) || self.pending_locals.iter().any(|l| l == name) {
+            format!("Swift.{name}")
+        } else {
+            name.to_string()
+        }
+    }
+
     pub fn swift_local_visible(&self, swift: &str) -> bool {
         self.scopes
             .iter()
@@ -540,6 +552,10 @@ impl<'a> Translator<'a> {
 
     /// The Swift spelling of a type; unknown parts are reported.
     pub fn swift_ty(&mut self, t: &Ty, span: Span) -> String {
+        // `Result<T, String>` anywhere: `String` must be an `Error`.
+        if mentions_string_error(t) {
+            self.helper("StringError");
+        }
         match t.swift() {
             Some(s) => s,
             None => {
@@ -620,6 +636,10 @@ impl<'a> Translator<'a> {
                 let name = seg.ident.to_string();
                 if matches!(name.as_str(), "Fn" | "FnMut" | "FnOnce") {
                     // `F: Fn(i32) -> i32`: the parameter is replaced by the closure type.
+                    continue;
+                }
+                // `{:?}` goes through reflection: no protocol to require.
+                if name == "Debug" {
                     continue;
                 }
                 if let Some(p) = protocol_name(&name) {
@@ -798,6 +818,31 @@ impl<'a> Translator<'a> {
                 "init({}) {{\n{}\n}}",
                 params.join(", "),
                 assigns.join("\n")
+            ));
+            if derive_default {
+                body.push(String::new());
+                body.push("init() {}".into());
+            }
+        }
+        // Swift synthesizes no `==` over arrays of tuples: written out.
+        if conformances.iter().any(|c| c == "Equatable")
+            && info.fields.iter().any(|f| has_tuple_collection(&f.ty))
+        {
+            let terms: Vec<String> = info
+                .fields
+                .iter()
+                .map(|f| match &f.ty {
+                    Ty::Vec(t) if matches!(**t, Ty::Tuple(_)) => format!(
+                        "lhs.{0}.count == rhs.{0}.count && zip(lhs.{0}, rhs.{0}).allSatisfy {{ $0 == $1 }}",
+                        f.swift
+                    ),
+                    _ => format!("lhs.{0} == rhs.{0}", f.swift),
+                })
+                .collect();
+            body.push(String::new());
+            body.push(format!(
+                "static func == (lhs: {swift}, rhs: {swift}) -> Bool {{\n{INDENT}{}\n}}",
+                terms.join(" && ")
             ));
         }
         if info.kind == TypeKind::Observable {
@@ -1051,6 +1096,14 @@ impl<'a> Translator<'a> {
                     names::case_name(&v.ident.to_string())
                 ));
             }
+        }
+        // Swift synthesizes no `<` for enums with raw values: by discriminant, like Rust.
+        if has_discriminant && conformances.iter().any(|c| c == "Comparable") {
+            body.push(String::new());
+            body.push(format!(
+                "static func < (lhs: {0}, rhs: {0}) -> Bool {{\n{INDENT}lhs.rawValue < rhs.rawValue\n}}",
+                info.swift
+            ));
         }
         let closing = self.comments.take_between(prev, e.span().end().line);
         body.extend(closing);
@@ -1521,12 +1574,22 @@ impl<'a> Translator<'a> {
     fn subscript_fn(&mut self, f: &syn::ImplItemFn) -> String {
         self.push_scope();
         let mut params = Vec::new();
+        let mut prologue = Vec::new();
         for arg in &f.sig.inputs {
             if let FnArg::Typed(p) = arg {
                 let ty = self.ty(&p.ty);
-                if let Pat::Ident(i) = &*p.pat {
-                    let name = self.declare(&i.ident.to_string(), ty.clone());
-                    params.push(format!("{name}: {}", self.swift_ty(&ty, p.ty.span())));
+                match &*p.pat {
+                    Pat::Ident(i) => {
+                        let name = self.declare(&i.ident.to_string(), ty.clone());
+                        params.push(format!("{name}: {}", self.swift_ty(&ty, p.ty.span())));
+                    }
+                    // `fn index(&self, (r, c): (usize, usize))`.
+                    pat => {
+                        let name = self.fresh("index");
+                        params.push(format!("_ {name}: {}", self.swift_ty(&ty, p.ty.span())));
+                        let (lines, _) = self.let_pattern(pat, &name, &ty, false);
+                        prologue.extend(lines);
+                    }
                 }
             }
         }
@@ -1541,7 +1604,8 @@ impl<'a> Translator<'a> {
             closure: false,
             self_name: None,
         });
-        let body = self.block_lines(&f.block, Sink::Return);
+        let mut body = prologue;
+        body.extend(self.block_lines(&f.block, Sink::Return));
         self.fns.pop();
         self.pop_scope();
         let ret_swift = self.swift_ty(&ret, f.sig.output.span());
@@ -1570,7 +1634,26 @@ impl<'a> Translator<'a> {
         self.generics
             .extend(crate::symbols::type_params(&sig.generics));
         self.push_scope();
-        let s = self.signature(sig, place);
+        let mut s = self.signature(sig, place);
+        let own_sig = self
+            .imp
+            .as_ref()
+            .and_then(|i| self.syms.methods.get(&i.rust))
+            .and_then(|ms| ms.get(&sig.ident.to_string()))
+            .cloned();
+        // `fn count(&self) -> usize` next to a field `count`: `var count: Int { … }`.
+        if own_sig.as_ref().is_some_and(|m| m.property) {
+            let ret = s.cx.ret.swift_lossy();
+            s.header = format!("var {}: {ret}", names::lower_camel(&sig.ident.to_string()));
+        }
+        // `fn add(&mut self, …) -> &mut Self`: a builder, chained as statements by the caller.
+        if own_sig.as_ref().is_some_and(|m| m.returns_self_mut) {
+            s.cx.ret = Ty::Unit;
+            s.header = s
+                .header
+                .rsplit_once(" -> ")
+                .map_or(s.header.clone(), |(h, _)| h.to_string());
+        }
         self.fns.push(s.cx.clone());
         let mut body = s.prologue.clone();
         let sink = if s.cx.ret == Ty::Unit || s.cx.ret == Ty::Never {
@@ -1755,6 +1838,17 @@ impl<'a> Translator<'a> {
             ReturnType::Default => Ty::Unit,
             ReturnType::Type(_, t) => self.ty(t),
         };
+        if let ReturnType::Type(_, t) = &sig.output {
+            let self_ty = self.imp.as_ref().map(|i| i.self_ty.clone());
+            if has_mut_reference(t)
+                && !self_ty.is_some_and(|st| crate::symbols::returns_self_ty(&ret, &st))
+            {
+                self.error(
+                    t.span(),
+                    "returning a mutable reference is not translated (Swift copies values): return an index, or change the value inside the method",
+                );
+            }
+        }
         let mut throws = None;
         let mut view = false;
         let ret_swift = match &ret {
@@ -2180,4 +2274,44 @@ fn lexicographic_less(swift: &str, fields: &[String]) -> String {
         None => body.push_str(&format!("{INDENT}return false")),
     }
     format!("static func < (lhs: {swift}, rhs: {swift}) -> Bool {{\n{body}\n}}")
+}
+
+/// Whether a `Result<_, String>` appears in the type.
+fn mentions_string_error(t: &Ty) -> bool {
+    match t {
+        Ty::Result(ok, err) => {
+            matches!(**err, Ty::Str) || mentions_string_error(ok) || mentions_string_error(err)
+        }
+        Ty::Vec(t) | Ty::Set(t, _) | Ty::Option(t) | Ty::Range(t) | Ty::Iter(t) => {
+            mentions_string_error(t)
+        }
+        Ty::Map(k, v, _) => mentions_string_error(k) || mentions_string_error(v),
+        Ty::Tuple(ts) | Ty::Named(_, ts) => ts.iter().any(mentions_string_error),
+        Ty::Fn(ps, r) => ps.iter().any(mentions_string_error) || mentions_string_error(r),
+        _ => false,
+    }
+}
+
+/// `Vec<(A, B)>`: Swift cannot synthesize `==` or `hash` for it.
+fn has_tuple_collection(t: &Ty) -> bool {
+    match t {
+        Ty::Vec(i) | Ty::Option(i) | Ty::Set(i, _) => {
+            matches!(**i, Ty::Tuple(_)) || has_tuple_collection(i)
+        }
+        Ty::Map(_, v, _) => matches!(**v, Ty::Tuple(_)) || has_tuple_collection(v),
+        _ => false,
+    }
+}
+
+/// `&mut T`, `Option<&mut T>`, `Result<&mut T, E>` as a return type.
+fn has_mut_reference(t: &Type) -> bool {
+    match t {
+        Type::Reference(r) => r.mutability.is_some(),
+        Type::Path(p) => p.path.segments.last().is_some_and(|seg| {
+            matches!(seg.ident.to_string().as_str(), "Option" | "Result")
+                && matches!(&seg.arguments, syn::PathArguments::AngleBracketed(a)
+                    if matches!(a.args.first(), Some(syn::GenericArgument::Type(inner)) if has_mut_reference(inner)))
+        }),
+        _ => false,
+    }
 }

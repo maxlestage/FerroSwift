@@ -80,6 +80,11 @@ const GLOBALS: &[&str] = &[
     "dump",
 ];
 
+/// Whether a local of this Swift name hides a global function (`max`, `abs`, `zip`…).
+pub fn shadows_global(swift: &str) -> bool {
+    GLOBALS.contains(&swift)
+}
+
 /// `my_value` → `myValue`, `MAX_SIZE` → `maxSize`, `r#type` → `` `type` ``.
 pub fn lower_camel(name: &str) -> String {
     let raw = name.strip_prefix("r#").unwrap_or(name);
