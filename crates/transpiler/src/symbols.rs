@@ -247,9 +247,11 @@ impl Symbols {
                 let mut kind = TypeKind::Plain;
                 if derives.iter().any(|d| d == "View") {
                     kind = TypeKind::View;
+                    self.ui = true;
                 }
                 if derives.iter().any(|d| d == "Observable") {
                     kind = TypeKind::Observable;
+                    self.ui = true;
                 }
                 let tuple = matches!(st.fields, Fields::Unnamed(_));
                 let fields = st
@@ -356,6 +358,7 @@ impl Symbols {
             .map(|s| s.ident.to_string());
         match trait_name.as_deref() {
             Some("View") => {
+                self.ui = true;
                 if let Some(st) = self.structs.get_mut(&type_name) {
                     if st.kind == TypeKind::Plain {
                         st.kind = TypeKind::View;
@@ -363,6 +366,7 @@ impl Symbols {
                 }
             }
             Some("App") => {
+                self.ui = true;
                 if let Some(st) = self.structs.get_mut(&type_name) {
                     st.kind = TypeKind::App;
                 }

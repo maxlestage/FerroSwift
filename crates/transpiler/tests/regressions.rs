@@ -66,3 +66,29 @@ fn comments_between_children_are_kept() {
         "{out}"
     );
 }
+
+#[test]
+fn blank_lines_and_modifier_comments_are_kept() {
+    let out = swift(
+        "use ferroswift::prelude::*;\n#[derive(View, Default)]\nstruct V;\nimpl View for V {\n    fn body(&mut self) -> impl View {\n        text(\"hi\")\n            // bigger\n            .font(Font::Title)\n            .padding() // around\n    }\n}\nfn compute(items: &[i32]) -> i32 {\n    let mut total = 0;\n\n    // Sum.\n    for x in items {\n        total += x;\n    }\n\n\n    total\n}",
+    );
+    assert!(
+        out.contains("Text(\"hi\")\n            // bigger\n            .font(.title)\n            .padding() // around"),
+        "{out}"
+    );
+    assert!(
+        out.contains("var total = 0\n\n    // Sum.\n    for x in items {\n        total += x\n    }\n\n    return total"),
+        "{out}"
+    );
+}
+
+#[test]
+fn views_are_recognized_without_the_prelude_import() {
+    let out = swift(
+        "#[derive(View, Default)]\nstruct V;\nimpl View for V {\n    fn body(&mut self) -> impl View { vstack().child(text(\"a\")) }\n}",
+    );
+    assert!(
+        out.contains("VStack {\n            Text(\"a\")\n        }"),
+        "{out}"
+    );
+}

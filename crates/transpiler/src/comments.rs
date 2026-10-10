@@ -166,11 +166,19 @@ impl Comments {
 
     /// The comments on their own lines strictly between lines `after` and `before`.
     pub fn take_between(&mut self, after: usize, before: usize) -> Vec<String> {
+        self.take_between_lines(after, before)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect()
+    }
+
+    /// Like [`take_between`](Self::take_between), with the line of each comment.
+    pub fn take_between_lines(&mut self, after: usize, before: usize) -> Vec<(usize, String)> {
         let mut out = Vec::new();
         for c in &mut self.list {
             if !c.taken && c.line > after && c.line < before && !(c.trailing && c.line == after) {
                 c.taken = true;
-                out.push(c.text.clone());
+                out.push((c.line, c.text.clone()));
             }
         }
         out
