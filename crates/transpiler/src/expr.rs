@@ -96,7 +96,15 @@ impl Translator<'_> {
     /// Translates `e`, knowing the type the context expects (for `None`, `vec![]`, literals…).
     /// A number of another numeric type is converted, as Rust's inference would have typed it.
     pub fn expr_with(&mut self, e: &Expr, expected: &Ty) -> Ex {
+        // Deeply nested code (or a translation bug looping) must not overflow the stack: in
+        // the browser playground that would kill the page.
+        if self.depth > 120 {
+            let code = self.unsupported(e.span(), "an expression nested this deeply");
+            return Ex::primary(code, Ty::Unknown);
+        }
+        self.depth += 1;
         let v = self.expr_raw(e, expected);
+        self.depth -= 1;
         self.coerce(v, expected)
     }
 
@@ -208,6 +216,13 @@ impl Translator<'_> {
             Expr::Await(a) => {
                 let v = self.expr_with(&a.base, expected);
                 Ex::new(format!("await {}", wrap(&v, P_PREFIX)), P_TRY, v.ty)
+            }
+            Expr::Block(b) if b.label.is_some() => {
+                let code = self.unsupported(
+                    e.span(),
+                    "a labeled block used as a value: bind it with `let x: T = 'a: { … };`",
+                );
+                Ex::primary(code, Ty::Unknown)
             }
             Expr::If(_) | Expr::Match(_) | Expr::Block(_) | Expr::Unsafe(_) | Expr::Loop(_) => {
                 self.statements_as_value(e, expected)

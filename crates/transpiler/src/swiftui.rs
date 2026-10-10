@@ -143,9 +143,11 @@ impl Translator<'_> {
             _ => names::case_name(last),
         };
         let ty = Ty::Named(owner.to_string(), vec![]);
+        // `Color.accentColor` has no `ShapeStyle` shorthand: always written in full.
         let explicit = matches!(owner, "Color" | "Font")
             && !self.implicit_member
-            && expected.named() != Some(owner);
+            && expected.named() != Some(owner)
+            || member == "accentColor";
         if explicit {
             Some(Ex::primary(format!("{owner}.{member}"), ty))
         } else {
