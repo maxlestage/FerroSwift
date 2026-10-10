@@ -1,8 +1,8 @@
 //! [`Element`]: the value every built-in view function returns, with the SwiftUI modifiers.
 
+use crate::IndexSet;
 use crate::View;
 use crate::style::*;
-use crate::IndexSet;
 
 /// A built-in view under construction. Create one with a view function such as
 /// [`vstack`](crate::vstack) or [`text`](crate::text), add its children, then chain

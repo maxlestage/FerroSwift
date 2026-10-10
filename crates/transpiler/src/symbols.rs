@@ -234,7 +234,10 @@ impl Symbols {
                                     .iter()
                                     .map(|f| {
                                         (
-                                            f.ident.as_ref().map(ToString::to_string).unwrap_or_default(),
+                                            f.ident
+                                                .as_ref()
+                                                .map(ToString::to_string)
+                                                .unwrap_or_default(),
                                             self.ty(&f.ty, None),
                                         )
                                     })
@@ -309,7 +312,10 @@ impl Symbols {
                     {
                         if let Some(syn::GenericArgument::Type(t)) = args.args.first() {
                             let from = self.ty(t, Some(&self_ty));
-                            self.from_impls.entry(type_name.clone()).or_default().push(from);
+                            self.from_impls
+                                .entry(type_name.clone())
+                                .or_default()
+                                .push(from);
                         }
                     }
                 }
@@ -455,12 +461,19 @@ impl Symbols {
                 // `fmt::Result`, `io::Result<T>`, `io::Error`.
                 if p.path.segments.len() > 1 {
                     match (first.as_deref(), name.as_str()) {
-                        (Some("fmt"), "Result") => return Ty::Result(Box::new(Ty::Unit), Box::new(Ty::Dyn("Error".into()))),
+                        (Some("fmt"), "Result") => {
+                            return Ty::Result(
+                                Box::new(Ty::Unit),
+                                Box::new(Ty::Dyn("Error".into())),
+                            );
+                        }
                         (Some("io"), "Result") => {
                             let ok = args.first().cloned().unwrap_or(Ty::Unit);
                             return Ty::Result(Box::new(ok), Box::new(Ty::Dyn("Error".into())));
                         }
-                        (_, "Error") if !self.is_user_type("Error") => return Ty::Dyn("Error".into()),
+                        (_, "Error") if !self.is_user_type("Error") => {
+                            return Ty::Dyn("Error".into());
+                        }
                         _ => {}
                     }
                 }
@@ -508,8 +521,12 @@ impl Symbols {
         opaque: bool,
     ) -> Ty {
         for b in bounds {
-            let syn::TypeParamBound::Trait(t) = b else { continue };
-            let Some(seg) = t.path.segments.last() else { continue };
+            let syn::TypeParamBound::Trait(t) = b else {
+                continue;
+            };
+            let Some(seg) = t.path.segments.last() else {
+                continue;
+            };
             let name = seg.ident.to_string();
             match name.as_str() {
                 "Fn" | "FnMut" | "FnOnce" => {
@@ -549,7 +566,11 @@ impl Symbols {
                 _ => {
                     let swift = crate::translate::protocol_name(&name)
                         .unwrap_or_else(|| names::upper_camel(&name));
-                    return if opaque { Ty::Opaque(swift) } else { Ty::Dyn(swift) };
+                    return if opaque {
+                        Ty::Opaque(swift)
+                    } else {
+                        Ty::Dyn(swift)
+                    };
                 }
             }
         }
@@ -623,7 +644,9 @@ fn field_role(attrs: &[Attribute]) -> FieldRole {
         let path = a.path();
         if path.is_ident("state") {
             return match &a.meta {
-                syn::Meta::List(list) => FieldRole::State(syn::parse2::<Expr>(list.tokens.clone()).ok()),
+                syn::Meta::List(list) => {
+                    FieldRole::State(syn::parse2::<Expr>(list.tokens.clone()).ok())
+                }
                 _ => FieldRole::State(None),
             };
         }

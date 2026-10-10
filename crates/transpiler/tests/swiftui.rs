@@ -11,7 +11,8 @@ use std::process::Command;
 use ferroswift_transpiler::{Options, SourceFile, transpile_crate};
 
 fn swiftc() -> Option<PathBuf> {
-    let candidate = std::env::var_os("FERROSWIFT_SWIFTC").map_or_else(|| PathBuf::from("swiftc"), PathBuf::from);
+    let candidate = std::env::var_os("FERROSWIFT_SWIFTC")
+        .map_or_else(|| PathBuf::from("swiftc"), PathBuf::from);
     Command::new(&candidate)
         .arg("--version")
         .output()
@@ -47,8 +48,18 @@ fn translate(root: &Path, dir: &Path) -> Vec<PathBuf> {
         ..Options::default()
     };
     let out = transpile_crate(&sources, None, &options);
-    let errors: Vec<String> = out.diagnostics.iter().filter(|d| d.is_error()).map(ToString::to_string).collect();
-    assert!(errors.is_empty(), "{}: translation errors:\n{}", root.display(), errors.join("\n"));
+    let errors: Vec<String> = out
+        .diagnostics
+        .iter()
+        .filter(|d| d.is_error())
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{}: translation errors:\n{}",
+        root.display(),
+        errors.join("\n")
+    );
     std::fs::create_dir_all(dir).unwrap();
     let mut written = Vec::new();
     for (name, swift) in &out.files {
@@ -93,22 +104,36 @@ fn example_apps_type_check_as_swiftui() {
     let mut base: Vec<String> = Vec::new();
     match &sdk {
         Some(sdk) => {
-            let path = Command::new("xcrun").args(["--sdk", sdk, "--show-sdk-path"]).output().expect("xcrun");
+            let path = Command::new("xcrun")
+                .args(["--sdk", sdk, "--show-sdk-path"])
+                .output()
+                .expect("xcrun");
             let path = String::from_utf8_lossy(&path.stdout).trim().to_string();
             base.extend(["-sdk".into(), path]);
             if sdk.contains("iphone") {
-                let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x86_64" };
+                let arch = if cfg!(target_arch = "aarch64") {
+                    "arm64"
+                } else {
+                    "x86_64"
+                };
                 base.extend(["-target".into(), format!("{arch}-apple-ios17.0-simulator")]);
             } else {
                 base.extend(["-target".into(), "arm64-apple-macos14.0".into()]);
             }
         }
         None => {
-            let shim = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/swiftui-shim/SwiftUI.swift");
+            let shim =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/swiftui-shim/SwiftUI.swift");
             let module_dir = work.join("shim");
             std::fs::create_dir_all(&module_dir).unwrap();
             let status = Command::new(&swiftc)
-                .args(["-emit-module", "-module-name", "SwiftUI", "-parse-as-library", "-o"])
+                .args([
+                    "-emit-module",
+                    "-module-name",
+                    "SwiftUI",
+                    "-parse-as-library",
+                    "-o",
+                ])
                 .arg(module_dir.join("SwiftUI.swiftmodule"))
                 .arg(&shim)
                 .status()
@@ -128,7 +153,11 @@ fn example_apps_type_check_as_swiftui() {
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             let errors: Vec<&str> = stderr.lines().filter(|l| l.contains("error:")).collect();
-            failures.push(format!("== {} ==\n{}", example.display(), errors.join("\n")));
+            failures.push(format!(
+                "== {} ==\n{}",
+                example.display(),
+                errors.join("\n")
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));

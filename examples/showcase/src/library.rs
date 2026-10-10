@@ -45,7 +45,11 @@ impl Library {
         let q = self.query.to_lowercase();
         self.books
             .iter()
-            .filter(|b| q.is_empty() || b.title.to_lowercase().contains(&q) || b.author.to_lowercase().contains(&q))
+            .filter(|b| {
+                q.is_empty()
+                    || b.title.to_lowercase().contains(&q)
+                    || b.author.to_lowercase().contains(&q)
+            })
             .cloned()
             .collect()
     }
@@ -73,10 +77,15 @@ impl View for LibraryView {
                     text(format!("{} books", self.library.books.len())).foreground(Color::Secondary)
                 })
                 .child(for_each(self.library.visible(), |book| {
-                    navigation_link_label(BookDetail { book: book.clone() }, BookRow { book: book.clone() })
-                        .swipe_actions(button_role("Delete", ButtonRole::Destructive, || {
-                            self.library.books.retain(|b| b.id != book.id)
-                        }))
+                    navigation_link_label(
+                        BookDetail { book: book.clone() },
+                        BookRow { book: book.clone() },
+                    )
+                    .swipe_actions(button_role(
+                        "Delete",
+                        ButtonRole::Destructive,
+                        || self.library.books.retain(|b| b.id != book.id),
+                    ))
                 }))
                 .navigation_title("Library")
                 .searchable(&mut self.library.query)
@@ -105,7 +114,11 @@ impl View for BookRow {
                 vstack()
                     .alignment(Alignment::Leading)
                     .child(text(&self.book.title).font(Font::Headline))
-                    .child(text(&self.book.author).font(Font::Subheadline).foreground(Color::Secondary)),
+                    .child(
+                        text(&self.book.author)
+                            .font(Font::Subheadline)
+                            .foreground(Color::Secondary),
+                    ),
             )
             .child(spacer())
             .child(text(self.book.stars()).foreground(Color::Orange))
@@ -120,24 +133,29 @@ struct BookDetail {
 
 impl View for BookDetail {
     fn body(&mut self) -> impl View {
-        scroll_view().child(
-            vstack()
-                .alignment(Alignment::Leading)
-                .spacing(12.0)
-                .child(text(&self.book.title).font(Font::LargeTitle).bold())
-                .child(label(&self.book.author, "person"))
-                .child(text(self.book.stars()).font(Font::Title2).foreground(Color::Orange))
-                .child(if self.book.read {
-                    label("Read", "checkmark.circle.fill").foreground(Color::Green)
-                } else {
-                    label("Not read yet", "circle").foreground(Color::Secondary)
-                })
-                .padding()
-                .frame_max_width(f64::INFINITY)
-                .frame_alignment(Alignment::Leading),
-        )
-        .navigation_title(&self.book.title)
-        .navigation_inline()
+        scroll_view()
+            .child(
+                vstack()
+                    .alignment(Alignment::Leading)
+                    .spacing(12.0)
+                    .child(text(&self.book.title).font(Font::LargeTitle).bold())
+                    .child(label(&self.book.author, "person"))
+                    .child(
+                        text(self.book.stars())
+                            .font(Font::Title2)
+                            .foreground(Color::Orange),
+                    )
+                    .child(if self.book.read {
+                        label("Read", "checkmark.circle.fill").foreground(Color::Green)
+                    } else {
+                        label("Not read yet", "circle").foreground(Color::Secondary)
+                    })
+                    .padding()
+                    .frame_max_width(f64::INFINITY)
+                    .frame_alignment(Alignment::Leading),
+            )
+            .navigation_title(&self.book.title)
+            .navigation_inline()
     }
 }
 

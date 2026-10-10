@@ -62,8 +62,22 @@ const KEYWORDS: &[&str] = &[
 
 /// Global functions of the Swift standard library a constant must not shadow.
 const GLOBALS: &[&str] = &[
-    "abs", "max", "min", "print", "zip", "stride", "sequence", "repeatElement", "swap", "type",
-    "assert", "precondition", "fatalError", "debugPrint", "readLine", "dump",
+    "abs",
+    "max",
+    "min",
+    "print",
+    "zip",
+    "stride",
+    "sequence",
+    "repeatElement",
+    "swap",
+    "type",
+    "assert",
+    "precondition",
+    "fatalError",
+    "debugPrint",
+    "readLine",
+    "dump",
 ];
 
 /// `my_value` → `myValue`, `MAX_SIZE` → `maxSize`, `r#type` → `` `type` ``.
@@ -116,9 +130,7 @@ fn camel(raw: &str, upper_first: bool) -> String {
     if trimmed.is_empty() {
         return raw.to_string();
     }
-    let all_caps = trimmed
-        .chars()
-        .all(|c| !c.is_ascii_lowercase());
+    let all_caps = trimmed.chars().all(|c| !c.is_ascii_lowercase());
     let mut out = String::with_capacity(raw.len());
     out.push_str(prefix);
     let mut first_word = true;

@@ -1,7 +1,7 @@
 //! Patterns of `match`, `if let`, `while let` and `for`.
 
-use syn::spanned::Spanned;
 use syn::Pat;
+use syn::spanned::Spanned;
 
 use crate::expr::swift_string;
 use crate::names;
@@ -105,7 +105,11 @@ impl Translator<'_> {
                         return names::constant(&name);
                     }
                 }
-                let kw = if id.mutability.is_some() { "var" } else { "let" };
+                let kw = if id.mutability.is_some() {
+                    "var"
+                } else {
+                    "let"
+                };
                 match &id.subpat {
                     None => {
                         let n = self.bind(&name, ty, cx);
@@ -135,7 +139,14 @@ impl Translator<'_> {
                 }
             }
             Pat::Lit(l) => {
-                let v = self.expr_with(&syn::Expr::Lit(l.clone()), &if *ty == Ty::Char { Ty::Char } else { ty.clone() });
+                let v = self.expr_with(
+                    &syn::Expr::Lit(l.clone()),
+                    &if *ty == Ty::Char {
+                        Ty::Char
+                    } else {
+                        ty.clone()
+                    },
+                );
                 if let syn::Lit::Char(c) = &l.lit {
                     return swift_string(&c.value().to_string());
                 }
@@ -154,8 +165,17 @@ impl Translator<'_> {
                     syn::RangeLimits::HalfOpen(_) => "..<",
                     syn::RangeLimits::Closed(_) => "...",
                 };
-                let spaced = lo.as_deref().is_some_and(|a| a.contains('(') || a.starts_with('-')) || hi.as_deref().is_some_and(|b| b.starts_with('-') || b.contains('('));
-                let op = if spaced { format!(" {op} ") } else { op.to_string() };
+                let spaced = lo
+                    .as_deref()
+                    .is_some_and(|a| a.contains('(') || a.starts_with('-'))
+                    || hi
+                        .as_deref()
+                        .is_some_and(|b| b.starts_with('-') || b.contains('('));
+                let op = if spaced {
+                    format!(" {op} ")
+                } else {
+                    op.to_string()
+                };
                 match (lo, hi) {
                     (Some(a), Some(b)) => format!("{a}{op}{b}"),
                     (Some(a), None) => format!("{a}..."),
@@ -209,7 +229,12 @@ impl Translator<'_> {
             }
             Pat::TupleStruct(ts) => self.tuple_struct_pat(ts, ty, cx),
             Pat::Path(p) => {
-                let segs: Vec<String> = p.path.segments.iter().map(|s| s.ident.to_string()).collect();
+                let segs: Vec<String> = p
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect();
                 let last = segs.last().cloned().unwrap_or_default();
                 if last == "None" && segs.len() == 1 {
                     return ".none".into();
@@ -256,7 +281,8 @@ impl Translator<'_> {
         if cx.declare {
             self.declare(name, ty.clone())
         } else {
-            self.lookup(name).map_or_else(|| names::lower_camel(name), |l| l.swift.clone())
+            self.lookup(name)
+                .map_or_else(|| names::lower_camel(name), |l| l.swift.clone())
         }
     }
 
@@ -268,7 +294,12 @@ impl Translator<'_> {
     }
 
     fn tuple_struct_pat(&mut self, ts: &syn::PatTupleStruct, ty: &Ty, cx: &mut PatCx) -> String {
-        let segs: Vec<String> = ts.path.segments.iter().map(|s| s.ident.to_string()).collect();
+        let segs: Vec<String> = ts
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
         let last = segs.last().cloned().unwrap_or_default();
         let one = |t: &mut Self, cx: &mut PatCx, inner_ty: &Ty, case: &str| -> String {
             let parts: Vec<String> = ts
@@ -363,14 +394,22 @@ impl Translator<'_> {
             }
             return "_".into();
         }
-        self.error(ts.span(), format!("unknown variant `{last}` in this pattern"));
+        self.error(
+            ts.span(),
+            format!("unknown variant `{last}` in this pattern"),
+        );
         "_".into()
     }
 
     /// `Point { x: 0, y }`: Swift has no struct patterns. Literal fields become `where`
     /// conditions, bound fields `let` statements.
     fn struct_pat(&mut self, s: &syn::PatStruct, ty: &Ty, cx: &mut PatCx, _top: bool) -> String {
-        let segs: Vec<String> = s.path.segments.iter().map(|s| s.ident.to_string()).collect();
+        let segs: Vec<String> = s
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
         let last = segs.last().cloned().unwrap_or_default();
         // An enum variant with named fields: `Shape::Rect { w, h }`.
         let owner = if segs.len() >= 2 {
@@ -393,7 +432,11 @@ impl Translator<'_> {
                 };
                 let mut parts = Vec::new();
                 for (fname, fty) in fields {
-                    match s.fields.iter().find(|f| crate::expr::member_name(&f.member) == *fname) {
+                    match s
+                        .fields
+                        .iter()
+                        .find(|f| crate::expr::member_name(&f.member) == *fname)
+                    {
                         Some(fp) => parts.push(self.pat(&fp.pat, fty, cx, false)),
                         None => parts.push("_".into()),
                     }
@@ -426,9 +469,16 @@ impl Translator<'_> {
     /// A sub-pattern applied to a field: a binding becomes `let`, anything else a condition.
     fn field_subpattern(&mut self, p: &Pat, ty: &Ty, inner: &mut PatCx, cx: &mut PatCx) {
         match p {
-            Pat::Ident(id) if id.subpat.is_none() && self.unit_variant_named(&id.ident.to_string(), ty).is_none() => {
+            Pat::Ident(id)
+                if id.subpat.is_none()
+                    && self.unit_variant_named(&id.ident.to_string(), ty).is_none() =>
+            {
                 let n = self.bind(&id.ident.to_string(), ty, inner);
-                let kw = if id.mutability.is_some() { "var" } else { "let" };
+                let kw = if id.mutability.is_some() {
+                    "var"
+                } else {
+                    "let"
+                };
                 cx.lets.push(format!("{kw} {n} = {}", inner.subject));
             }
             Pat::Wild(_) | Pat::Rest(_) => {}
@@ -438,9 +488,15 @@ impl Translator<'_> {
                     if is_value_pattern(&code) {
                         cx.guards.push(format!("{code} ~= {}", inner.subject));
                     } else if code.contains("let ") || code.contains("var ") {
-                        self.error(other.span(), "bindings nested inside a struct pattern are not supported");
+                        self.error(
+                            other.span(),
+                            "bindings nested inside a struct pattern are not supported",
+                        );
                     } else {
-                        cx.guards.push(format!("{{ if case {code} = {} {{ return true }}; return false }}()", inner.subject));
+                        cx.guards.push(format!(
+                            "{{ if case {code} = {} {{ return true }}; return false }}()",
+                            inner.subject
+                        ));
                     }
                 }
                 cx.guards.append(&mut inner.guards);
@@ -454,7 +510,7 @@ impl Translator<'_> {
         let item = ty.item();
         let subject = cx.subject.clone();
         let n = s.elems.len();
-        let rest_at = s.elems.iter().position(|p| is_rest(p));
+        let rest_at = s.elems.iter().position(is_rest);
         match rest_at {
             Some(_) => cx.guards.push(format!("{subject}.count >= {}", n - 1)),
             None => cx.guards.push(format!("{subject}.count == {n}")),
@@ -465,7 +521,9 @@ impl Translator<'_> {
                     let rest_ty = Ty::Vec(Box::new(item.clone()));
                     let name = self.bind(&id.ident.to_string(), &rest_ty, cx);
                     let after = n - 1 - i;
-                    cx.lets.push(format!("let {name} = Array({subject}[{i}..<({subject}.count - {after})])"));
+                    cx.lets.push(format!(
+                        "let {name} = Array({subject}[{i}..<({subject}.count - {after})])"
+                    ));
                 }
                 continue;
             }
@@ -504,7 +562,10 @@ fn is_rest(p: &Pat) -> bool {
 
 /// A literal or range pattern, usable with `~=`.
 fn is_value_pattern(code: &str) -> bool {
-    !code.starts_with('.') && !code.contains("let ") && !code.contains("var ") && !code.contains('(')
+    !code.starts_with('.')
+        && !code.contains("let ")
+        && !code.contains("var ")
+        && !code.contains('(')
         || code.contains("...")
         || code.contains("..<")
 }
@@ -570,8 +631,14 @@ mod tests {
 
     #[test]
     fn expands_nested_alternatives() {
-        assert_eq!(expand_alternatives(".some(\u{3}1\u{5}2\u{4})"), vec![".some(1)", ".some(2)"]);
-        assert_eq!(expand_alternatives("(\u{3}1\u{5}2\u{4}, \u{3}a\u{5}b\u{4})").len(), 4);
+        assert_eq!(
+            expand_alternatives(".some(\u{3}1\u{5}2\u{4})"),
+            vec![".some(1)", ".some(2)"]
+        );
+        assert_eq!(
+            expand_alternatives("(\u{3}1\u{5}2\u{4}, \u{3}a\u{5}b\u{4})").len(),
+            4
+        );
         assert_eq!(expand_alternatives("_"), vec!["_"]);
     }
 }

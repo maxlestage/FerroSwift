@@ -21,9 +21,22 @@ fn macro_name(mac: &Macro) -> String {
 pub fn is_statement_macro(mac: &Macro) -> bool {
     matches!(
         macro_name(mac).as_str(),
-        "println" | "print" | "eprintln" | "eprint" | "assert" | "assert_eq" | "assert_ne" | "debug_assert"
-            | "debug_assert_eq" | "debug_assert_ne" | "panic" | "unreachable" | "todo" | "unimplemented"
-            | "write" | "writeln"
+        "println"
+            | "print"
+            | "eprintln"
+            | "eprint"
+            | "assert"
+            | "assert_eq"
+            | "assert_ne"
+            | "debug_assert"
+            | "debug_assert_eq"
+            | "debug_assert_ne"
+            | "panic"
+            | "unreachable"
+            | "todo"
+            | "unimplemented"
+            | "write"
+            | "writeln"
     )
 }
 
@@ -52,7 +65,11 @@ impl Translator<'_> {
                     self.helper("eprint");
                 }
                 if args.is_empty() {
-                    return vec![if stderr { "rsEprint(\"\")".into() } else { "print()".into() }];
+                    return vec![if stderr {
+                        "rsEprint(\"\")".into()
+                    } else {
+                        "print()".into()
+                    }];
                 }
                 let text = self.format_args(&args, span);
                 let f = if stderr { "rsEprint" } else { "print" };
@@ -63,8 +80,14 @@ impl Translator<'_> {
                 }
             }
             "assert" | "debug_assert" => {
-                let f = if name == "assert" { "precondition" } else { "assert" };
-                let Some(cond) = args.first() else { return vec![] };
+                let f = if name == "assert" {
+                    "precondition"
+                } else {
+                    "assert"
+                };
+                let Some(cond) = args.first() else {
+                    return vec![];
+                };
                 let c = self.expr_with(cond, &Ty::Bool);
                 let c = self.settle(c);
                 if args.len() > 1 {
@@ -75,10 +98,16 @@ impl Translator<'_> {
                 }
             }
             "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne" => {
-                let f = if name.starts_with("debug") { "assert" } else { "precondition" };
+                let f = if name.starts_with("debug") {
+                    "assert"
+                } else {
+                    "precondition"
+                };
                 let op = if name.ends_with("eq") { "==" } else { "!=" };
                 if args.len() < 2 {
-                    return vec![self.unsupported(span, &format!("{name}! with fewer than two arguments"))];
+                    return vec![
+                        self.unsupported(span, &format!("{name}! with fewer than two arguments")),
+                    ];
                 }
                 let a = self.expr(&args[0]);
                 let a = self.settle(a);
@@ -101,7 +130,11 @@ impl Translator<'_> {
                     return vec![];
                 }
                 let target = self.expr(&args[0]);
-                let target_code = target.code.strip_prefix("fmt:").map(str::to_string).unwrap_or(target.code.clone());
+                let target_code = target
+                    .code
+                    .strip_prefix("fmt:")
+                    .map(str::to_string)
+                    .unwrap_or(target.code.clone());
                 let text = if args.len() > 1 {
                     let t = self.format_args(&args[1..], span);
                     if newline {
@@ -143,7 +176,8 @@ impl Translator<'_> {
                 let args = match comma_args(mac) {
                     Ok(a) => a,
                     Err(e) => {
-                        let code = self.unsupported(span, &format!("the arguments of format!: {e}"));
+                        let code =
+                            self.unsupported(span, &format!("the arguments of format!: {e}"));
                         return Ex::primary(code, Ty::Str);
                     }
                 };
@@ -193,7 +227,9 @@ impl Translator<'_> {
                 }
                 Ex::primary(crate::expr::swift_string(&s), Ty::Str)
             }
-            "write" | "writeln" | "println" | "print" | "eprintln" | "eprint" | "assert" | "assert_eq" | "assert_ne" | "debug_assert" | "debug_assert_eq" | "debug_assert_ne" => {
+            "write" | "writeln" | "println" | "print" | "eprintln" | "eprint" | "assert"
+            | "assert_eq" | "assert_ne" | "debug_assert" | "debug_assert_eq"
+            | "debug_assert_ne" => {
                 let lines = self.macro_stmt(mac);
                 Ex::new(lines.join("\n"), crate::expr::P_ASSIGN, Ty::Unit)
             }
@@ -241,7 +277,10 @@ impl Translator<'_> {
         }
         let joined = codes.join(", ");
         let code = if joined.len() > 80 || joined.contains('\n') {
-            format!("[\n{}\n]", crate::translate::indent_lines(&codes.join(",\n")))
+            format!(
+                "[\n{}\n]",
+                crate::translate::indent_lines(&codes.join(",\n"))
+            )
         } else {
             format!("[{joined}]")
         };
@@ -273,14 +312,28 @@ impl Translator<'_> {
         // `matches!(o, Some(_))` / `None`: a comparison.
         if guard.is_none() {
             if let syn::Pat::TupleStruct(ts) = &pat {
-                let ctor = ts.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
-                if ctor == "Some" && ts.elems.len() == 1 && matches!(ts.elems[0], syn::Pat::Wild(_)) {
-                    return Ex::new(format!("{} != nil", crate::expr::wrap(&v, crate::expr::P_CMP + 1)), crate::expr::P_CMP, Ty::Bool);
+                let ctor = ts
+                    .path
+                    .segments
+                    .last()
+                    .map(|s| s.ident.to_string())
+                    .unwrap_or_default();
+                if ctor == "Some" && ts.elems.len() == 1 && matches!(ts.elems[0], syn::Pat::Wild(_))
+                {
+                    return Ex::new(
+                        format!("{} != nil", crate::expr::wrap(&v, crate::expr::P_CMP + 1)),
+                        crate::expr::P_CMP,
+                        Ty::Bool,
+                    );
                 }
             }
             if let syn::Pat::Ident(id) = &pat {
                 if id.ident == "None" {
-                    return Ex::new(format!("{} == nil", crate::expr::wrap(&v, crate::expr::P_CMP + 1)), crate::expr::P_CMP, Ty::Bool);
+                    return Ex::new(
+                        format!("{} == nil", crate::expr::wrap(&v, crate::expr::P_CMP + 1)),
+                        crate::expr::P_CMP,
+                        Ty::Bool,
+                    );
                 }
             }
         }

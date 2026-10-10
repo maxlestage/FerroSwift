@@ -154,8 +154,8 @@ pub mod prelude {
     pub use crate::style::*;
     pub use crate::views::*;
     pub use crate::{
-        App, DismissAction, Element, IndexSet, Modifiers, Never, Observable, Scene, SceneElement, VecExt, View, preview,
-        window_group, with_animation, with_animation_of,
+        App, DismissAction, Element, IndexSet, Modifiers, Never, Observable, Scene, SceneElement,
+        VecExt, View, preview, window_group, with_animation, with_animation_of,
     };
 }
 

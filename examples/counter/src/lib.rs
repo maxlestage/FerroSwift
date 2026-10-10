@@ -31,17 +31,37 @@ impl View for ContentView {
                 text(format!("{}", self.count))
                     .font(Font::system(72.0))
                     .monospaced()
-                    .foreground(if self.count < 0 { Color::Red } else { Color::Primary }),
+                    .foreground(if self.count < 0 {
+                        Color::Red
+                    } else {
+                        Color::Primary
+                    }),
             )
-            .child(text(self.mood()).font(Font::Title3).foreground(Color::Secondary))
+            .child(
+                text(self.mood())
+                    .font(Font::Title3)
+                    .foreground(Color::Secondary),
+            )
             .child(
                 hstack()
                     .spacing(16.0)
-                    .child(button("−", || self.count -= self.step).button_style(ButtonStyle::Bordered))
-                    .child(button("+", || self.count += self.step).button_style(ButtonStyle::BorderedProminent)),
+                    .child(
+                        button("−", || self.count -= self.step).button_style(ButtonStyle::Bordered),
+                    )
+                    .child(
+                        button("+", || self.count += self.step)
+                            .button_style(ButtonStyle::BorderedProminent),
+                    ),
             )
-            .child(stepper(format!("Step: {}", self.step), &mut self.step, 1..=10))
-            .child(button_role("Reset", ButtonRole::Destructive, || self.count = 0).disabled(self.count == 0))
+            .child(stepper(
+                format!("Step: {}", self.step),
+                &mut self.step,
+                1..=10,
+            ))
+            .child(
+                button_role("Reset", ButtonRole::Destructive, || self.count = 0)
+                    .disabled(self.count == 0),
+            )
             .padding()
             .animation(Animation::Snappy, self.count)
     }
