@@ -98,6 +98,10 @@ impl Translator<'_> {
                 let name = id.ident.to_string();
                 // A unit variant brought into scope (`Red =>`), or a constant.
                 if id.subpat.is_none() && id.mutability.is_none() && id.by_ref.is_none() {
+                    // `None =>` is an identifier pattern to syn.
+                    if name == "None" {
+                        return ".none".into();
+                    }
                     if let Some(case) = self.unit_variant_named(&name, ty) {
                         return case;
                     }

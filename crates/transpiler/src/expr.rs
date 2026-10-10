@@ -1871,6 +1871,17 @@ fn single_expr(b: &syn::Block) -> Option<&Expr> {
     }
 }
 
+/// A variable, a field or an element: something Swift can mutate in place.
+pub fn is_place(e: &Expr) -> bool {
+    match e {
+        Expr::Path(_) | Expr::Field(_) | Expr::Index(_) => true,
+        Expr::Paren(p) => is_place(&p.expr),
+        Expr::Unary(u) => matches!(u.op, syn::UnOp::Deref(_)) && is_place(&u.expr),
+        Expr::Reference(r) => is_place(&r.expr),
+        _ => false,
+    }
+}
+
 pub fn is_self(e: &Expr) -> bool {
     matches!(e, Expr::Path(p) if p.path.is_ident("self"))
 }

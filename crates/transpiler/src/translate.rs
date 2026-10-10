@@ -696,8 +696,17 @@ impl<'a> Translator<'a> {
                 prefix.push_str("@Observable\n");
                 "final class"
             }
+            // A value type cannot contain itself: a class, with the value semantics written out.
+            TypeKind::Plain if info.recursive => "final class",
             TypeKind::Plain => "struct",
         };
+        if info.recursive && conformances.iter().any(|c| c == "Hashable") {
+            self.warn(
+                s.span(),
+                "a recursive struct becomes a class: Hashable is dropped",
+            );
+            conformances.retain(|c| c != "Hashable");
+        }
         conformances.retain(|c| {
             !(info.kind == TypeKind::Observable && (c == "Equatable" || c == "Hashable"))
         });
@@ -824,6 +833,33 @@ impl<'a> Translator<'a> {
                 body.push("init() {}".into());
             }
         }
+        if info.recursive {
+            // Classes get no synthesized `==`, and `clone()` must copy deeply.
+            if conformances.iter().any(|c| c == "Equatable") {
+                let terms: Vec<String> = info
+                    .fields
+                    .iter()
+                    .map(|f| format!("lhs.{0} == rhs.{0}", f.swift))
+                    .collect();
+                body.push(String::new());
+                body.push(format!(
+                    "static func == (lhs: {swift}, rhs: {swift}) -> Bool {{\n{INDENT}{}\n}}",
+                    terms.join(" && ")
+                ));
+            }
+            if derives.iter().any(|d| d == "Clone") {
+                let args: Vec<String> = info
+                    .fields
+                    .iter()
+                    .map(|f| format!("{}: {}", f.swift, self.deep_copy(&f.swift, &f.ty)))
+                    .collect();
+                body.push(String::new());
+                body.push(format!(
+                    "/// `clone()`: a copy of the whole structure.\nfunc clone() -> {swift} {{\n{INDENT}{swift}({})\n}}",
+                    args.join(", ")
+                ));
+            }
+        }
         // Swift synthesizes no `==` over arrays of tuples: written out.
         if conformances.iter().any(|c| c == "Equatable")
             && info.fields.iter().any(|f| has_tuple_collection(&f.ty))
@@ -845,13 +881,14 @@ impl<'a> Translator<'a> {
                 terms.join(" && ")
             ));
         }
-        if info.kind == TypeKind::Observable {
+        if info.kind == TypeKind::Observable || info.recursive {
             let params: Vec<String> = info
                 .fields
                 .iter()
                 .filter(|f| f.role != FieldRole::Ignored)
                 .map(|f| {
-                    let default = self.field_default(f, derive_default);
+                    let optional = info.recursive && matches!(f.ty, Ty::Option(_));
+                    let default = self.field_default(f, derive_default || optional);
                     format!("{}: {}{default}", f.swift, f.ty.swift_lossy())
                 })
                 .collect();
@@ -944,6 +981,21 @@ impl<'a> Translator<'a> {
     }
 
     /// Whether `ty` is a `#[derive(Observable)]` class.
+    /// Whether the type is a struct of the crate translated as a class (recursive).
+    pub fn is_recursive_class(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Named(n, _) if self.syms.structs.values().any(|s| &s.swift == n && s.recursive))
+    }
+
+    /// The expression copying a field of a recursive class in `clone()`.
+    fn deep_copy(&self, field: &str, ty: &Ty) -> String {
+        match ty {
+            t if self.is_recursive_class(t) => format!("{field}.clone()"),
+            Ty::Option(t) if self.is_recursive_class(t) => format!("{field}?.clone()"),
+            Ty::Vec(t) if self.is_recursive_class(t) => format!("{field}.map {{ $0.clone() }}"),
+            _ => field.to_string(),
+        }
+    }
+
     pub fn is_observable(&self, ty: &Ty) -> bool {
         matches!(ty, Ty::Named(n, _) if self.syms.structs.values().any(|s| &s.swift == n && s.kind == TypeKind::Observable))
     }
