@@ -305,12 +305,29 @@ impl Translator<'_> {
         let mut v = self.settle_for_let(v);
         // `let mut it = s.chars();` and then `it.next()`: a Rust iterator with its position.
         if mutable && declared.is_none() {
-            if let Ty::Iter(item) = &v.ty {
-                self.helper("iter");
-                v = Ex::primary(
-                    format!("RsIter({})", v.code),
-                    Ty::Named("RsIter".into(), vec![(**item).clone()]),
-                );
+            let iterator_chain = matches!(value, Expr::MethodCall(m) if matches!(
+                m.method.to_string().as_str(),
+                "iter" | "into_iter" | "chars" | "bytes" | "char_indices" | "lines" | "keys"
+                    | "values" | "peekable" | "enumerate" | "rev" | "map" | "filter"
+                    | "filter_map" | "flat_map" | "zip" | "chain" | "skip" | "take" | "step_by"
+                    | "cycle" | "split" | "split_whitespace" | "windows" | "chunks" | "drain"
+            ));
+            match &v.ty {
+                Ty::Iter(item) => {
+                    self.helper("iter");
+                    v = Ex::primary(
+                        format!("RsIter({})", v.code),
+                        Ty::Named("RsIter".into(), vec![(**item).clone()]),
+                    );
+                }
+                Ty::Vec(item) | Ty::Set(item, _) if iterator_chain => {
+                    self.helper("iter");
+                    v = Ex::primary(
+                        format!("RsIter({})", v.code),
+                        Ty::Named("RsIter".into(), vec![(**item).clone()]),
+                    );
+                }
+                _ => {}
             }
         }
         let mut ty = declared_ty.clone();

@@ -647,6 +647,35 @@ extension Array {
         try removeAll { try !keep($0) }
     }
 
+    /// `v.retain_mut(|x| …)`: the closure may change each element.
+    mutating func retainMut(_ keep: (inout Element) throws -> Bool) rethrows {
+        var out: [Element] = []
+        for var x in self where try keep(&x) { out.append(x) }
+        self = out
+    }
+
+    /// `v.dedup_by_key(|x| k)`: consecutive elements with the same key.
+    mutating func dedupByKey<K: Equatable>(_ key: (inout Element) throws -> K) rethrows {
+        var out: [Element] = []
+        var last: K?
+        for var x in self {
+            let k = try key(&x)
+            if last != k { out.append(x) }
+            last = k
+        }
+        self = out
+    }
+
+    /// `v.dedup_by(|a, b| same)`: consecutive elements the closure finds equal.
+    mutating func dedupBy(_ same: (inout Element, inout Element) throws -> Bool) rethrows {
+        var out: [Element] = []
+        for var x in self {
+            if var prev = out.last, try same(&x, &prev) { continue }
+            out.append(x)
+        }
+        self = out
+    }
+
     mutating func truncate(_ length: Int) {
         if count > length { removeLast(count - length) }
     }
@@ -829,6 +858,16 @@ func rsSuccessors<T>(_ first: T?, _ next: @escaping (T) -> T?) -> UnfoldSequence
 /// `std::iter::repeat(x)`.
 func rsRepeat<T>(_ x: T) -> UnfoldFirstSequence<T> {
     sequence(first: x) { _ in x }
+}
+
+/// `iter.cycle()`: the items again and again (nothing for an empty sequence).
+func rsCycle<S: Sequence>(_ items: S) -> UnfoldSequence<S.Element, Int> {
+    let all = Array(items)
+    return sequence(state: 0) { i in
+        guard !all.isEmpty else { return nil }
+        defer { i += 1 }
+        return all[i % all.count]
+    }
 }
 
 /// A Rust iterator kept in a variable: `it.next()`, `it.peek()`.

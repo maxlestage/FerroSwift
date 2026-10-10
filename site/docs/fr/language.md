@@ -30,7 +30,7 @@ Les longueurs `usize` sont des `Int` Swift : `v.len()` donne `v.count`. Le `len(
 
 ## Les éléments
 
-- Les **structs** deviennent des `struct` avec leur initialiseur membre à membre ; les structs tuples reçoivent des champs `_0`, `_1`… `#[derive(Default)]` donne à chaque champ sa valeur par défaut.
+- Les **structs** deviennent des `struct` avec leur initialiseur membre à membre ; les structs tuples reçoivent des champs `_0`, `_1`… `#[derive(Default)]` donne à chaque champ sa valeur par défaut. Une struct qui se contient elle-même (`next: Option<Box<Node>>`) devient une `final class`, un type valeur Swift ne pouvant pas se contenir ; son `clone()` copie toute la structure et `==` la compare.
 - **Derives :** `PartialEq`/`Eq` → `Equatable`, `Hash` → `Hashable`, `PartialOrd`/`Ord` → `Comparable`. `Clone` et `Copy` n’ont besoin de rien : les structs Swift sont des valeurs. `Debug` est pris en charge par `{:?}` (voir plus bas).
 - Les **enums** deviennent des `enum` ; les variantes à données reçoivent des valeurs associées (`Card { last4: String }` → `case card(last4: String)`).
 - Les blocs **`impl`** deviennent des `extension`. `fn new(…) -> Self` devient un `init`, les méthodes `&mut self` des `mutating func`, les `const` associées des `static let`. Une méthode qui renvoie `&mut Self` (un builder) est appelée comme une instruction : `a.b().c()` devient `a.b()` puis `a.c()`. Une méthode qui porte le nom d’un champ (`fn count(&self)` à côté de `count`) devient une propriété calculée, le champ étant stocké sous `_count`.

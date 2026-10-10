@@ -389,6 +389,14 @@ impl Translator<'_> {
                 };
                 let ty = self.place_ty(inner);
                 let place = self.place(inner);
+                // `let mut out = Vec::new(); fill(&mut out)`: the parameter tells the type.
+                if let (Some(p), Expr::Path(path)) = (param, inner) {
+                    if let Some(id) = path.path.get_ident() {
+                        if p.ty.is_complete() {
+                            self.refine(&id.to_string(), &p.ty);
+                        }
+                    }
+                }
                 out.push(format!("&{place}"));
                 tys.push(ty);
                 continue;
@@ -778,7 +786,20 @@ impl Translator<'_> {
         };
         // A method of a type of the crate.
         if let Some((mut sig, owner)) = self.user_method(&recv.ty, &name) {
-            let recv = self.settle(recv);
+            let mut recv = self.settle(recv);
+            // `Lexer::new(src).tokens()` with `tokens(&mut self)`: Swift cannot mutate a
+            // temporary, so it gets a name first.
+            if sig.self_kind == SelfKind::RefMut
+                && !crate::expr::is_place(&m.receiver)
+                && self.preludes.last().is_some()
+                && self
+                    .struct_by_swift(&owner)
+                    .is_some_and(|s| s.kind == TypeKind::Plain && !s.recursive)
+            {
+                let tmp = self.fresh(&names::lower_camel(&owner));
+                self.prelude(format!("var {tmp} = {}", recv.code));
+                recv = Ex::primary(tmp, recv.ty.clone());
+            }
             // The type's generic parameters, as far as the receiver's type knows them.
             let generics = self
                 .struct_by_swift(&owner)
@@ -1142,6 +1163,10 @@ impl Translator<'_> {
                     }
                 }
 
+                ("dedup_by", 0, _) => Ty::Fn(vec![item.clone(), item.clone()], Box::new(Ty::Bool)),
+                ("retain_mut" | "dedup_by_key", 0, _) => {
+                    Ty::Fn(vec![item.clone()], Box::new(Ty::Unknown))
+                }
                 ("sort_by" | "max_by" | "min_by" | "sort_unstable_by", 0, _) => Ty::Fn(
                     vec![item.clone(), item.clone()],
                     Box::new(Ty::Named("Ordering".into(), vec![])),
@@ -1555,6 +1580,10 @@ impl Translator<'_> {
             {
                 if matches!(name, "lock" | "read" | "write") {
                     return recv;
+                }
+                // A recursive struct is a class: `clone()` copies it for real.
+                if matches!(name, "clone" | "to_owned") && self.is_recursive_class(&rty) {
+                    return prim(format!("{r}.clone()"), rty);
                 }
                 let ty = match (&rty, name) {
                     (Ty::Map(..), "iter" | "into_iter") => Ty::Iter(Box::new(item.clone())),
@@ -2438,7 +2467,7 @@ impl Translator<'_> {
                 prim(format!("{r}.swapRemove({})", a(0)), item)
             }
             "truncate" | "dedup" | "resize" | "fill" | "rotate_left" | "rotate_right"
-            | "split_off" | "drain" => {
+            | "split_off" | "drain" | "retain_mut" | "dedup_by_key" | "dedup_by" => {
                 self.helper("vec");
                 let codes: Vec<String> = args.iter().map(|a| a.code.clone()).collect();
                 let ret = match name {
@@ -2585,7 +2614,11 @@ impl Translator<'_> {
                 P_ADD,
                 iter(item),
             ),
-            "cycle" | "peekable" | "fuse" => recv.clone(),
+            "cycle" => {
+                self.helper("iter");
+                prim(format!("rsCycle({})", recv.code), iter(item))
+            }
+            "peekable" | "fuse" => recv.clone(),
             "inspect" => recv.clone(),
             "sum" | "product" => {
                 let t = turbofish
@@ -2695,7 +2728,7 @@ impl Translator<'_> {
                 ),
                 Ty::Bool,
             ),
-            "dedup_by_key" | "group_by" | "chunk_by" => return None,
+            "group_by" | "chunk_by" => return None,
             _ => return None,
         })
     }
@@ -2724,6 +2757,8 @@ impl Translator<'_> {
                 )
             );
         match &target {
+            // Pieces of text are joined; characters make a string.
+            Ty::Str if item == Ty::Str => Ex::primary(format!("{code}.joined()"), Ty::Str),
             Ty::Str => Ex::primary(format!("String({code})"), Ty::Str),
             // `collect::<Option<Vec<_>>>()`: all or nothing.
             Ty::Option(inner) if matches!(**inner, Ty::Vec(_)) => {

@@ -30,7 +30,7 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 
 ## Items
 
-- **Structs** become `struct`s with their memberwise initializer; tuple structs get fields `_0`, `_1`… `#[derive(Default)]` gives every field its default value.
+- **Structs** become `struct`s with their memberwise initializer; tuple structs get fields `_0`, `_1`… `#[derive(Default)]` gives every field its default value. A struct holding itself (`next: Option<Box<Node>>`) becomes a `final class`, since a Swift value type cannot contain itself; its `clone()` copies the whole structure and `==` compares it.
 - **Derives:** `PartialEq`/`Eq` → `Equatable`, `Hash` → `Hashable`, `PartialOrd`/`Ord` → `Comparable`. `Clone` and `Copy` need nothing: Swift structs are values. `Debug` is handled by `{:?}` (see below).
 - **Enums** become `enum`s; variants with data get associated values (`Card { last4: String }` → `case card(last4: String)`).
 - **`impl` blocks** become `extension`s. `fn new(…) -> Self` becomes an `init`, `&mut self` methods become `mutating func`, associated `const`s become `static let`. A method returning `&mut Self` (a builder) is called as a statement, so `a.b().c()` becomes `a.b()` then `a.c()`. A method with the name of a field (`fn count(&self)` next to `count`) becomes a computed property, the field being stored as `_count`.

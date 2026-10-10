@@ -92,3 +92,28 @@ fn views_are_recognized_without_the_prelude_import() {
         "{out}"
     );
 }
+
+#[test]
+fn a_none_arm_before_some_matches_nothing_else() {
+    let out = swift(
+        "fn f(x: Option<i32>) -> i32 {\n    match x {\n        None => 0,\n        Some(n) => n,\n    }\n}",
+    );
+    assert!(
+        out.contains("case .none:\n        return 0\n    case .some(let n):"),
+        "{out}"
+    );
+}
+
+#[test]
+fn recursive_structs_become_classes() {
+    let out = swift(
+        "#[derive(Debug, Clone, PartialEq)]\nstruct Node {\n    value: i32,\n    next: Option<Box<Node>>,\n}\nfn main() {\n    let a = Node { value: 1, next: None };\n    let b = a.clone();\n    println!(\"{}\", a == b);\n}",
+    );
+    assert!(out.contains("final class Node: Equatable {"), "{out}");
+    assert!(out.contains("init(value: Int, next: Node? = nil)"), "{out}");
+    assert!(
+        out.contains("func clone() -> Node {\n        Node(value: value, next: next?.clone())"),
+        "{out}"
+    );
+    assert!(out.contains("let b = a.clone()"), "{out}");
+}

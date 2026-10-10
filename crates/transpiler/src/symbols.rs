@@ -49,6 +49,9 @@ pub struct StructInfo {
     pub generics: Vec<String>,
     pub derives: Vec<String>,
     pub kind: TypeKind,
+    /// `struct Node { next: Option<Box<Node>> }`: a Swift value type cannot contain itself,
+    /// so the struct becomes a class.
+    pub recursive: bool,
 }
 
 impl StructInfo {
@@ -254,7 +257,7 @@ impl Symbols {
                     self.ui = true;
                 }
                 let tuple = matches!(st.fields, Fields::Unnamed(_));
-                let fields = st
+                let fields: Vec<FieldInfo> = st
                     .fields
                     .iter()
                     .enumerate()
@@ -275,15 +278,18 @@ impl Symbols {
                         }
                     })
                     .collect();
+                let swift = names::upper_camel(&st.ident.to_string());
+                let recursive = fields.iter().any(|f| directly_contains(&f.ty, &swift));
                 self.structs.insert(
                     st.ident.to_string(),
                     StructInfo {
-                        swift: names::upper_camel(&st.ident.to_string()),
+                        swift,
                         fields,
                         tuple,
                         generics,
                         derives,
                         kind,
+                        recursive,
                     },
                 );
             }
@@ -444,10 +450,14 @@ impl Symbols {
         // Two initializers with no parameter would clash: `new()` stays a static method.
         if let Some(methods) = self.methods.get_mut(&type_name) {
             let default_init = methods.get("default").is_some_and(|m| m.is_init)
-                || self
-                    .structs
-                    .get(&type_name)
-                    .is_some_and(|s| s.derives.iter().any(|d| d == "Default"));
+                || self.structs.get(&type_name).is_some_and(|s| {
+                    s.derives.iter().any(|d| d == "Default")
+                        // Optional fields give Swift structs an `init()` of their own.
+                        || !s.tuple
+                            && !s.recursive
+                            && !s.fields.is_empty()
+                            && s.fields.iter().all(|f| matches!(f.ty, Ty::Option(_)))
+                });
             if default_init {
                 if let Some(new) = methods.get_mut("new") {
                     if new.params.is_empty() {
@@ -803,4 +813,16 @@ pub fn is_test_only(attrs: &[Attribute]) -> bool {
         }
         false
     })
+}
+
+/// Whether `t` holds a `name` directly or through an `Option` or a tuple (not through a
+/// collection, which Swift can store).
+fn directly_contains(t: &Ty, name: &str) -> bool {
+    match t {
+        Ty::Named(n, _) => n == name,
+        Ty::Option(t) => directly_contains(t, name),
+        Ty::Tuple(ts) => ts.iter().any(|t| directly_contains(t, name)),
+        Ty::Result(a, b) => directly_contains(a, name) || directly_contains(b, name),
+        _ => false,
+    }
 }
