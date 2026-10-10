@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+      # The runner image ships a Swift toolchain: the translated programs are compiled and run.
+      - name: Swift compiler
+        run: |
+          swiftc --version || echo "::warning::swiftc not found, the Swift checks are skipped"
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Lint (browser)
+        run: cargo clippy -p ferroswift-transpiler -p ferroswift-site --lib --target wasm32-unknown-unknown -- -D warnings
+      # Rust and Swift outputs compared, examples type-checked against the SwiftUI stand-in.
+      - name: Test
+        run: cargo test --workspace
+      - name: Build the site
+        run: |
+          cargo build -p ferroswift-site --lib --target wasm32-unknown-unknown --profile wasm-release
+          wasm-bindgen --target web --no-typescript --out-dir site/pkg target/wasm32-unknown-unknown/wasm-release/ferroswift_site.wasm
+      # Same command as pages.yml: the static version of the site for GitHub Pages.
+      - name: Export the site as static files
+        run: BASE_PATH=/FerroSwift cargo run --release -p ferroswift-site -- export dist
+
+  # The translated examples against Apple's real SwiftUI, for iOS and macOS, then built as an
+  # app; the differential tests with Apple's Swift compiler.
+  swiftui:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Swift compiler
+        run: swiftc --version
+      - name: Type-check the examples (iOS)
+        env:
+          FERROSWIFT_SDK: iphonesimulator
+        run: cargo test -p ferroswift-transpiler --test swiftui
+      - name: Type-check the examples (macOS)
+        env:
+          FERROSWIFT_SDK: macosx
+        run: cargo test -p ferroswift-transpiler --test swiftui
+      - name: Rust and Swift give the same output
+        run: cargo test -p ferroswift-transpiler --test differential
+      - name: Build the showcase as a macOS app
+        run: |
+          mkdir -p "$RUNNER_TEMP/app/Sources/Showcase"
+          cat > "$RUNNER_TEMP/app/Package.swift" <<'SWIFT'
+          // swift-tools-version: 5.9
+          import PackageDescription
+          let package = Package(
+              name: "Showcase",
+              platforms: [.macOS(.v14)],
+              targets: [.executableTarget(name: "Showcase", path: "Sources/Showcase")]
+          )
+          SWIFT
+          cargo run -q -p ferroswift-cli -- build examples/showcase -o "$RUNNER_TEMP/app/Sources/Showcase"
+          swift build --package-path "$RUNNER_TEMP/app"
