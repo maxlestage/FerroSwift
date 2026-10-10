@@ -15,6 +15,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("char", &[], CHAR),
     ("vec", &["Ordering"], VEC),
     ("map", &[], MAP),
+    ("iter", &[], ITER),
     ("option", &[], OPTION),
     ("result", &[], RESULT),
     ("int", &[], INT),
@@ -611,6 +612,44 @@ extension Array where Element: Comparable {
 }
 
 struct RsNotFound: Error { let index: Int }
+"#;
+
+const ITER: &str = r#"
+/// A Rust iterator kept in a variable: `it.next()`, `it.peek()`.
+struct RsIter<Element>: Sequence, IteratorProtocol {
+    private var items: [Element]
+    private var index = 0
+
+    init<S: Sequence>(_ items: S) where S.Element == Element {
+        self.items = Array(items)
+    }
+
+    mutating func next() -> Element? {
+        guard index < items.count else { return nil }
+        defer { index += 1 }
+        return items[index]
+    }
+
+    func peek() -> Element? {
+        index < items.count ? items[index] : nil
+    }
+
+    mutating func nextIf(_ test: (Element) -> Bool) -> Element? {
+        guard let x = peek(), test(x) else { return nil }
+        index += 1
+        return x
+    }
+
+    mutating func nth(_ n: Int) -> Element? {
+        index += n
+        return next()
+    }
+
+    /// The items not consumed yet.
+    func rest() -> [Element] {
+        Array(items[Swift.min(index, items.count)...])
+    }
+}
 "#;
 
 const MAP: &str = r#"

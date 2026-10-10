@@ -247,7 +247,17 @@ impl Translator<'_> {
             }
         }
         let v = self.expr_with(value, &declared_ty);
-        let v = self.settle_for_let(v);
+        let mut v = self.settle_for_let(v);
+        // `let mut it = s.chars();` and then `it.next()`: a Rust iterator with its position.
+        if mutable && declared.is_none() {
+            if let Ty::Iter(item) = &v.ty {
+                self.helper("iter");
+                v = Ex::primary(
+                    format!("RsIter({})", v.code),
+                    Ty::Named("RsIter".into(), vec![(**item).clone()]),
+                );
+            }
+        }
         let mut ty = declared_ty.clone();
         ty.merge(&v.ty);
         // Empty collections and `nil` need their type written.
@@ -1304,7 +1314,12 @@ impl Translator<'_> {
                 .map(|s| s.ident.to_string())
                 .unwrap_or_default();
             if ts.elems.len() == 1 {
-                if let Pat::Ident(id) = &ts.elems[0] {
+                // `Some(&x)` binds like `Some(x)`.
+                let inner = match &ts.elems[0] {
+                    Pat::Reference(r) => &*r.pat,
+                    p => p,
+                };
+                if let Pat::Ident(id) = inner {
                     if id.subpat.is_none() {
                         let kw = if id.mutability.is_some() {
                             "var"
