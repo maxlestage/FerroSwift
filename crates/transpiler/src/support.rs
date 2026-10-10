@@ -339,6 +339,11 @@ func rsCmp<T: Comparable>(_ a: T, _ b: T) -> Ordering {
     a < b ? .less : a == b ? .equal : .greater
 }
 
+/// `false < true`, as in Rust.
+func rsCmp(_ a: Bool, _ b: Bool) -> Ordering {
+    a == b ? .equal : (b ? .less : .greater)
+}
+
 /// `a.partial_cmp(&b)`: `nil` when a value is NaN.
 func rsPartialCmp<T: Comparable>(_ a: T, _ b: T) -> Ordering? {
     a < b ? .less : a == b ? .equal : b < a ? .greater : nil

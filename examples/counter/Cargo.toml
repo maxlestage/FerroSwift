@@ -1,0 +1,9 @@
+[package]
+name = "counter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The smallest FerroSwift app: a counter, written in Rust, translated to SwiftUI."
+
+[dependencies]
+ferroswift = { path = "../../crates/ferroswift" }

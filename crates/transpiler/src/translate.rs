@@ -96,6 +96,8 @@ pub struct Translator<'a> {
     pub pending_refine: Option<Ty>,
     /// Statements to put at the start of the next loop body (`for mut x in …`).
     pub prelude_body: Vec<String>,
+    /// Inside a condition (`if`, `while`, `guard`, `for … in`): no trailing closures there.
+    pub no_trailing: usize,
 }
 
 impl<'a> Translator<'a> {
@@ -125,6 +127,7 @@ impl<'a> Translator<'a> {
             format_types: Vec::new(),
             pending_refine: None,
             prelude_body: Vec::new(),
+            no_trailing: 0,
         }
     }
 
@@ -673,7 +676,7 @@ impl<'a> Translator<'a> {
                             }
                         },
                     };
-                    if natural_type_matches(&value_ty, &field.ty) && !matches!(field.ty, Ty::Option(_) | Ty::Vec(_) | Ty::Map(..) | Ty::Set(..)) {
+                    if natural_type_matches(&value_ty, &field.ty) && !value.starts_with('.') && !matches!(field.ty, Ty::Option(_) | Ty::Vec(_) | Ty::Map(..) | Ty::Set(..)) {
                         format!("@State var {} = {value}", field.swift)
                     } else {
                         format!("@State var {}: {ty} = {value}", field.swift)
@@ -761,7 +764,9 @@ impl<'a> Translator<'a> {
                         for it in &imp.items {
                             if let ImplItem::Fn(f) = it {
                                 if f.sig.ident == "body" {
-                                    body.push(String::new());
+                                    if !body.is_empty() {
+                                        body.push(String::new());
+                                    }
                                     body.push(self.view_body(f, tn.as_deref() == Some("App")));
                                 }
                             }

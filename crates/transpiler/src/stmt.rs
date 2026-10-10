@@ -242,7 +242,9 @@ impl Translator<'_> {
 
     /// `let Some(x) = opt else { return };` → `guard let x = opt else { return }`.
     fn let_else(&mut self, pat: &Pat, value: &Expr, diverge: &Expr, declared: &Ty) -> Vec<String> {
+        self.no_trailing += 1;
         let v = self.expr_with(value, declared);
+        self.no_trailing -= 1;
         let else_lines = match diverge {
             Expr::Block(b) => self.block_lines(&b.block, Sink::Discard),
             other => self.expr_stmt(other),
@@ -610,7 +612,9 @@ impl Translator<'_> {
     }
 
     fn match_stmt(&mut self, m: &syn::ExprMatch, sink: &Sink) -> Vec<String> {
+        self.no_trailing += 1;
         let subject = self.expr(&m.expr);
+        self.no_trailing -= 1;
         let subject = self.settle(subject);
         let subject_code = subject.code.clone();
         let subject_ty = subject.ty.clone();
@@ -667,7 +671,9 @@ impl Translator<'_> {
         let label = f.label.as_ref().map(|l| format!("{}: ", l.name.ident));
         self.loops.push(f.label.as_ref().map(|l| l.name.ident.to_string()));
         self.push_scope();
+        self.no_trailing += 1;
         let iter = self.iterable(&f.expr);
+        self.no_trailing -= 1;
         let head = match &iter.mutable_items {
             Some(collection) => {
                 // `for x in v.iter_mut()`: loop on the indices, `x` stands for `v[i]`.
@@ -835,6 +841,13 @@ impl Translator<'_> {
     /// The condition of an `if`/`while`: a boolean, `let` patterns (`if let Some(x) = o`), or
     /// a chain of both with `&&`. Bindings are declared in the current scope.
     pub fn condition(&mut self, cond: &Expr) -> String {
+        self.no_trailing += 1;
+        let c = self.condition_inner(cond);
+        self.no_trailing -= 1;
+        c
+    }
+
+    fn condition_inner(&mut self, cond: &Expr) -> String {
         if !contains_let(cond) {
             let v = self.expr_with(cond, &Ty::Bool);
             let v = self.settle(v);

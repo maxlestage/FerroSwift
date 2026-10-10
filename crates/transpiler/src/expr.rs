@@ -235,7 +235,7 @@ impl Translator<'_> {
             let (ok, err) = *t;
             let code = match (ok.swift(), err.swift()) {
                 (Some(o), Some(e)) if !matches!(err, Ty::Dyn(_)) => {
-                    format!("Result<{o}, {e}>(catching: {{ () throws({e}) -> {o} in try {} }})", v.code)
+                    format!("Result<{o}, {e}> {{ () throws({e}) -> {o} in try {} }}", v.code)
                 }
                 _ => format!("Result {{ try {} }}", v.code),
             };
@@ -497,7 +497,7 @@ impl Translator<'_> {
     /// A unit enum case: `.red` when the context knows the type, `Color.red` otherwise.
     fn variant_value(&self, enum_swift: &str, case: &str, expected: &Ty) -> Ex {
         let ty = Ty::Named(enum_swift.to_string(), vec![]);
-        if self.implicit_member || expected.named() == Some(enum_swift) {
+        if expected.named() == Some(enum_swift) {
             Ex::primary(format!(".{case}"), ty)
         } else {
             Ex::primary(format!("{enum_swift}.{case}"), ty)
@@ -785,7 +785,10 @@ impl Translator<'_> {
 
     fn try_expr(&mut self, t: &syn::ExprTry, expected: &Ty) -> Ex {
         let inner_expected = if expected.is_unknown() { Ty::Unknown } else { Ty::Option(Box::new(expected.clone())) };
+        // The value may end up in a `guard let … else`: no trailing closure.
+        self.no_trailing += 1;
         let v = self.expr_with(&t.expr, &inner_expected);
+        self.no_trailing -= 1;
         if v.ty == Ty::Unit {
             // `write!(f, …)?`
             return v;
@@ -1041,7 +1044,7 @@ impl Translator<'_> {
                         args.push(format!("{}: {code}", names::lower_camel(fname)));
                     }
                     let ty = Ty::Named(en.swift.clone(), vec![]);
-                    let prefix = if self.implicit_member || expected.named() == Some(en.swift.as_str()) {
+                    let prefix = if expected.named() == Some(en.swift.as_str()) {
                         String::new()
                     } else {
                         self.type_path_name(&segs[segs.len() - 2])
@@ -1112,6 +1115,7 @@ impl Translator<'_> {
     pub fn binding_arg(&mut self, e: &Expr) -> String {
         let inner = match e {
             Expr::Reference(r) => &*r.expr,
+            Expr::MethodCall(m) if m.method == "clone" && m.args.is_empty() => &*m.receiver,
             e => e,
         };
         if let Expr::Field(f) = inner {
@@ -1406,12 +1410,15 @@ impl Translator<'_> {
         }
         let c = self.expr_with(&i.cond, &Ty::Bool);
         let c = self.settle(c);
+        // `cond ? .red : .primary` would mix two style types: name them.
+        let saved_implicit = std::mem::replace(&mut self.implicit_member, false);
         let a = self.expr_with(then, expected);
         let a = self.settle(a);
         let mut ty = expected.clone();
         ty.merge(&a.ty);
         let b = self.expr_with(else_expr, &ty);
         let b = self.settle(b);
+        self.implicit_member = saved_implicit;
         ty.merge(&b.ty);
         Some(Ex::new(
             format!("{} ? {} : {}", wrap(&c, P_TERNARY + 1), wrap(&a, P_TERNARY + 1), wrap(&b, P_TERNARY)),

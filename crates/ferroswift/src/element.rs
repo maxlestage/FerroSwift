@@ -326,6 +326,11 @@ impl Element {
         self
     }
 
+    /// `.labelsHidden()`: controls without their label.
+    pub fn labels_hidden(self) -> Self {
+        self
+    }
+
     /// `.buttonStyle(style)`.
     pub fn button_style(self, _style: ButtonStyle) -> Self {
         self

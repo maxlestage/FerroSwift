@@ -780,17 +780,25 @@ fn attach(base: String, modifiers: &[String]) -> String {
     if modifiers.is_empty() {
         return base;
     }
-    let single_line = !base.contains('\n') && modifiers.len() == 1 && !modifiers[0].contains('\n') && base.len() + modifiers[0].len() < 60;
+    let single_line = !base.contains('\n')
+        && !base.contains('{')
+        && modifiers.len() == 1
+        && !modifiers[0].contains('\n')
+        && base.len() + modifiers[0].len() < 60;
     if single_line {
         return format!("{base}{}", modifiers[0]);
     }
+    // Below a closing brace, modifiers align with it; below a one-line view, they are
+    // indented.
+    let indent = if base.contains('\n') && base.ends_with('}') { "" } else { crate::translate::INDENT };
     let mut out = base;
     for m in modifiers {
-        out.push('\n');
-        if m.contains('\n') && !m.starts_with("#if") {
-            out.push_str(m);
-        } else {
-            out.push_str(m);
+        for line in m.lines() {
+            out.push('\n');
+            if !line.starts_with('#') {
+                out.push_str(indent);
+            }
+            out.push_str(line);
         }
     }
     out
@@ -817,7 +825,7 @@ fn is_modifier(name: &str) -> bool {
                 | "clip_circle" | "opacity" | "shadow" | "blur" | "rotation" | "scale" | "glass_effect" | "resizable"
                 | "scaled_to_fit" | "scaled_to_fill" | "aspect_ratio" | "image_scale" | "disabled" | "hidden"
                 | "button_style" | "text_field_style" | "picker_style" | "list_style" | "tag" | "id" | "badge"
-                | "accessibility_label" | "help" | "preferred_color_scheme" | "navigation_title" | "navigation_inline"
+                | "accessibility_label" | "help" | "labels_hidden" | "preferred_color_scheme" | "navigation_title" | "navigation_inline"
                 | "toolbar" | "tab_item" | "sheet" | "alert" | "searchable" | "swipe_actions" | "context_menu"
                 | "on_appear" | "on_disappear" | "on_tap_gesture" | "on_submit" | "on_change" | "on_delete" | "on_move"
                 | "animation" | "transition" | "offset" | "ignores_safe_area"
