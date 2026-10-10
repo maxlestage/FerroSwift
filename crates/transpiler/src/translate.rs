@@ -659,26 +659,25 @@ impl<'a> Translator<'a> {
         }
         let mut body: Vec<String> = Vec::new();
         let mut prefix = String::new();
-        let keyword;
-        match info.kind {
+        let keyword = match info.kind {
             TypeKind::View => {
                 self.used_ui = true;
                 conformances.insert(0, "View".into());
-                keyword = "struct";
+                "struct"
             }
             TypeKind::App => {
                 self.used_ui = true;
                 conformances.insert(0, "App".into());
                 prefix.push_str("@main\n");
-                keyword = "struct";
+                "struct"
             }
             TypeKind::Observable => {
                 self.used_ui = true;
                 prefix.push_str("@Observable\n");
-                keyword = "final class";
+                "final class"
             }
-            TypeKind::Plain => keyword = "struct",
-        }
+            TypeKind::Plain => "struct",
+        };
         conformances.retain(|c| {
             !(info.kind == TypeKind::Observable && (c == "Equatable" || c == "Hashable"))
         });
