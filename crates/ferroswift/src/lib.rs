@@ -6,7 +6,7 @@ mod element;
 mod style;
 mod views;
 
-pub use element::Element;
+pub use element::{Element, Modifiers};
 pub use ferroswift_macros::{Observable, View, preview};
 pub use style::*;
 pub use views::*;
@@ -128,6 +128,17 @@ impl<T> VecExt for Vec<T> {
     }
 }
 
+/// The action that closes the current sheet or navigation screen: read it with
+/// `#[environment(dismiss)] dismiss: DismissAction`, call it with `self.dismiss.call()`
+/// (`dismiss()` in Swift).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DismissAction;
+
+impl DismissAction {
+    /// Closes the view: `dismiss()`.
+    pub fn call(&self) {}
+}
+
 /// `withAnimation { body }`: state changes made by `body` are animated.
 pub fn with_animation(mut body: impl FnMut()) {
     body();
@@ -143,7 +154,7 @@ pub mod prelude {
     pub use crate::style::*;
     pub use crate::views::*;
     pub use crate::{
-        App, Element, IndexSet, Never, Observable, Scene, SceneElement, VecExt, View, preview,
+        App, DismissAction, Element, IndexSet, Modifiers, Never, Observable, Scene, SceneElement, VecExt, View, preview,
         window_group, with_animation, with_animation_of,
     };
 }

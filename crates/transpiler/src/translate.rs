@@ -98,6 +98,8 @@ pub struct Translator<'a> {
     pub prelude_body: Vec<String>,
     /// Inside a condition (`if`, `while`, `guard`, `for … in`): no trailing closures there.
     pub no_trailing: usize,
+    /// For each loop being translated, the variable its `break value` assigns.
+    pub loop_values: Vec<Option<String>>,
 }
 
 impl<'a> Translator<'a> {
@@ -128,6 +130,7 @@ impl<'a> Translator<'a> {
             pending_refine: None,
             prelude_body: Vec::new(),
             no_trailing: 0,
+            loop_values: Vec::new(),
         }
     }
 
@@ -690,6 +693,11 @@ impl<'a> Translator<'a> {
                     let default = self.field_default(field, derive_default);
                     format!("@ObservationIgnored var {}: {ty}{default}", field.swift)
                 }
+                // An observable model given by the parent: `@Bindable` lets the view bind
+                // to its properties (`$library.query`).
+                (FieldRole::Plain, TypeKind::View) if self.is_observable(&field.ty) => {
+                    format!("@Bindable var {}: {ty}", field.swift)
+                }
                 (FieldRole::Plain, TypeKind::View) => format!("let {}: {ty}", field.swift),
                 (FieldRole::Plain, _) => {
                     let default = self.field_default(field, derive_default || info.kind == TypeKind::Observable && field.ty.default_value().is_some() && derive_default);
@@ -793,6 +801,11 @@ impl<'a> Translator<'a> {
         };
         out.push_str(&conditional_conformances(&swift, &info.generics, &conditional, less.as_deref()));
         out
+    }
+
+    /// Whether `ty` is a `#[derive(Observable)]` class.
+    pub fn is_observable(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Named(n, _) if self.syms.structs.values().any(|s| &s.swift == n && s.kind == TypeKind::Observable))
     }
 
     /// ` = default` for a field, when the type has a default and it is wanted.
@@ -1241,7 +1254,14 @@ impl<'a> Translator<'a> {
         let body = self.block_lines(&f.block, Sink::Discard);
         self.fns.pop();
         self.pop_scope();
-        let body = indent_lines(&self.resolve_slots(&body.join("\n")));
+        let body = self.resolve_slots(&body.join("\n"));
+        // A single `write!`: the string itself.
+        if let Some(value) = body.strip_prefix(&format!("{out_name} += ")) {
+            if !body.contains('\n') {
+                return format!("{}var {property}: String {{\n{INDENT}{value}\n}}", docs(&f.attrs));
+            }
+        }
+        let body = indent_lines(&body);
         format!(
             "{}var {property}: String {{\n{INDENT}var {out_name} = \"\"\n{body}\n{INDENT}return {out_name}\n}}",
             docs(&f.attrs)
@@ -1367,6 +1387,16 @@ impl<'a> Translator<'a> {
             ""
         };
         let builder = if view { "@ViewBuilder\n" } else { "" };
+        // `Ok(())` at the end of a function: nothing to write.
+        if body.len() > 1 && body.last().is_some_and(|l| l == "return") {
+            body.pop();
+        }
+        // A body that only returns a value: Swift's implicit return.
+        if body.len() == 1 {
+            if let Some(value) = body[0].strip_prefix("return ") {
+                body[0] = value.to_string();
+            }
+        }
         let body = self.resolve_slots(&body.join("\n"));
         format!(
             "{}{deprecated}{builder}{} {{\n{}\n}}",
@@ -1478,7 +1508,11 @@ impl<'a> Translator<'a> {
                     let ty = self.ty(&p.ty);
                     let inout = matches!(&*p.ty, Type::Reference(r) if r.mutability.is_some())
                         && !matches!(ty, Ty::Fn(..) | Ty::Opaque(_) | Ty::Dyn(_) | Ty::View);
-                    let mut swift_ty = self.param_ty(&ty, &p.ty);
+                    let returns_closure = match &sig.output {
+                        ReturnType::Type(_, t) => matches!(self.ty(t), Ty::Fn(..)),
+                        ReturnType::Default => false,
+                    };
+                    let mut swift_ty = self.param_ty(&ty, &p.ty, returns_closure);
                     if inout {
                         swift_ty = format!("inout {swift_ty}");
                     }
@@ -1577,10 +1611,12 @@ impl<'a> Translator<'a> {
     }
 
     /// The Swift type of a parameter: closures stored by the function are `@escaping`.
-    fn param_ty(&mut self, ty: &Ty, syn_ty: &Type) -> String {
+    fn param_ty(&mut self, ty: &Ty, syn_ty: &Type, returns_closure: bool) -> String {
         let s = self.swift_ty(ty, syn_ty.span());
         let boxed = quote::quote!(#syn_ty).to_string().replace(' ', "");
-        if matches!(ty, Ty::Fn(..)) && (boxed.starts_with("Box<") || boxed.starts_with("Rc<") || boxed.starts_with("Arc<")) {
+        let stored = boxed.starts_with("Box<") || boxed.starts_with("Rc<") || boxed.starts_with("Arc<");
+        // A closure kept by the function (boxed, or captured by the closure it returns).
+        if matches!(ty, Ty::Fn(..)) && (stored || returns_closure) {
             format!("@escaping {s}")
         } else {
             s
@@ -1619,6 +1655,7 @@ pub fn protocol_name(name: &str) -> Option<String> {
             "Iterator" => "IteratorProtocol",
             "Default" => return None,
             "Serialize" | "Deserialize" => "Codable",
+            "FromStr" => "LosslessStringConvertible",
             "View" => "View",
             "Add" => "AdditiveArithmetic",
             _ => return None,

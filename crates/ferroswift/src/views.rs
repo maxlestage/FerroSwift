@@ -192,11 +192,6 @@ pub fn picker<T>(_label: impl Into<String>, _selection: &mut T) -> Element {
     Element::new()
 }
 
-/// `DatePicker(label, selection: $date)`; the date is a number of seconds since 1970.
-pub fn date_picker(_label: impl Into<String>, _date: &mut f64) -> Element {
-    Element::new()
-}
-
 /// `ProgressView()`: a spinner.
 pub fn progress_view() -> Element {
     Element::new()

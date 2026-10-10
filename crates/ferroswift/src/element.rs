@@ -6,7 +6,7 @@ use crate::IndexSet;
 
 /// A built-in view under construction. Create one with a view function such as
 /// [`vstack`](crate::vstack) or [`text`](crate::text), add its children, then chain
-/// modifiers: each method documents the SwiftUI code it becomes.
+/// [modifiers](Modifiers): each method documents the SwiftUI code it becomes.
 ///
 /// ```
 /// use ferroswift::prelude::*;
@@ -70,415 +70,421 @@ impl Element {
     pub fn step(self, _step: f64) -> Self {
         self
     }
+}
 
+/// The SwiftUI modifiers, available on every view: the built-in ones and yours
+/// (`TodoRow { … }.padding()`). Each method documents the SwiftUI code it becomes.
+pub trait Modifiers: View + Sized {
     // ----- Layout -----
 
     /// `.padding()`.
-    pub fn padding(self) -> Self {
-        self
+    fn padding(self) -> Element {
+        Element::new()
     }
 
     /// `.padding(length)`.
-    pub fn padding_len(self, _length: f64) -> Self {
-        self
+    fn padding_len(self, _length: f64) -> Element {
+        Element::new()
     }
 
     /// `.padding(.horizontal, length)`.
-    pub fn padding_edges(self, _edges: Edge, _length: f64) -> Self {
-        self
+    fn padding_edges(self, _edges: Edge, _length: f64) -> Element {
+        Element::new()
     }
 
     /// `.frame(width: w, height: h)`.
-    pub fn frame(self, _width: f64, _height: f64) -> Self {
-        self
+    fn frame(self, _width: f64, _height: f64) -> Element {
+        Element::new()
     }
 
     /// `.frame(width: w)`.
-    pub fn frame_width(self, _width: f64) -> Self {
-        self
+    fn frame_width(self, _width: f64) -> Element {
+        Element::new()
     }
 
     /// `.frame(height: h)`.
-    pub fn frame_height(self, _height: f64) -> Self {
-        self
+    fn frame_height(self, _height: f64) -> Element {
+        Element::new()
     }
 
     /// `.frame(minWidth: w)`.
-    pub fn frame_min_width(self, _width: f64) -> Self {
-        self
+    fn frame_min_width(self, _width: f64) -> Element {
+        Element::new()
     }
 
     /// `.frame(minHeight: h)`.
-    pub fn frame_min_height(self, _height: f64) -> Self {
-        self
+    fn frame_min_height(self, _height: f64) -> Element {
+        Element::new()
     }
 
     /// `.frame(maxWidth: w)`; `f64::INFINITY` is `.infinity`.
-    pub fn frame_max_width(self, _width: f64) -> Self {
-        self
+    fn frame_max_width(self, _width: f64) -> Element {
+        Element::new()
     }
 
     /// `.frame(maxHeight: h)`.
-    pub fn frame_max_height(self, _height: f64) -> Self {
-        self
+    fn frame_max_height(self, _height: f64) -> Element {
+        Element::new()
     }
 
     /// `.frame(maxWidth: .infinity)`: as wide as possible.
-    pub fn fill_width(self) -> Self {
-        self
+    fn fill_width(self) -> Element {
+        Element::new()
     }
 
     /// `.frame(maxHeight: .infinity)`: as tall as possible.
-    pub fn fill_height(self) -> Self {
-        self
+    fn fill_height(self) -> Element {
+        Element::new()
     }
 
     /// The `alignment:` of the frame set by the `frame_…` modifiers just before.
-    pub fn frame_alignment(self, _alignment: Alignment) -> Self {
-        self
+    fn frame_alignment(self, _alignment: Alignment) -> Element {
+        Element::new()
     }
 
     /// `.offset(x: x, y: y)`.
-    pub fn offset(self, _x: f64, _y: f64) -> Self {
-        self
+    fn offset(self, _x: f64, _y: f64) -> Element {
+        Element::new()
     }
 
     /// `.ignoresSafeArea()`.
-    pub fn ignores_safe_area(self) -> Self {
-        self
+    fn ignores_safe_area(self) -> Element {
+        Element::new()
     }
 
     // ----- Text -----
 
     /// `.font(font)`.
-    pub fn font(self, _font: Font) -> Self {
-        self
+    fn font(self, _font: Font) -> Element {
+        Element::new()
     }
 
     /// `.font(.system(size: size))`.
-    pub fn font_size(self, _size: f64) -> Self {
-        self
+    fn font_size(self, _size: f64) -> Element {
+        Element::new()
     }
 
     /// `.fontWeight(weight)`.
-    pub fn font_weight(self, _weight: Weight) -> Self {
-        self
+    fn font_weight(self, _weight: Weight) -> Element {
+        Element::new()
     }
 
     /// `.fontDesign(design)`.
-    pub fn font_design(self, _design: Design) -> Self {
-        self
+    fn font_design(self, _design: Design) -> Element {
+        Element::new()
     }
 
     /// `.bold()`.
-    pub fn bold(self) -> Self {
-        self
+    fn bold(self) -> Element {
+        Element::new()
     }
 
     /// `.italic()`.
-    pub fn italic(self) -> Self {
-        self
+    fn italic(self) -> Element {
+        Element::new()
     }
 
     /// `.monospaced()`.
-    pub fn monospaced(self) -> Self {
-        self
+    fn monospaced(self) -> Element {
+        Element::new()
     }
 
     /// `.underline()`.
-    pub fn underline(self) -> Self {
-        self
+    fn underline(self) -> Element {
+        Element::new()
     }
 
     /// `.strikethrough(active)`.
-    pub fn strikethrough(self, _active: bool) -> Self {
-        self
+    fn strikethrough(self, _active: bool) -> Element {
+        Element::new()
     }
 
     /// `.multilineTextAlignment(alignment)`.
-    pub fn multiline_text_alignment(self, _alignment: TextAlignment) -> Self {
-        self
+    fn multiline_text_alignment(self, _alignment: TextAlignment) -> Element {
+        Element::new()
     }
 
     /// `.lineLimit(lines)`.
-    pub fn line_limit(self, _lines: usize) -> Self {
-        self
+    fn line_limit(self, _lines: usize) -> Element {
+        Element::new()
     }
 
     // ----- Colors and effects -----
 
     /// `.foregroundStyle(color)`.
-    pub fn foreground(self, _color: Color) -> Self {
-        self
+    fn foreground(self, _color: Color) -> Element {
+        Element::new()
     }
 
     /// `.background(color)`.
-    pub fn background(self, _color: Color) -> Self {
-        self
+    fn background(self, _color: Color) -> Element {
+        Element::new()
     }
 
     /// `.background { view }`.
-    pub fn background_view(self, _view: impl View) -> Self {
-        self
+    fn background_view(self, _view: impl View) -> Element {
+        Element::new()
     }
 
     /// `.overlay { view }`.
-    pub fn overlay(self, _view: impl View) -> Self {
-        self
+    fn overlay(self, _view: impl View) -> Element {
+        Element::new()
     }
 
     /// `.tint(color)`.
-    pub fn tint(self, _color: Color) -> Self {
-        self
+    fn tint(self, _color: Color) -> Element {
+        Element::new()
     }
 
     /// `.fill(color)`, for shapes.
-    pub fn fill(self, _color: Color) -> Self {
-        self
+    fn fill(self, _color: Color) -> Element {
+        Element::new()
     }
 
     /// `.stroke(color, lineWidth: width)`, for shapes.
-    pub fn stroke(self, _color: Color, _width: f64) -> Self {
-        self
+    fn stroke(self, _color: Color, _width: f64) -> Element {
+        Element::new()
     }
 
     /// `.border(color, width: width)`.
-    pub fn border(self, _color: Color, _width: f64) -> Self {
-        self
+    fn border(self, _color: Color, _width: f64) -> Element {
+        Element::new()
     }
 
     /// `.clipShape(.rect(cornerRadius: radius))`.
-    pub fn corner_radius(self, _radius: f64) -> Self {
-        self
+    fn corner_radius(self, _radius: f64) -> Element {
+        Element::new()
     }
 
     /// `.clipShape(.circle)`.
-    pub fn clip_circle(self) -> Self {
-        self
+    fn clip_circle(self) -> Element {
+        Element::new()
     }
 
     /// `.opacity(value)`.
-    pub fn opacity(self, _value: f64) -> Self {
-        self
+    fn opacity(self, _value: f64) -> Element {
+        Element::new()
     }
 
     /// `.shadow(radius: radius)`.
-    pub fn shadow(self, _radius: f64) -> Self {
-        self
+    fn shadow(self, _radius: f64) -> Element {
+        Element::new()
     }
 
     /// `.blur(radius: radius)`.
-    pub fn blur(self, _radius: f64) -> Self {
-        self
+    fn blur(self, _radius: f64) -> Element {
+        Element::new()
     }
 
     /// `.rotationEffect(.degrees(degrees))`.
-    pub fn rotation(self, _degrees: f64) -> Self {
-        self
+    fn rotation(self, _degrees: f64) -> Element {
+        Element::new()
     }
 
     /// `.scaleEffect(scale)`.
-    pub fn scale(self, _scale: f64) -> Self {
-        self
+    fn scale(self, _scale: f64) -> Element {
+        Element::new()
     }
 
     /// `.glassEffect()` (Liquid Glass, iOS 26 and macOS 26).
-    pub fn glass_effect(self) -> Self {
-        self
+    fn glass_effect(self) -> Element {
+        Element::new()
     }
 
     // ----- Images -----
 
     /// `.resizable()`.
-    pub fn resizable(self) -> Self {
-        self
+    fn resizable(self) -> Element {
+        Element::new()
     }
 
     /// `.scaledToFit()`.
-    pub fn scaled_to_fit(self) -> Self {
-        self
+    fn scaled_to_fit(self) -> Element {
+        Element::new()
     }
 
     /// `.scaledToFill()`.
-    pub fn scaled_to_fill(self) -> Self {
-        self
+    fn scaled_to_fill(self) -> Element {
+        Element::new()
     }
 
     /// `.aspectRatio(contentMode: mode)`.
-    pub fn aspect_ratio(self, _mode: ContentMode) -> Self {
-        self
+    fn aspect_ratio(self, _mode: ContentMode) -> Element {
+        Element::new()
     }
 
     /// `.imageScale(scale)`.
-    pub fn image_scale(self, _scale: ImageScale) -> Self {
-        self
+    fn image_scale(self, _scale: ImageScale) -> Element {
+        Element::new()
     }
 
     // ----- Controls -----
 
     /// `.disabled(disabled)`.
-    pub fn disabled(self, _disabled: bool) -> Self {
-        self
+    fn disabled(self, _disabled: bool) -> Element {
+        Element::new()
     }
 
     /// `.hidden()`.
-    pub fn hidden(self) -> Self {
-        self
+    fn hidden(self) -> Element {
+        Element::new()
     }
 
     /// `.labelsHidden()`: controls without their label.
-    pub fn labels_hidden(self) -> Self {
-        self
+    fn labels_hidden(self) -> Element {
+        Element::new()
     }
 
     /// `.buttonStyle(style)`.
-    pub fn button_style(self, _style: ButtonStyle) -> Self {
-        self
+    fn button_style(self, _style: ButtonStyle) -> Element {
+        Element::new()
     }
 
     /// `.textFieldStyle(style)`.
-    pub fn text_field_style(self, _style: TextFieldStyle) -> Self {
-        self
+    fn text_field_style(self, _style: TextFieldStyle) -> Element {
+        Element::new()
     }
 
     /// `.pickerStyle(style)`.
-    pub fn picker_style(self, _style: PickerStyle) -> Self {
-        self
+    fn picker_style(self, _style: PickerStyle) -> Element {
+        Element::new()
     }
 
     /// `.listStyle(style)`.
-    pub fn list_style(self, _style: ListStyle) -> Self {
-        self
+    fn list_style(self, _style: ListStyle) -> Element {
+        Element::new()
     }
 
     /// `.tag(value)`, e.g. for the options of a picker.
-    pub fn tag<T>(self, _value: T) -> Self {
-        self
+    fn tag<T>(self, _value: T) -> Element {
+        Element::new()
     }
 
     /// `.id(value)`.
-    pub fn id<T>(self, _value: T) -> Self {
-        self
+    fn id<T>(self, _value: T) -> Element {
+        Element::new()
     }
 
     /// `.badge(count)`.
-    pub fn badge(self, _count: i64) -> Self {
-        self
+    fn badge(self, _count: i64) -> Element {
+        Element::new()
     }
 
     /// `.accessibilityLabel(label)`.
-    pub fn accessibility_label(self, _label: impl Into<String>) -> Self {
-        self
+    fn accessibility_label(self, _label: impl Into<String>) -> Element {
+        Element::new()
     }
 
     /// `.help(text)`.
-    pub fn help(self, _text: impl Into<String>) -> Self {
-        self
+    fn help(self, _text: impl Into<String>) -> Element {
+        Element::new()
     }
 
     /// `.preferredColorScheme(scheme)`.
-    pub fn preferred_color_scheme(self, _scheme: ColorScheme) -> Self {
-        self
+    fn preferred_color_scheme(self, _scheme: ColorScheme) -> Element {
+        Element::new()
     }
 
     // ----- Navigation and presentation -----
 
     /// `.navigationTitle(title)`.
-    pub fn navigation_title(self, _title: impl Into<String>) -> Self {
-        self
+    fn navigation_title(self, _title: impl Into<String>) -> Element {
+        Element::new()
     }
 
     /// `.navigationBarTitleDisplayMode(.inline)` (iOS).
-    pub fn navigation_inline(self) -> Self {
-        self
+    fn navigation_inline(self) -> Element {
+        Element::new()
     }
 
     /// `.toolbar { content }`.
-    pub fn toolbar(self, _content: impl View) -> Self {
-        self
+    fn toolbar(self, _content: impl View) -> Element {
+        Element::new()
     }
 
     /// `.tabItem { Label(title, systemImage: icon) }`.
-    pub fn tab_item(self, _title: impl Into<String>, _icon: impl Into<String>) -> Self {
-        self
+    fn tab_item(self, _title: impl Into<String>, _icon: impl Into<String>) -> Element {
+        Element::new()
     }
 
     /// `.sheet(isPresented: $flag) { content }`.
-    pub fn sheet(self, _is_presented: &mut bool, _content: impl View) -> Self {
-        self
+    fn sheet(self, _is_presented: &mut bool, _content: impl View) -> Element {
+        Element::new()
     }
 
     /// `.alert(title, isPresented: $flag) { actions }`.
-    pub fn alert(
+    fn alert(
         self,
         _title: impl Into<String>,
         _is_presented: &mut bool,
         _actions: impl View,
-    ) -> Self {
-        self
+    ) -> Element {
+        Element::new()
     }
 
     /// `.searchable(text: $query)`.
-    pub fn searchable(self, _query: &mut String) -> Self {
-        self
+    fn searchable(self, _query: &mut String) -> Element {
+        Element::new()
     }
 
     /// `.swipeActions { content }`.
-    pub fn swipe_actions(self, _content: impl View) -> Self {
-        self
+    fn swipe_actions(self, _content: impl View) -> Element {
+        Element::new()
     }
 
     /// `.contextMenu { content }`.
-    pub fn context_menu(self, _content: impl View) -> Self {
-        self
+    fn context_menu(self, _content: impl View) -> Element {
+        Element::new()
     }
 
     // ----- Events -----
 
     /// `.onAppear { action }`.
-    pub fn on_appear(self, _action: impl FnMut()) -> Self {
-        self
+    fn on_appear(self, _action: impl FnMut()) -> Element {
+        Element::new()
     }
 
     /// `.onDisappear { action }`.
-    pub fn on_disappear(self, _action: impl FnMut()) -> Self {
-        self
+    fn on_disappear(self, _action: impl FnMut()) -> Element {
+        Element::new()
     }
 
     /// `.onTapGesture { action }`.
-    pub fn on_tap_gesture(self, _action: impl FnMut()) -> Self {
-        self
+    fn on_tap_gesture(self, _action: impl FnMut()) -> Element {
+        Element::new()
     }
 
     /// `.onSubmit { action }`.
-    pub fn on_submit(self, _action: impl FnMut()) -> Self {
-        self
+    fn on_submit(self, _action: impl FnMut()) -> Element {
+        Element::new()
     }
 
     /// `.onChange(of: value) { action }`.
-    pub fn on_change<T>(self, _value: T, _action: impl FnMut()) -> Self {
-        self
+    fn on_change<T>(self, _value: T, _action: impl FnMut()) -> Element {
+        Element::new()
     }
 
     /// `.onDelete { offsets in action }`, on the rows of a `for_each`.
-    pub fn on_delete(self, _action: impl FnMut(IndexSet)) -> Self {
-        self
+    fn on_delete(self, _action: impl FnMut(IndexSet)) -> Element {
+        Element::new()
     }
 
     /// `.onMove { offsets, destination in action }`, on the rows of a `for_each`.
-    pub fn on_move(self, _action: impl FnMut(IndexSet, usize)) -> Self {
-        self
+    fn on_move(self, _action: impl FnMut(IndexSet, usize)) -> Element {
+        Element::new()
     }
 
     // ----- Animation -----
 
     /// `.animation(animation, value: value)`.
-    pub fn animation<T>(self, _animation: Animation, _value: T) -> Self {
-        self
+    fn animation<T>(self, _animation: Animation, _value: T) -> Element {
+        Element::new()
     }
 
     /// `.transition(transition)`.
-    pub fn transition(self, _transition: Transition) -> Self {
-        self
+    fn transition(self, _transition: Transition) -> Element {
+        Element::new()
     }
 }
+
+impl<V: View> Modifiers for V {}

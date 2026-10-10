@@ -1,0 +1,9 @@
+[package]
+name = "showcase"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A tour of the SwiftUI views and modifiers available from Rust with FerroSwift."
+
+[dependencies]
+ferroswift = { path = "../../crates/ferroswift" }

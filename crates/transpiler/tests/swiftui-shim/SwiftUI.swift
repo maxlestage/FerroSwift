@@ -101,10 +101,12 @@ extension Binding: Identifiable where Value: Identifiable {
 }
 
 @propertyWrapper
+@dynamicMemberLookup
 public struct Bindable<Value: AnyObject & Observable>: DynamicProperty {
     public init(wrappedValue: Value) {}
     public var wrappedValue: Value { fatalError() }
     public var projectedValue: Bindable<Value> { self }
+    public subscript<Subject>(dynamicMember keyPath: ReferenceWritableKeyPath<Value, Subject>) -> Binding<Subject> { fatalError() }
 }
 
 @propertyWrapper
