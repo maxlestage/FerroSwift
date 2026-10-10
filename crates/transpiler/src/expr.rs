@@ -215,7 +215,10 @@ impl Translator<'_> {
             }
             Expr::Await(a) => {
                 let v = self.expr_with(&a.base, expected);
-                Ex::new(format!("await {}", wrap(&v, P_PREFIX)), P_TRY, v.ty)
+                let mut ex = Ex::new(format!("await {}", wrap(&v, P_PREFIX)), P_TRY, v.ty);
+                // `f().await` of an async function returning a `Result` still throws.
+                ex.throws = v.throws;
+                ex
             }
             Expr::Block(b) if b.label.is_some() => {
                 let code = self.unsupported(
@@ -250,6 +253,20 @@ impl Translator<'_> {
     pub fn settle(&mut self, mut v: Ex) -> Ex {
         if let Some(t) = v.throws.take() {
             let (ok, err) = *t;
+            if v.code.starts_with("await ") {
+                // `Result(catching:)` takes no async closure.
+                self.helper("async_result");
+                let effects = match err.swift() {
+                    Some(e) if !matches!(err, Ty::Dyn(_)) => format!("async throws({e})"),
+                    _ => "async throws".into(),
+                };
+                let ret = ok.swift().map(|o| format!(" -> {o}")).unwrap_or_default();
+                let code = format!(
+                    "await rsAsyncResult {{ () {effects}{ret} in try {} }}",
+                    v.code
+                );
+                return Ex::new(code, P_TRY, Ty::Result(Box::new(ok), Box::new(err)));
+            }
             let code = match (ok.swift(), err.swift()) {
                 (Some(o), Some(e)) if !matches!(err, Ty::Dyn(_)) => {
                     format!(
