@@ -274,10 +274,10 @@ fn build(args: &Args, options: &Options, check_only: bool) -> Result<bool, Strin
     for (name, _) in &out.files {
         *names.entry(name.clone()).or_default() += 1;
     }
-    for ((name, swift), input) in out.files.iter().zip(&inputs) {
+    for ((name, swift), source) in out.files.iter().zip(&out.file_sources) {
         // Two `mod.rs`-like files with the same name: prefix with the folder.
         let name = if names[name] > 1 {
-            let folder = Path::new(&input.path)
+            let folder = Path::new(source)
                 .parent()
                 .and_then(|p| p.file_name())
                 .map(|f| f.to_string_lossy().into_owned())
@@ -293,7 +293,14 @@ fn build(args: &Args, options: &Options, check_only: bool) -> Result<bool, Strin
         write_if_changed(&dir.join("FerroSwiftSupport.swift"), support)?;
         written.insert("FerroSwiftSupport.swift".into());
     }
-    // Remove the files a previous build generated for Rust files that are gone.
+    // Remove the files a previous build generated for Rust files that are gone (a file with
+    // a syntax error keeps its last translation).
+    for path in &out.unparsed {
+        written.insert(ferroswift_transpiler::swift_file_name(
+            path,
+            entry.as_deref() == Some(path.as_str()),
+        ));
+    }
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -306,7 +313,7 @@ fn build(args: &Args, options: &Options, check_only: bool) -> Result<bool, Strin
             }
         }
     }
-    report(errors, warnings, inputs.len(), Some(&dir), started);
+    report(errors, warnings, out.files.len(), Some(&dir), started);
     Ok(errors == 0)
 }
 

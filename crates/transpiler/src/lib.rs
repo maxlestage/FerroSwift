@@ -84,9 +84,13 @@ pub struct SourceFile {
 pub struct CrateOutput {
     /// One Swift file per Rust file: (Swift file name, source).
     pub files: Vec<(String, String)>,
+    /// The Rust file each of `files` comes from.
+    pub file_sources: Vec<String>,
     /// The support code shared by the files (`FerroSwiftSupport.swift`), if any is needed.
     pub support: Option<String>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Files that are not valid Rust: they have no translation (keep the previous one).
+    pub unparsed: Vec<String>,
 }
 
 /// Translates one Rust file into one Swift file, with default options.
@@ -134,7 +138,10 @@ pub fn transpile_crate(
     for f in files {
         match syn::parse_file(&f.source) {
             Ok(file) => parsed.push((f, file)),
-            Err(error) => out.diagnostics.push(parse_error(&error, Some(&f.path))),
+            Err(error) => {
+                out.diagnostics.push(parse_error(&error, Some(&f.path)));
+                out.unparsed.push(f.path.clone());
+            }
         }
     }
     let refs: Vec<&syn::File> = parsed.iter().map(|(_, f)| f).collect();
@@ -150,6 +157,7 @@ pub fn transpile_crate(
         out.diagnostics.append(&mut t.diags);
         out.files
             .push((swift_file_name(&src.path, is_entry), swift));
+        out.file_sources.push(src.path.clone());
     }
     out.support = support::render(&helpers, ui).map(|code| {
         format!(
