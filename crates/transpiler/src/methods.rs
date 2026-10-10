@@ -53,8 +53,13 @@ impl Translator<'_> {
                     let v = self.expr_with(&c.args[0], &inner);
                     let v = self.settle(v);
                     let ty = Ty::Option(Box::new(v.ty.clone()));
-                    if matches!(expected, Ty::Option(_)) {
+                    // `Some(None)` as an `Option<Option<T>>`: `.some(nil)`, not `nil`.
+                    let nested = v.code == "nil" || matches!(v.ty, Ty::Option(_));
+                    if matches!(expected, Ty::Option(_)) && !nested {
                         return Ex { ty, ..v };
+                    }
+                    if matches!(expected, Ty::Option(_)) && nested {
+                        return Ex::primary(format!(".some({})", v.code), ty);
                     }
                     return Ex::primary(format!("Optional({})", v.code), ty);
                 }

@@ -267,24 +267,9 @@ impl Translator<'_> {
                 return Ex::primary(code, Ty::Vec(Box::new(Ty::Unknown)));
             }
         };
-        let mut it = item.clone();
-        let mut codes = Vec::new();
-        for a in &args {
-            let v = self.expr_with(a, &item);
-            let v = self.settle(v);
-            it.merge(&v.ty);
-            codes.push(v.code);
-        }
-        let joined = codes.join(", ");
-        let code = if joined.len() > 80 || joined.contains('\n') {
-            format!(
-                "[\n{}\n]",
-                crate::translate::indent_lines(&codes.join(",\n"))
-            )
-        } else {
-            format!("[{joined}]")
-        };
-        Ex::primary(code, Ty::Vec(Box::new(it)))
+        let elems: Vec<&Expr> = args.iter().collect();
+        let (code, ty) = self.array_literal(&elems, &item);
+        Ex::primary(code, ty)
     }
 
     /// `matches!(x, Pattern if guard)` → a closure testing `if case`.

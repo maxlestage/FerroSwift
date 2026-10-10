@@ -181,16 +181,9 @@ impl Translator<'_> {
                 Ex::primary(format!("({})", codes.join(", ")), Ty::Tuple(tys))
             }
             Expr::Array(a) => {
-                let item = expected.item();
-                let mut it = item.clone();
-                let mut codes = Vec::new();
-                for el in &a.elems {
-                    let v = self.expr_with(el, &item);
-                    let v = self.settle(v);
-                    it.merge(&v.ty);
-                    codes.push(v.code);
-                }
-                Ex::primary(format!("[{}]", codes.join(", ")), Ty::Vec(Box::new(it)))
+                let elems: Vec<&Expr> = a.elems.iter().collect();
+                let (code, ty) = self.array_literal(&elems, &expected.item());
+                Ex::primary(code, ty)
             }
             Expr::Repeat(r) => {
                 let item = expected.item();
@@ -618,6 +611,50 @@ impl Translator<'_> {
         } else {
             Ex::primary(format!("{enum_swift}.{case}"), ty)
         }
+    }
+
+    /// `[a, b, c]` and `vec![a, b, c]`: the elements, typed by each other. `[Ok(None),
+    /// Err("x".into())]` is a `[Result<Int?, String>]` once every element is seen, and
+    /// says so when Swift could not tell.
+    pub fn array_literal(&mut self, elems: &[&Expr], item: &Ty) -> (String, Ty) {
+        let mut it = item.clone();
+        let mut codes = Vec::new();
+        let mut complete = Vec::new();
+        for el in elems {
+            let v = self.expr_with(el, item);
+            let v = self.settle(v);
+            complete.push(v.ty.is_complete());
+            it.merge(&v.ty);
+            codes.push(v.code);
+        }
+        let mut cast = false;
+        if complete.iter().any(|c| !c) && it.is_complete() {
+            // The elements Swift could not type alone, again with the type of the others.
+            for (i, el) in elems.iter().enumerate() {
+                if complete[i] {
+                    continue;
+                }
+                let v = self.expr_with(el, &it);
+                let v = self.settle(v);
+                codes[i] = v.code;
+            }
+            cast = codes.iter().any(|c| c.starts_with('.') || c == "nil");
+        }
+        let joined = codes.join(", ");
+        let code = if joined.len() > 80 || joined.contains('\n') {
+            format!(
+                "[\n{}\n]",
+                crate::translate::indent_lines(&codes.join(",\n"))
+            )
+        } else {
+            format!("[{joined}]")
+        };
+        let code = if cast {
+            format!("({code} as [{}])", it.swift_lossy())
+        } else {
+            code
+        };
+        (code, Ty::Vec(Box::new(it)))
     }
 
     /// `.map(String::from)`, `.filter(char::is_ascii_digit)`, `.map(Shape::area)`, `.map(Some)`:
