@@ -52,9 +52,41 @@ pub fn query_param(name: &str) -> Option<String> {
     })
 }
 
-/// Replaces the query string of the URL, without a new history entry.
+/// Replaces the query string of the URL, without a new history entry, and carries it over to
+/// the links to the same page in the other languages (`/en/playground/?example=todo`).
 pub fn replace_query(query: &str) {
     if let Ok(history) = window().history() {
         let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(query));
+    }
+    let Some(document) = window().document() else {
+        return;
+    };
+    let path = window().location().pathname().unwrap_or_default();
+    // `/FerroSwift/fr/playground/` → `/playground/`: the page, whatever its language.
+    let page = |p: &str| -> String {
+        let p = p.split('?').next().unwrap_or(p);
+        ["/fr/", "/en/"]
+            .iter()
+            .find_map(|l| p.find(l).map(|i| p[i + 3..].to_string()))
+            .unwrap_or_default()
+    };
+    let current = page(&path);
+    let Ok(links) = document.query_selector_all("a[hreflang]") else {
+        return;
+    };
+    for i in 0..links.length() {
+        let Some(link) = links
+            .item(i)
+            .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+        else {
+            continue;
+        };
+        let Some(href) = link.get_attribute("href") else {
+            continue;
+        };
+        if !current.is_empty() && page(&href) == current {
+            let base = href.split('?').next().unwrap_or(&href);
+            let _ = link.set_attribute("href", &format!("{base}{query}"));
+        }
     }
 }
