@@ -58,8 +58,27 @@ jobs:
         env:
           FERROSWIFT_SDK: macosx
         run: cargo test -p ferroswift-transpiler --test swiftui
+      # Every program, snapshot and example for the oldest systems supported, in both
+      # language modes (typed throws and strict concurrency have runtime and mode constraints).
+      - name: Compile for iOS 17, in Swift 5 and Swift 6 modes
+        env:
+          FERROSWIFT_SDK: iphonesimulator
+        run: cargo test -p ferroswift-transpiler --test deployment
+      - name: Compile for macOS 14, in Swift 5 and Swift 6 modes
+        env:
+          FERROSWIFT_SDK: macosx
+        run: cargo test -p ferroswift-transpiler --test deployment
       - name: Rust and Swift give the same output
         run: cargo test -p ferroswift-transpiler --test differential
+      # `ferroswift new`, then `cargo check` and `swift build` of the new app, as a user would.
+      - name: A new app builds with swift build
+        env:
+          FERROSWIFT_SDK: macosx
+        run: cargo test -p ferroswift-cli --test scaffold
+      - name: A new app type-checks for iOS
+        env:
+          FERROSWIFT_SDK: iphonesimulator
+        run: cargo test -p ferroswift-cli --test scaffold
       - name: Build the showcase as a macOS app
         run: |
           mkdir -p "$RUNNER_TEMP/app/Sources/Showcase"
