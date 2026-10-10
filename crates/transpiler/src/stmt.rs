@@ -153,7 +153,7 @@ impl Translator<'_> {
                 let subject = if is_simple_path(&v.code) {
                     v.code.clone()
                 } else {
-                    let tmp = self.fresh("tuple");
+                    let tmp = self.fresh("value");
                     self.prelude(format!("let {tmp} = {}", v.code));
                     tmp
                 };

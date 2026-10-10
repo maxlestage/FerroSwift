@@ -20,6 +20,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("result", &[], RESULT),
     ("int", &[], INT),
     ("mem", &[], MEM),
+    ("async_result", &[], ASYNC_RESULT),
     ("eprint", &[], EPRINT),
     ("StringError", &[], STRING_ERROR),
     ("ParseError", &[], PARSE_ERROR),
@@ -729,6 +730,17 @@ extension FixedWidthInteger {
     func saturatingAdd(_ o: Self) -> Self { let (v, overflow) = addingReportingOverflow(o); return overflow ? (o > 0 ? .max : .min) : v }
     func saturatingSub(_ o: Self) -> Self { let (v, overflow) = subtractingReportingOverflow(o); return overflow ? (o > 0 ? .min : .max) : v }
     func saturatingMul(_ o: Self) -> Self { let (v, overflow) = multipliedReportingOverflow(by: o); return overflow ? ((self < 0) != (o < 0) ? .min : .max) : v }
+}
+"#;
+
+const ASYNC_RESULT: &str = r#"
+/// The `Result` of an async function that throws (`match f().await { … }`).
+func rsAsyncResult<T, E: Error>(_ body: () async throws(E) -> T) async -> Result<T, E> {
+    do {
+        return .success(try await body())
+    } catch {
+        return .failure(error)
+    }
 }
 "#;
 
