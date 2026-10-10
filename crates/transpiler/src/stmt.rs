@@ -600,6 +600,28 @@ impl Translator<'_> {
                     vec![format!("do {{\n{}\n}}", indent_lines(&lines.join("\n")))]
                 }
             }
+            // `'a: { … break 'a value; … }` → `a: do { … }`.
+            Expr::Block(b) => {
+                let label = b
+                    .label
+                    .as_ref()
+                    .map(|l| l.name.ident.to_string())
+                    .unwrap_or_default();
+                let value = match sink {
+                    Sink::Assign(name) => Some(name.clone()),
+                    _ => None,
+                };
+                self.loops.push(Some(label.clone()));
+                self.loop_values.resize(self.loops.len() - 1, None);
+                self.loop_values.push(value);
+                let lines = self.block_lines(&b.block, sink.clone());
+                self.loops.pop();
+                self.loop_values.truncate(self.loops.len());
+                vec![format!(
+                    "{label}: do {{\n{}\n}}",
+                    indent_lines(&lines.join("\n"))
+                )]
+            }
             Expr::Unsafe(u) => {
                 self.warn(
                     u.unsafe_token.span,
@@ -1373,7 +1395,7 @@ pub fn needs_statements(e: &Expr) -> bool {
         | Expr::While(_)
         | Expr::ForLoop(_)
         | Expr::Unsafe(_) => true,
-        Expr::Block(b) => b.label.is_none(),
+        Expr::Block(_) => true,
         Expr::Paren(p) => needs_statements(&p.expr),
         _ => false,
     }

@@ -102,6 +102,8 @@ pub struct Translator<'a> {
     pub no_trailing: usize,
     /// For each loop being translated, the variable its `break value` assigns.
     pub loop_values: Vec<Option<String>>,
+    /// Nesting of the expression being translated.
+    pub depth: usize,
 }
 
 impl<'a> Translator<'a> {
@@ -133,6 +135,7 @@ impl<'a> Translator<'a> {
             prelude_body: Vec::new(),
             no_trailing: 0,
             loop_values: Vec::new(),
+            depth: 0,
         }
     }
 
@@ -188,6 +191,9 @@ impl<'a> Translator<'a> {
         } else {
             names::lower_camel(rust)
         };
+        if self.scopes.is_empty() {
+            self.push_scope();
+        }
         let scope = self.scopes.last_mut().expect("scope");
         let mut swift = base.clone();
         let mut n = 2;
@@ -211,6 +217,9 @@ impl<'a> Translator<'a> {
 
     /// Declares a local standing for a Swift expression (`items[i]`).
     pub fn declare_alias(&mut self, rust: &str, expr: String, ty: Ty) {
+        if self.scopes.is_empty() {
+            self.push_scope();
+        }
         let scope = self.scopes.last_mut().expect("scope");
         scope.vars.push((
             rust.to_string(),
@@ -695,7 +704,10 @@ impl<'a> Translator<'a> {
             .collect();
         let mut prev = s.span().start().line;
         for (i, field) in info.fields.iter().enumerate() {
-            let (span, attrs) = &field_spans[i];
+            // Two structs of the same name in different modules: the other one was collected.
+            let Some((span, attrs)) = field_spans.get(i) else {
+                break;
+            };
             let leading = self.comments.take_between(prev, span.start().line);
             prev = span.end().line;
             body.extend(leading);
@@ -1095,7 +1107,9 @@ impl<'a> Translator<'a> {
         for item in &t.items {
             match item {
                 TraitItem::Fn(f) => {
+                    self.push_scope();
                     let sig = self.signature(&f.sig, Place::Protocol);
+                    self.pop_scope();
                     reqs.push(format!("{}{}", docs(&f.attrs), sig.header));
                     if let Some(block) = &f.default {
                         defaults.push(self.function(
