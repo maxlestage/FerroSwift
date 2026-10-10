@@ -1,0 +1,16 @@
+[package]
+name = "ferroswift-cli"
+description = "The ferroswift command: translate a Rust crate into Swift and SwiftUI, watch it, scaffold a new app."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "ferroswift"
+path = "src/main.rs"
+
+[dependencies]
+ferroswift-transpiler = { version = "0.1.0", path = "../transpiler" }

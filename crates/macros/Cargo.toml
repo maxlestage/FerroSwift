@@ -1,0 +1,11 @@
+[package]
+name = "ferroswift-macros"
+description = "Derives and attributes of FerroSwift: markers read by the Rust → Swift transpiler."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true

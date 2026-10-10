@@ -1,0 +1,675 @@
+//! What the whole crate declares, collected before translating: types and their fields,
+//! enum variants, functions and methods with their signatures. The translation of a file
+//! needs it to order struct fields, find enum variants, know which functions throw…
+
+use std::collections::{HashMap, HashSet};
+
+use syn::{Attribute, Expr, Fields, FnArg, GenericParam, Item, ReturnType, Type};
+
+use crate::names;
+use crate::ty::{Ty, from_name};
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FieldRole {
+    Plain,
+    /// `#[state]`, with its initial value if given.
+    State(Option<Expr>),
+    Binding,
+    /// `#[environment(key)]`.
+    Environment(String),
+    /// `#[observation_ignored]`.
+    Ignored,
+}
+
+#[derive(Clone, Debug)]
+pub struct FieldInfo {
+    pub rust: String,
+    pub swift: String,
+    pub ty: Ty,
+    pub role: FieldRole,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeKind {
+    Plain,
+    /// `#[derive(View)]` or `impl View for`.
+    View,
+    /// `impl App for`.
+    App,
+    /// `#[derive(Observable)]`: a class.
+    Observable,
+}
+
+#[derive(Clone, Debug)]
+pub struct StructInfo {
+    pub swift: String,
+    pub fields: Vec<FieldInfo>,
+    /// `struct Meters(f64);`
+    pub tuple: bool,
+    pub generics: Vec<String>,
+    pub derives: Vec<String>,
+    pub kind: TypeKind,
+}
+
+impl StructInfo {
+    pub fn field(&self, rust: &str) -> Option<&FieldInfo> {
+        self.fields.iter().find(|f| f.rust == rust)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum VariantShape {
+    Unit,
+    Tuple(Vec<Ty>),
+    Struct(Vec<(String, Ty)>),
+}
+
+#[derive(Clone, Debug)]
+pub struct VariantInfo {
+    pub rust: String,
+    pub swift: String,
+    pub shape: VariantShape,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumInfo {
+    pub swift: String,
+    pub variants: Vec<VariantInfo>,
+    pub generics: Vec<String>,
+}
+
+impl EnumInfo {
+    pub fn variant(&self, rust: &str) -> Option<&VariantInfo> {
+        self.variants.iter().find(|v| v.rust == rust)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelfKind {
+    None,
+    Ref,
+    RefMut,
+    Value,
+}
+
+#[derive(Clone, Debug)]
+pub struct FnSig {
+    pub params: Vec<ParamInfo>,
+    pub ret: Ty,
+    pub self_kind: SelfKind,
+    /// `fn new(…) -> Self` translated as an initializer.
+    pub is_init: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParamInfo {
+    pub ty: Ty,
+    /// `&mut T`: an `inout` parameter.
+    pub inout: bool,
+}
+
+#[derive(Default, Debug)]
+pub struct Symbols {
+    pub structs: HashMap<String, StructInfo>,
+    pub enums: HashMap<String, EnumInfo>,
+    pub traits: HashSet<String>,
+    pub fns: HashMap<String, FnSig>,
+    /// Methods and associated functions by type (Rust name) then method name.
+    pub methods: HashMap<String, HashMap<String, FnSig>>,
+    pub consts: HashMap<String, Ty>,
+    pub aliases: HashMap<String, Ty>,
+    /// Types that implement `Display` (their `description`).
+    pub display: HashSet<String>,
+    /// Types used as the error of a `Result`: they conform to `Error`.
+    pub errors: HashSet<String>,
+    /// Types with a `From<…>` implementation, by target.
+    pub from_impls: HashMap<String, Vec<Ty>>,
+    /// The ferroswift UI library is imported somewhere.
+    pub ui: bool,
+}
+
+impl Symbols {
+    /// Collects the declarations of every file.
+    pub fn collect(files: &[&syn::File]) -> Symbols {
+        let mut s = Symbols::default();
+        // Aliases first: the other declarations may use them.
+        for file in files {
+            s.walk(&file.items, &mut |s, item| {
+                if let Item::Type(t) = item {
+                    let ty = s.ty(&t.ty, None);
+                    s.aliases.insert(t.ident.to_string(), ty);
+                }
+            });
+        }
+        for file in files {
+            s.walk(&file.items, &mut |s, item| s.declare(item));
+        }
+        for file in files {
+            s.walk(&file.items, &mut |s, item| s.declare_impl(item));
+        }
+        s
+    }
+
+    fn walk(&mut self, items: &[Item], f: &mut dyn FnMut(&mut Symbols, &Item)) {
+        for item in items {
+            if is_test_only(item_attrs(item)) {
+                continue;
+            }
+            match item {
+                Item::Mod(m) => {
+                    if let Some((_, inner)) = &m.content {
+                        self.walk(inner, f);
+                    }
+                }
+                Item::Use(u) => {
+                    if quote::quote!(#u).to_string().contains("ferroswift") {
+                        self.ui = true;
+                    }
+                }
+                _ => f(self, item),
+            }
+        }
+    }
+
+    fn declare(&mut self, item: &Item) {
+        match item {
+            Item::Struct(st) => {
+                let derives = derives(&st.attrs);
+                let generics = type_params(&st.generics);
+                let mut kind = TypeKind::Plain;
+                if derives.iter().any(|d| d == "View") {
+                    kind = TypeKind::View;
+                }
+                if derives.iter().any(|d| d == "Observable") {
+                    kind = TypeKind::Observable;
+                }
+                let tuple = matches!(st.fields, Fields::Unnamed(_));
+                let fields = st
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| {
+                        let rust = f
+                            .ident
+                            .as_ref()
+                            .map_or_else(|| i.to_string(), ToString::to_string);
+                        let swift = match &f.ident {
+                            Some(id) => names::lower_camel(&id.to_string()),
+                            None => format!("_{i}"),
+                        };
+                        FieldInfo {
+                            rust,
+                            swift,
+                            ty: self.ty(&f.ty, None),
+                            role: field_role(&f.attrs),
+                        }
+                    })
+                    .collect();
+                self.structs.insert(
+                    st.ident.to_string(),
+                    StructInfo {
+                        swift: names::upper_camel(&st.ident.to_string()),
+                        fields,
+                        tuple,
+                        generics,
+                        derives,
+                        kind,
+                    },
+                );
+            }
+            Item::Enum(en) => {
+                let variants = en
+                    .variants
+                    .iter()
+                    .map(|v| VariantInfo {
+                        rust: v.ident.to_string(),
+                        swift: names::case_name(&v.ident.to_string()),
+                        shape: match &v.fields {
+                            Fields::Unit => VariantShape::Unit,
+                            Fields::Unnamed(f) => VariantShape::Tuple(
+                                f.unnamed.iter().map(|f| self.ty(&f.ty, None)).collect(),
+                            ),
+                            Fields::Named(f) => VariantShape::Struct(
+                                f.named
+                                    .iter()
+                                    .map(|f| {
+                                        (
+                                            f.ident.as_ref().map(ToString::to_string).unwrap_or_default(),
+                                            self.ty(&f.ty, None),
+                                        )
+                                    })
+                                    .collect(),
+                            ),
+                        },
+                    })
+                    .collect();
+                self.enums.insert(
+                    en.ident.to_string(),
+                    EnumInfo {
+                        swift: names::upper_camel(&en.ident.to_string()),
+                        variants,
+                        generics: type_params(&en.generics),
+                    },
+                );
+            }
+            Item::Trait(t) => {
+                self.traits.insert(t.ident.to_string());
+            }
+            Item::Fn(f) => {
+                let sig = self.sig(&f.sig, None);
+                self.note_error_type(&sig.ret);
+                self.fns.insert(f.sig.ident.to_string(), sig);
+            }
+            Item::Const(c) => {
+                let ty = self.ty(&c.ty, None);
+                self.consts.insert(c.ident.to_string(), ty);
+            }
+            Item::Static(c) => {
+                let ty = self.ty(&c.ty, None);
+                self.consts.insert(c.ident.to_string(), ty);
+            }
+            _ => {}
+        }
+    }
+
+    fn declare_impl(&mut self, item: &Item) {
+        let Item::Impl(imp) = item else { return };
+        let Some(type_name) = type_name(&imp.self_ty) else {
+            return;
+        };
+        let self_ty = self.ty(&imp.self_ty, None);
+        let trait_name = imp
+            .trait_
+            .as_ref()
+            .and_then(|(_, path, _)| path.segments.last())
+            .map(|s| s.ident.to_string());
+        match trait_name.as_deref() {
+            Some("View") => {
+                if let Some(st) = self.structs.get_mut(&type_name) {
+                    if st.kind == TypeKind::Plain {
+                        st.kind = TypeKind::View;
+                    }
+                }
+            }
+            Some("App") => {
+                if let Some(st) = self.structs.get_mut(&type_name) {
+                    st.kind = TypeKind::App;
+                }
+            }
+            Some("Display") => {
+                self.display.insert(type_name.clone());
+            }
+            Some("Error") => {
+                self.errors.insert(type_name.clone());
+            }
+            Some("From") => {
+                if let Some((_, path, _)) = &imp.trait_ {
+                    if let Some(syn::PathArguments::AngleBracketed(args)) =
+                        path.segments.last().map(|s| &s.arguments)
+                    {
+                        if let Some(syn::GenericArgument::Type(t)) = args.args.first() {
+                            let from = self.ty(t, Some(&self_ty));
+                            self.from_impls.entry(type_name.clone()).or_default().push(from);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        let observable = self
+            .structs
+            .get(&type_name)
+            .is_some_and(|s| s.kind == TypeKind::Observable);
+        for it in &imp.items {
+            if let syn::ImplItem::Fn(f) = it {
+                let mut sig = self.sig(&f.sig, Some(&self_ty));
+                let name = f.sig.ident.to_string();
+                if trait_name.is_none() && !observable && sig.self_kind == SelfKind::None {
+                    sig.is_init = name == "new" && returns_self(&sig.ret, &self_ty);
+                }
+                if trait_name.as_deref() == Some("Default") && name == "default" {
+                    sig.is_init = true;
+                }
+                if trait_name.as_deref() == Some("From") && name == "from" {
+                    sig.is_init = true;
+                }
+                self.note_error_type(&sig.ret);
+                self.methods
+                    .entry(type_name.clone())
+                    .or_default()
+                    .insert(name, sig);
+            }
+        }
+        // Two initializers with no parameter would clash: `new()` stays a static method.
+        if let Some(methods) = self.methods.get_mut(&type_name) {
+            let default_init = methods.get("default").is_some_and(|m| m.is_init)
+                || self
+                    .structs
+                    .get(&type_name)
+                    .is_some_and(|s| s.derives.iter().any(|d| d == "Default"));
+            if default_init {
+                if let Some(new) = methods.get_mut("new") {
+                    if new.params.is_empty() {
+                        new.is_init = false;
+                    }
+                }
+            }
+        }
+    }
+
+    fn note_error_type(&mut self, ret: &Ty) {
+        if let Ty::Result(_, e) = ret {
+            if let Ty::Named(n, _) = &**e {
+                self.errors.insert(n.clone());
+            }
+        }
+    }
+
+    /// Generic parameters bounded by a closure trait (`F: Fn(i32) -> i32`), with the closure
+    /// type that replaces them.
+    pub fn closure_generics(&self, g: &syn::Generics, self_ty: Option<&Ty>) -> HashMap<String, Ty> {
+        let mut out = HashMap::new();
+        for p in &g.params {
+            if let GenericParam::Type(t) = p {
+                if let Ty::Fn(a, r) = self.bounds_ty(&t.bounds, self_ty, true) {
+                    out.insert(t.ident.to_string(), Ty::Fn(a, r));
+                }
+            }
+        }
+        if let Some(w) = &g.where_clause {
+            for pred in &w.predicates {
+                if let syn::WherePredicate::Type(pt) = pred {
+                    if let Type::Path(tp) = &pt.bounded_ty {
+                        if let Some(id) = tp.path.get_ident() {
+                            if let Ty::Fn(a, r) = self.bounds_ty(&pt.bounds, self_ty, true) {
+                                out.insert(id.to_string(), Ty::Fn(a, r));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The signature of a function or method.
+    pub fn sig(&self, sig: &syn::Signature, self_ty: Option<&Ty>) -> FnSig {
+        let closures = self.closure_generics(&sig.generics, self_ty);
+        let mut self_kind = SelfKind::None;
+        let mut params = Vec::new();
+        for arg in &sig.inputs {
+            match arg {
+                FnArg::Receiver(r) => {
+                    self_kind = match (&r.reference, r.mutability.is_some()) {
+                        (Some(_), true) => SelfKind::RefMut,
+                        (Some(_), false) => SelfKind::Ref,
+                        (None, _) => SelfKind::Value,
+                    };
+                }
+                FnArg::Typed(p) => {
+                    let inout = matches!(&*p.ty, Type::Reference(r) if r.mutability.is_some());
+                    params.push(ParamInfo {
+                        ty: substitute(&self.ty(&p.ty, self_ty), &closures),
+                        inout,
+                    });
+                }
+            }
+        }
+        let ret = match &sig.output {
+            ReturnType::Default => Ty::Unit,
+            ReturnType::Type(_, t) => self.ty(t, self_ty),
+        };
+        FnSig {
+            params,
+            ret,
+            self_kind,
+            is_init: false,
+        }
+    }
+
+    /// A Rust type as the translator sees it. `self_ty` replaces `Self`.
+    pub fn ty(&self, t: &Type, self_ty: Option<&Ty>) -> Ty {
+        match t {
+            Type::Path(p) => {
+                if p.qself.is_some() {
+                    return Ty::Unknown;
+                }
+                let Some(last) = p.path.segments.last() else {
+                    return Ty::Unknown;
+                };
+                let name = last.ident.to_string();
+                if name == "Self" && p.path.segments.len() == 1 {
+                    return self_ty
+                        .cloned()
+                        .unwrap_or_else(|| Ty::Named("Self".into(), vec![]));
+                }
+                let mut args = Vec::new();
+                if let syn::PathArguments::AngleBracketed(a) = &last.arguments {
+                    for arg in &a.args {
+                        if let syn::GenericArgument::Type(t) = arg {
+                            args.push(self.ty(t, self_ty));
+                        }
+                    }
+                }
+                let first = p.path.segments.first().map(|s| s.ident.to_string());
+                // `fmt::Result`, `io::Result<T>`, `io::Error`.
+                if p.path.segments.len() > 1 {
+                    match (first.as_deref(), name.as_str()) {
+                        (Some("fmt"), "Result") => return Ty::Result(Box::new(Ty::Unit), Box::new(Ty::Dyn("Error".into()))),
+                        (Some("io"), "Result") => {
+                            let ok = args.first().cloned().unwrap_or(Ty::Unit);
+                            return Ty::Result(Box::new(ok), Box::new(Ty::Dyn("Error".into())));
+                        }
+                        (_, "Error") if !self.is_user_type("Error") => return Ty::Dyn("Error".into()),
+                        _ => {}
+                    }
+                }
+                if let Some(alias) = self.aliases.get(&name) {
+                    return alias.clone();
+                }
+                if self.structs.contains_key(&name) || self.enums.contains_key(&name) {
+                    return Ty::Named(names::upper_camel(&name), args);
+                }
+                if name == "Element" && first.as_deref() != Some("std") && self.ui {
+                    return Ty::View;
+                }
+                from_name(&name, args)
+            }
+            Type::Reference(r) => self.ty(&r.elem, self_ty),
+            Type::Slice(s) => Ty::Vec(Box::new(self.ty(&s.elem, self_ty))),
+            Type::Array(a) => Ty::Vec(Box::new(self.ty(&a.elem, self_ty))),
+            Type::Tuple(t) if t.elems.is_empty() => Ty::Unit,
+            Type::Tuple(t) => Ty::Tuple(t.elems.iter().map(|e| self.ty(e, self_ty)).collect()),
+            Type::Never(_) => Ty::Never,
+            Type::Paren(p) => self.ty(&p.elem, self_ty),
+            Type::Group(g) => self.ty(&g.elem, self_ty),
+            Type::BareFn(f) => Ty::Fn(
+                f.inputs.iter().map(|a| self.ty(&a.ty, self_ty)).collect(),
+                Box::new(match &f.output {
+                    ReturnType::Default => Ty::Unit,
+                    ReturnType::Type(_, t) => self.ty(t, self_ty),
+                }),
+            ),
+            Type::ImplTrait(i) => self.bounds_ty(&i.bounds, self_ty, true),
+            Type::TraitObject(o) => self.bounds_ty(&o.bounds, self_ty, false),
+            _ => Ty::Unknown,
+        }
+    }
+
+    pub fn is_user_type(&self, name: &str) -> bool {
+        self.structs.contains_key(name) || self.enums.contains_key(name)
+    }
+
+    /// `impl Trait` / `dyn Trait`.
+    fn bounds_ty(
+        &self,
+        bounds: &syn::punctuated::Punctuated<syn::TypeParamBound, syn::token::Plus>,
+        self_ty: Option<&Ty>,
+        opaque: bool,
+    ) -> Ty {
+        for b in bounds {
+            let syn::TypeParamBound::Trait(t) = b else { continue };
+            let Some(seg) = t.path.segments.last() else { continue };
+            let name = seg.ident.to_string();
+            match name.as_str() {
+                "Fn" | "FnMut" | "FnOnce" => {
+                    if let syn::PathArguments::Parenthesized(p) = &seg.arguments {
+                        let params = p.inputs.iter().map(|t| self.ty(t, self_ty)).collect();
+                        let ret = match &p.output {
+                            ReturnType::Default => Ty::Unit,
+                            ReturnType::Type(_, t) => self.ty(t, self_ty),
+                        };
+                        return Ty::Fn(params, Box::new(ret));
+                    }
+                }
+                "Iterator" | "IntoIterator" | "DoubleEndedIterator" | "ExactSizeIterator" => {
+                    let mut item = Ty::Unknown;
+                    if let syn::PathArguments::AngleBracketed(a) = &seg.arguments {
+                        for arg in &a.args {
+                            if let syn::GenericArgument::AssocType(at) = arg {
+                                if at.ident == "Item" {
+                                    item = self.ty(&at.ty, self_ty);
+                                }
+                            }
+                        }
+                    }
+                    return Ty::Iter(Box::new(item));
+                }
+                "Into" | "AsRef" | "Borrow" => {
+                    if let syn::PathArguments::AngleBracketed(a) = &seg.arguments {
+                        if let Some(syn::GenericArgument::Type(t)) = a.args.first() {
+                            return self.ty(t, self_ty);
+                        }
+                    }
+                }
+                "ToString" | "Display" => return Ty::Opaque("CustomStringConvertible".into()),
+                "View" => return Ty::View,
+                "Scene" => return Ty::Opaque("Scene".into()),
+                "Send" | "Sync" | "Sized" | "Unpin" | "Clone" | "Copy" | "Debug" => continue,
+                _ => {
+                    let swift = crate::translate::protocol_name(&name)
+                        .unwrap_or_else(|| names::upper_camel(&name));
+                    return if opaque { Ty::Opaque(swift) } else { Ty::Dyn(swift) };
+                }
+            }
+        }
+        Ty::Unknown
+    }
+}
+
+/// Replaces generic parameters by types (`F` → `(Int) -> Int`).
+pub fn substitute(t: &Ty, map: &HashMap<String, Ty>) -> Ty {
+    let s = |t: &Ty| substitute(t, map);
+    match t {
+        Ty::Named(n, args) if args.is_empty() => map.get(n).cloned().unwrap_or_else(|| t.clone()),
+        Ty::Named(n, args) => Ty::Named(n.clone(), args.iter().map(s).collect()),
+        Ty::Vec(a) => Ty::Vec(Box::new(s(a))),
+        Ty::Option(a) => Ty::Option(Box::new(s(a))),
+        Ty::Iter(a) => Ty::Iter(Box::new(s(a))),
+        Ty::Set(a, o) => Ty::Set(Box::new(s(a)), *o),
+        Ty::Map(k, v, o) => Ty::Map(Box::new(s(k)), Box::new(s(v)), *o),
+        Ty::Result(a, b) => Ty::Result(Box::new(s(a)), Box::new(s(b))),
+        Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(s).collect()),
+        Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(s).collect(), Box::new(s(r))),
+        other => other.clone(),
+    }
+}
+
+/// The name of the type an `impl` block is for (`Point` for `impl<T> Point<T>`).
+pub fn type_name(t: &Type) -> Option<String> {
+    match t {
+        Type::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
+        Type::Reference(r) => type_name(&r.elem),
+        _ => None,
+    }
+}
+
+fn returns_self(ret: &Ty, self_ty: &Ty) -> bool {
+    match ret {
+        Ty::Option(t) => &**t == self_ty,
+        Ty::Result(t, _) => &**t == self_ty,
+        t => t == self_ty,
+    }
+}
+
+pub fn type_params(g: &syn::Generics) -> Vec<String> {
+    g.params
+        .iter()
+        .filter_map(|p| match p {
+            GenericParam::Type(t) => Some(t.ident.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The names in `#[derive(…)]`.
+pub fn derives(attrs: &[Attribute]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in attrs {
+        if a.path().is_ident("derive") {
+            let _ = a.parse_nested_meta(|m| {
+                if let Some(last) = m.path.segments.last() {
+                    out.push(last.ident.to_string());
+                }
+                Ok(())
+            });
+        }
+    }
+    out
+}
+
+fn field_role(attrs: &[Attribute]) -> FieldRole {
+    for a in attrs {
+        let path = a.path();
+        if path.is_ident("state") {
+            return match &a.meta {
+                syn::Meta::List(list) => FieldRole::State(syn::parse2::<Expr>(list.tokens.clone()).ok()),
+                _ => FieldRole::State(None),
+            };
+        }
+        if path.is_ident("binding") {
+            return FieldRole::Binding;
+        }
+        if path.is_ident("observation_ignored") {
+            return FieldRole::Ignored;
+        }
+        if path.is_ident("environment") {
+            if let syn::Meta::List(list) = &a.meta {
+                return FieldRole::Environment(list.tokens.to_string().replace(' ', ""));
+            }
+        }
+    }
+    FieldRole::Plain
+}
+
+pub fn item_attrs(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Const(i) => &i.attrs,
+        Item::Enum(i) => &i.attrs,
+        Item::Fn(i) => &i.attrs,
+        Item::Impl(i) => &i.attrs,
+        Item::Mod(i) => &i.attrs,
+        Item::Static(i) => &i.attrs,
+        Item::Struct(i) => &i.attrs,
+        Item::Trait(i) => &i.attrs,
+        Item::Type(i) => &i.attrs,
+        Item::Use(i) => &i.attrs,
+        Item::Macro(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
+/// `#[cfg(test)]` and `#[test]` items are not translated.
+pub fn is_test_only(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        if a.path().is_ident("test") {
+            return true;
+        }
+        if a.path().is_ident("cfg") {
+            if let syn::Meta::List(list) = &a.meta {
+                return list.tokens.to_string().trim() == "test";
+            }
+        }
+        false
+    })
+}
