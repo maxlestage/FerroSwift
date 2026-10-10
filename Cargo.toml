@@ -8,6 +8,7 @@ members = [
   "site",
   "examples/counter",
   "examples/todo",
+  "examples/showcase",
 ]
 
 [workspace.package]

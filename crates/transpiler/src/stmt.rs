@@ -166,6 +166,23 @@ impl Translator<'_> {
             // `let x = match … { … }`: declare, then assign in every branch.
             let (slot, placeholder) = self.new_slot(declared_ty.clone());
             let simple = self.simple_branches(value);
+            // A short `if c { a } else { b }`: `c ? a : b`.
+            if let (true, Expr::If(i)) = (simple, value) {
+                let saved = self.diags.len();
+                self.preludes.push(Vec::new());
+                let t = self.ternary(i, &declared_ty);
+                let pre = self.preludes.pop().unwrap_or_default();
+                match t {
+                    Some(t) if pre.is_empty() && !t.code.contains('\n') && t.code.len() <= 80 => {
+                        self.slots[slot].merge(&t.ty);
+                        let name = self.declare(rust, t.ty.clone());
+                        self.attach_slot(rust, slot);
+                        let annot = if declared.is_some() { placeholder } else { String::new() };
+                        return vec![format!("{kw} {name}{annot} = {}", t.code)];
+                    }
+                    _ => self.diags.truncate(saved),
+                }
+            }
             if simple {
                 let code = self.branch_expression(value, &declared_ty);
                 if let Some((code, ty)) = code {
@@ -186,6 +203,20 @@ impl Translator<'_> {
             }
             return out;
         }
+        // `let v = map.entry(k).or_insert(0);`: `v` stands for `map[k, default: 0]`.
+        if let Expr::MethodCall(m) = value {
+            let ty = self.entry_value_ty(m);
+            if let Some(place) = self.entry_place(m) {
+                self.declare_alias(rust, place, ty);
+                return vec![];
+            }
+        }
+        // `let x = opt?;` → `guard let x = opt else { return nil }`.
+        if let Expr::Try(t) = value {
+            if let Some(lines) = self.let_try(rust, mutable, &declared_ty, &t.expr) {
+                return lines;
+            }
+        }
         let v = self.expr_with(value, &declared_ty);
         let v = self.settle_for_let(v);
         let mut ty = declared_ty.clone();
@@ -202,6 +233,40 @@ impl Translator<'_> {
             return vec![format!("{kw} {name}{placeholder} = {}", v.code)];
         }
         vec![format!("{kw} {name} = {}", v.code)]
+    }
+
+    /// `let x = e?;` when `e` is an optional: a `guard let`.
+    fn let_try(&mut self, rust: &str, mutable: bool, declared: &Ty, inner: &Expr) -> Option<Vec<String>> {
+        let expected = if declared.is_unknown() { Ty::Unknown } else { Ty::Option(Box::new(declared.clone())) };
+        // Translate in a scratch prelude: a throwing call or a Result goes the usual way.
+        self.preludes.push(Vec::new());
+        self.no_trailing += 1;
+        let saved_diags = self.diags.len();
+        let v = self.expr_with(inner, &expected);
+        self.no_trailing -= 1;
+        let pre = self.preludes.pop().unwrap_or_default();
+        if v.throws.is_some() || v.ty.is_result() && !v.parsed || v.ty == Ty::Unit {
+            self.diags.truncate(saved_diags);
+            return None;
+        }
+        for p in pre {
+            self.prelude(p);
+        }
+        let item = v.ty.item();
+        let throws = self.fn_cx().and_then(|f| f.throws.clone());
+        let exit = if throws.is_some() {
+            self.helper("ParseError");
+            "throw RsParseError()".to_string()
+        } else if self.fn_cx().is_some_and(|f| f.ret == Ty::Unit) {
+            "return".to_string()
+        } else {
+            "return nil".to_string()
+        };
+        let mut ty = declared.clone();
+        ty.merge(&item);
+        let name = self.declare(rust, ty);
+        let kw = if mutable { "var" } else { "let" };
+        Some(vec![format!("guard {kw} {name} = {} else {{ {exit} }}", v.code)])
     }
 
     /// Whether every branch of an `if`/`match` value is a single expression without control
@@ -371,13 +436,27 @@ impl Translator<'_> {
             Expr::Loop(l) => self.loop_stmt(l),
             Expr::Return(r) => self.return_stmt(r.expr.as_deref()),
             Expr::Break(b) => {
-                if b.expr.is_some() {
-                    return vec![self.unsupported(b.span(), "`break` with a value")];
-                }
-                vec![match &b.label {
+                let jump = match &b.label {
                     Some(l) => format!("break {}", l.ident),
                     None => "break".into(),
-                }]
+                };
+                let Some(value) = &b.expr else {
+                    return vec![jump];
+                };
+                // `break value` out of `let x = loop { … }`: assign, then leave.
+                let target = match &b.label {
+                    Some(l) => self.loops.iter().rposition(|n| n.as_deref() == Some(&l.ident.to_string())),
+                    None => self.loops.len().checked_sub(1),
+                };
+                let var = target.and_then(|i| self.loop_values.get(i).cloned().flatten());
+                match var {
+                    Some(rust) => {
+                        let mut lines = self.tail(value, &Sink::Assign(rust));
+                        lines.push(jump);
+                        lines
+                    }
+                    None => vec![self.unsupported(b.span(), "`break` with a value outside `let x = loop { … }`")],
+                }
             }
             Expr::Continue(c) => vec![match &c.label {
                 Some(l) => format!("continue {}", l.ident),
@@ -425,7 +504,14 @@ impl Translator<'_> {
             }
             Expr::Unsafe(u) => self.block_lines(&u.block, sink.clone()),
             Expr::Paren(p) => self.tail(&p.expr, sink),
-            Expr::ForLoop(_) | Expr::While(_) | Expr::Loop(_) | Expr::Return(_) | Expr::Break(_) | Expr::Continue(_) => {
+            Expr::Loop(l) => {
+                let value = match sink {
+                    Sink::Assign(name) => Some(name.clone()),
+                    _ => None,
+                };
+                self.loop_with(l, value)
+            }
+            Expr::ForLoop(_) | Expr::While(_) | Expr::Return(_) | Expr::Break(_) | Expr::Continue(_) => {
                 self.expr_stmt(e)
             }
             Expr::Macro(m) if crate::macros::is_statement_macro(&m.mac) => self.macro_stmt(&m.mac),
@@ -633,7 +719,11 @@ impl Translator<'_> {
                 guards.push(g.code);
             }
             let mut body = pats.lets.clone();
-            body.extend(self.tail(&arm.body, sink));
+            // An arm is a scope already: its block needs no `do { }`.
+            match &*arm.body {
+                Expr::Block(b) if b.label.is_none() => body.extend(self.block_lines(&b.block, sink.clone())),
+                other => body.extend(self.tail(other, sink)),
+            }
             self.pop_scope();
             let body = join_or_break(body, sink, self.in_view_builder());
             let last = i + 1 == n;
@@ -677,8 +767,17 @@ impl Translator<'_> {
         let head = match &iter.mutable_items {
             Some(collection) => {
                 // `for x in v.iter_mut()`: loop on the indices, `x` stands for `v[i]`.
-                let i = self.fresh("i");
+                let mut i = self.fresh("i");
                 match &*f.pat {
+                    // `for (i, x) in v.iter_mut().enumerate()`: the loop index is `i`.
+                    Pat::Tuple(t) if t.elems.len() == 2 && iter.enumerated && !iter.keyed => {
+                        if let Pat::Ident(index) = &t.elems[0] {
+                            i = self.declare(&index.ident.to_string(), Ty::Int(crate::ty::IntKind::Usize));
+                        }
+                        if let Pat::Ident(id) = &t.elems[1] {
+                            self.declare_alias(&id.ident.to_string(), format!("{collection}[{i}]"), iter.item.clone());
+                        }
+                    }
                     Pat::Ident(id) => {
                         let element = if iter.keyed { format!("{collection}[{i}]!") } else { format!("{collection}[{i}]") };
                         self.declare_alias(&id.ident.to_string(), element, iter.item.clone());
@@ -746,16 +845,36 @@ impl Translator<'_> {
     }
 
     fn loop_stmt(&mut self, l: &syn::ExprLoop) -> Vec<String> {
+        self.loop_with(l, None)
+    }
+
+    /// `loop { … }`; `value`: the variable its `break value` assigns.
+    fn loop_with(&mut self, l: &syn::ExprLoop, value: Option<String>) -> Vec<String> {
         let label = l.label.as_ref().map(|l| format!("{}: ", l.name.ident)).unwrap_or_default();
         self.loops.push(l.label.as_ref().map(|l| l.name.ident.to_string()));
+        self.loop_values.resize(self.loops.len() - 1, None);
+        self.loop_values.push(value);
         let body = self.block_lines(&l.body, Sink::Discard);
         self.loops.pop();
+        self.loop_values.truncate(self.loops.len());
         vec![format!("{label}while true {{\n{}\n}}", indent_lines(&body.join("\n")))]
     }
 
     /// What a `for` loop iterates on.
     fn iterable(&mut self, e: &Expr) -> Iterable {
         // `for x in &mut v` / `v.iter_mut()` / `map.values_mut()`: elements changed in place.
+        // `.iter_mut().enumerate()`: the same, with the index.
+        if let Expr::MethodCall(m) = e {
+            if m.method == "enumerate" && m.args.is_empty() {
+                let inner_mutable = matches!(&*m.receiver, Expr::MethodCall(i) if i.method == "iter_mut")
+                    || matches!(&*m.receiver, Expr::Reference(r) if r.mutability.is_some());
+                if inner_mutable {
+                    let mut it = self.iterable(&m.receiver);
+                    it.enumerated = true;
+                    return it;
+                }
+            }
+        }
         let mutable = match e {
             Expr::Reference(r) if r.mutability.is_some() => Some((&*r.expr, false)),
             Expr::MethodCall(m) if m.method == "iter_mut" && m.args.is_empty() => Some((&*m.receiver, false)),
@@ -777,6 +896,7 @@ impl Translator<'_> {
                 item,
                 mutable_items: Some(v.code),
                 keyed,
+                enumerated: false,
             };
         }
         let inner = match e {
@@ -796,6 +916,7 @@ impl Translator<'_> {
             item,
             mutable_items: None,
             keyed: false,
+            enumerated: false,
         }
     }
 
@@ -865,6 +986,10 @@ impl Translator<'_> {
                 self.condition_parts(&b.right, out);
             }
             Expr::Let(l) => {
+                if let Some(c) = self.mutable_binding(&l.pat, &l.expr) {
+                    out.push(c);
+                    return;
+                }
                 let v = self.expr(&l.expr);
                 out.push(self.pattern_condition(&l.pat, v));
             }
@@ -874,6 +999,65 @@ impl Translator<'_> {
                 let v = self.settle(v);
                 out.push(v.code);
             }
+        }
+    }
+
+    /// `if let Some(x) = map.get_mut(&k)` and friends: Swift has no mutable references, so
+    /// `x` stands for the element itself (`map[k]!`, `items[i]`).
+    fn mutable_binding(&mut self, pat: &Pat, e: &Expr) -> Option<String> {
+        let Pat::TupleStruct(ts) = pat else { return None };
+        if !ts.path.is_ident("Some") || ts.elems.len() != 1 {
+            return None;
+        }
+        let Pat::Ident(id) = &ts.elems[0] else { return None };
+        let Expr::MethodCall(m) = e else { return None };
+        let name = id.ident.to_string();
+        match m.method.to_string().as_str() {
+            "get_mut" if m.args.len() == 1 => {
+                let coll = self.expr(&m.receiver);
+                let coll = self.settle(coll);
+                let c = crate::expr::wrap(&coll, P_PRIMARY);
+                match &coll.ty {
+                    Ty::Map(k, v, _) => {
+                        let key = self.expr_with(&m.args[0], k);
+                        let key = self.settle(key);
+                        self.declare_alias(&name, format!("{c}[{}]!", key.code), (**v).clone());
+                        Some(format!("{c}[{}] != nil", key.code))
+                    }
+                    Ty::Vec(t) => {
+                        let i = self.expr_with(&m.args[0], &Ty::Int(crate::ty::IntKind::Usize));
+                        let i = self.settle(i);
+                        self.declare_alias(&name, format!("{c}[{}]", i.code), (**t).clone());
+                        Some(format!("{c}.indices.contains({})", i.code))
+                    }
+                    _ => None,
+                }
+            }
+            "last_mut" | "first_mut" if m.args.is_empty() => {
+                let coll = self.expr(&m.receiver);
+                let coll = self.settle(coll);
+                let c = crate::expr::wrap(&coll, P_PRIMARY);
+                let index = if m.method == "last_mut" { format!("{c}.count - 1") } else { "0".into() };
+                self.declare_alias(&name, format!("{c}[{index}]"), coll.ty.item());
+                Some(format!("!{c}.isEmpty"))
+            }
+            "find" if m.args.len() == 1 => {
+                // `v.iter_mut().find(|x| …)` → the index of the first match.
+                let Expr::MethodCall(inner) = &*m.receiver else { return None };
+                if inner.method != "iter_mut" {
+                    return None;
+                }
+                let coll = self.expr(&inner.receiver);
+                let coll = self.settle(coll);
+                let c = crate::expr::wrap(&coll, P_PRIMARY);
+                let item = coll.ty.item();
+                let f = self.expr_with(&m.args[0], &Ty::Fn(vec![item.clone()], Box::new(Ty::Bool)));
+                let f = self.settle(f);
+                let i = self.fresh("index");
+                self.declare_alias(&name, format!("{c}[{i}]"), item);
+                Some(format!("let {i} = {c}.firstIndex(where: {})", f.code))
+            }
+            _ => None,
         }
     }
 
@@ -927,6 +1111,8 @@ struct Iterable {
     mutable_items: Option<String>,
     /// The collection is a dictionary (indexed by keys).
     keyed: bool,
+    /// `.iter_mut().enumerate()`: the pattern is `(index, element)`.
+    enumerated: bool,
 }
 
 /// Lines of a branch: Swift needs at least one statement in a `case`.

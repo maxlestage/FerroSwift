@@ -568,6 +568,10 @@ impl Translator<'_> {
             }
         }
         let recv = self.settle(recv);
+        // `self.dismiss.call()` → `dismiss()`.
+        if name == "call" && m.args.is_empty() && recv.ty == Ty::Named("DismissAction".into(), vec![]) {
+            return Ex::primary(format!("{}()", wrap(&recv, P_PRIMARY)), Ty::Unit);
+        }
         let args = self.method_args(&recv, &name, m);
         let mut ex = self.std_method(recv, &name, args, &turbofish, expected, m.span());
         if self.no_trailing == 0 {
@@ -586,7 +590,7 @@ impl Translator<'_> {
         ex
     }
 
-    fn entry_value_ty(&mut self, m: &ExprMethodCall) -> Ty {
+    pub fn entry_value_ty(&mut self, m: &ExprMethodCall) -> Ty {
         if let Expr::MethodCall(entry) = &*m.receiver {
             if let Expr::Path(p) = &*entry.receiver {
                 if let Some(l) = p.path.get_ident().and_then(|i| self.lookup(&i.to_string())).cloned() {
@@ -821,6 +825,12 @@ impl Translator<'_> {
                     self.helper("option");
                     return prim(format!("{r}.okOr({e})"), Ty::Result(Box::new(inner), Box::new(ty_a(0))));
                 }
+                // `s.parse::<T>().map_err(|_| E)`: the optional becomes a `Result`.
+                "map_err" if recv.parsed => {
+                    self.helper("option");
+                    let e = closure_body(&a(0));
+                    return prim(format!("{r}.okOr({e})"), Ty::Result(Box::new(inner), Box::new(fn_ret(0))));
+                }
                 "ok" | "cloned" | "copied" | "as_ref" | "as_mut" | "as_deref" | "as_deref_mut" | "clone" | "map_err" => return recv,
                 "flatten" => return prim(format!("{r}.flatMap {{ $0 }}"), inner),
                 "iter" | "into_iter" => return prim(format!("({r}.map {{ [$0] }} ?? [])"), Ty::Vec(Box::new(inner))),
@@ -966,6 +976,7 @@ impl Translator<'_> {
                         Ty::Int(_) | Ty::Float(_) | Ty::Bool => format!("{}({})", target.swift_lossy(), recv.code),
                         Ty::Char => format!("({}.count == 1 ? {}.first : nil)", r, r),
                         Ty::Str => format!("Optional({})", recv.code),
+                        Ty::Named(n, _) if self.generics.contains(n) => format!("{n}({})", recv.code),
                         _ => {
                             self.error(span, "parse(): write the target type, e.g. `s.parse::<i32>()`");
                             format!("Int({})", recv.code)

@@ -737,7 +737,10 @@ impl Translator<'_> {
                     Ex::primary(format!("{t}({raw})"), target)
                 }
             }
-            (Ty::Int(from), Ty::Int(to)) if to.bits() < from.bits() || from.signed() != to.signed() => {
+            // Narrowing, or a negative value made unsigned: Rust's `as` truncates.
+            (Ty::Int(from), Ty::Int(to))
+                if to.bits() < from.bits() || from.signed() && !to.signed() || to.bits() == from.bits() && from.signed() != to.signed() =>
+            {
                 Ex::primary(format!("{t}(truncatingIfNeeded: {})", v.code), target)
             }
             _ => Ex::primary(format!("{t}({})", v.code), target),
@@ -1389,7 +1392,7 @@ impl Translator<'_> {
         Ex::primary(format!("{{{head}\n{}\n}}()", indent_lines(&lines.join("\n"))), ret)
     }
 
-    fn ternary(&mut self, i: &syn::ExprIf, expected: &Ty) -> Option<Ex> {
+    pub fn ternary(&mut self, i: &syn::ExprIf, expected: &Ty) -> Option<Ex> {
         if crate::stmt::contains_let(&i.cond) {
             return None;
         }
