@@ -1,0 +1,96 @@
+---
+title: Rust → Swift
+description: Le sous-ensemble de Rust pris en charge et ce qu’il devient en Swift : types, structs, enums, traits, génériques, closures, filtrage, erreurs et formatage.
+order: 3
+---
+
+FerroSwift traduit du Rust ordinaire — le code que vous écrivez pour le modèle et la logique d’une app — en Swift tel que vous l’écririez à la main. Les types sont suivis expression par expression, pour que chaque construction reçoive le bon Swift : `Int` ou `Double`, un optionnel, un `throws`, un binding. Essayez tout ceci dans le [playground](../../playground/).
+
+## Les types
+
+| Rust | Swift |
+| --- | --- |
+| `i32`, `i64`, `isize`, `usize` | `Int` |
+| `i8`, `i16`, `u8`, `u16`, `u32`, `u64` | `Int8`, `Int16`, `UInt8`, `UInt16`, `UInt32`, `UInt64` |
+| `f64`, `f32` | `Double`, `Float` |
+| `bool`, `char` | `Bool`, `Character` |
+| `String`, `&str` | `String` |
+| `Vec<T>`, `[T; N]`, `&[T]` | `[T]` |
+| `HashMap<K, V>`, `BTreeMap<K, V>` | `[K: V]` (une `BTreeMap` est parcourue dans l’ordre des clés) |
+| `HashSet<T>`, `BTreeSet<T>` | `Set<T>` |
+| `Option<T>` | `T?` |
+| `Result<T, E>` | une fonction qui `throws(E)` et renvoie `T` |
+| `(A, B)`, `()` | `(A, B)`, `Void` |
+| `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<T>` | `T` |
+| `&T`, `&mut T` | `T` (`inout T` pour un paramètre `&mut`) |
+| `impl Trait`, `dyn Trait` | `some Proto`, `any Proto` |
+| `fn(A) -> B`, closures | `(A) -> B` |
+
+Les longueurs `usize` sont des `Int` Swift : `v.len()` donne `v.count`. Le `len()` d’une chaîne compte les octets UTF-8, comme en Rust : `s.utf8.count`.
+
+## Les éléments
+
+- Les **structs** deviennent des `struct` avec leur initialiseur membre à membre ; les structs tuples reçoivent des champs `_0`, `_1`… `#[derive(Default)]` donne à chaque champ sa valeur par défaut.
+- **Derives :** `PartialEq`/`Eq` → `Equatable`, `Hash` → `Hashable`, `PartialOrd`/`Ord` → `Comparable`. `Clone` et `Copy` n’ont besoin de rien : les structs Swift sont des valeurs. `Debug` est pris en charge par `{:?}` (voir plus bas).
+- Les **enums** deviennent des `enum` ; les variantes à données reçoivent des valeurs associées (`Card { last4: String }` → `case card(last4: String)`).
+- Les blocs **`impl`** deviennent des `extension`. `fn new(…) -> Self` devient un `init`, les méthodes `&mut self` des `mutating func`, les `const` associées des `static let`.
+- Les **traits** deviennent des `protocol` ; les méthodes par défaut vont dans une extension du protocole, les types associés dans des `associatedtype`. `impl Trait for Type` ajoute la conformité.
+- Les **traits d’opérateurs** (`Add`, `Sub`, `Mul`, `Neg`…) deviennent des fonctions d’opérateur ; `impl Display` devient `CustomStringConvertible`.
+- Les **génériques** gardent leurs bornes : `fn largest<T: Describe>(items: &[T])` → `func largest<T: Describe>(_ items: [T])`. Les clauses `where` sont conservées.
+- Les **fonctions** prennent des paramètres sans étiquette (`_ name: Type`), pour que les appels ressemblent à ceux de Rust.
+- `const` et `static` deviennent des `let` globaux, les alias `type` des `typealias`, les blocs `mod` sont mis à plat.
+
+## Expressions et contrôle de flux
+
+| Rust | Swift |
+| --- | --- |
+| `match x { A => …, B(v) if v > 0 => …, _ => … }` | `switch x { case .a: … case .b(let v) where v > 0: … default: … }` |
+| `if let Some(x) = opt { … }` | `if let x = opt { … }` |
+| `let Some(x) = opt else { return };` | `guard let x = opt else { return }` |
+| `while let Some(x) = stack.pop()` | `while let x = stack.popLast()` |
+| `for (i, x) in v.iter().enumerate()` | `for (i, x) in v.enumerated()` |
+| `for i in 0..n`, `0..=n`, `(0..n).rev()` | `for i in 0..<n`, `0...n`, `(0..<n).reversed()` |
+| `if c { a } else { b }` comme valeur | `c ? a : b` |
+| `x as f64`, `n as u8` | `Double(x)`, `UInt8(truncatingIfNeeded: n)` |
+| `matches!(x, Some(1..=5))` | un `switch` qui renvoie un `Bool` |
+| `assert!(c, "…")`, `panic!("…")` | `precondition(c, "…")`, `fatalError("…")` |
+
+Les closures deviennent des closures Swift (`|x| x * 2` → `{ x in x * 2 }`), et les chaînes d’itérateurs les méthodes Swift correspondantes : `map`, `filter`, `fold` (→ `reduce`), `sum`, `any` (→ `contains(where:)`), `find` (→ `first(where:)`), `position` (→ `firstIndex`), `enumerate`, `zip`, `rev`, `max_by`, `collect`… Les quelques méthodes sans équivalent direct viennent du fichier de support.
+
+## Les erreurs
+
+Une fonction qui renvoie `Result<T, E>` devient une fonction qui `throws(E)` ; `?` devient `try`, `Err(e)` un `throw`, et un `match` sur un `Result` attrape l’erreur :
+
+```rust
+fn check(name: &str) -> Result<&str, LoginError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(LoginError::EmptyName);
+    }
+    Ok(name)
+}
+```
+
+```swift
+func check(_ name: String) throws(LoginError) -> String {
+    let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if name.isEmpty {
+        throw .emptyName
+    }
+    return name
+}
+```
+
+Les enums d’erreur se conforment à `Error`. Le `throws` typé demande Swift 6 (Xcode 16).
+
+## Chaînes et formatage
+
+`format!`, `println!`, `eprintln!` et `write!` deviennent de l’interpolation de chaînes. Les valeurs s’affichent exactement comme en Rust grâce à de petites fonctions du fichier de support : `{}` de `1.0` donne `1`, `{:.2}` arrondit de la même façon, `{:?}` écrit `Some(Point { x: 1.0, y: 2.5 })`, et largeurs, alignements et remplissages (`{:>8}`, `{:05}`) sont conservés. Les méthodes de chaînes courantes ont leur équivalent Swift (`trim` → `trimmingCharacters(in:)`, `split` → `components(separatedBy:)`, `to_uppercase` → `uppercased()`, `starts_with` → `hasPrefix`…).
+
+## Les commentaires
+
+Les commentaires et la documentation `///` sont conservés, à côté du code qu’ils décrivent : le Swift généré reste lisible. Les commentaires placés au milieu d’une chaîne d’appels de méthodes ne sont pas conservés.
+
+## Le fichier de support
+
+Quand la traduction a besoin d’une aide — formatage Rust, `Ordering`, découpage de chaînes par octets, quelques méthodes de collections (`retain`, `dedup`, `windows`…) — FerroSwift l’écrit une fois dans `FerroSwiftSupport.swift` (ou à la fin du fichier dans le playground). Seules les aides utilisées sont incluses.
