@@ -126,6 +126,44 @@ pub struct Symbols {
     pub from_impls: HashMap<String, Vec<Ty>>,
     /// The ferroswift UI library is imported somewhere.
     pub ui: bool,
+    /// Names brought in by `use` (`PI` → `std::f64::consts::PI`), without the globs.
+    pub imports: HashMap<String, Vec<String>>,
+}
+
+/// The names of a `use` tree with their full paths.
+fn collect_imports(
+    tree: &syn::UseTree,
+    prefix: &mut Vec<String>,
+    out: &mut HashMap<String, Vec<String>>,
+) {
+    match tree {
+        syn::UseTree::Path(p) => {
+            prefix.push(p.ident.to_string());
+            collect_imports(&p.tree, prefix, out);
+            prefix.pop();
+        }
+        syn::UseTree::Name(n) => {
+            let name = n.ident.to_string();
+            if name != "self" {
+                let mut path = prefix.clone();
+                path.push(name.clone());
+                out.insert(name, path);
+            } else if let Some(last) = prefix.last() {
+                out.insert(last.clone(), prefix.clone());
+            }
+        }
+        syn::UseTree::Rename(r) => {
+            let mut path = prefix.clone();
+            path.push(r.ident.to_string());
+            out.insert(r.rename.to_string(), path);
+        }
+        syn::UseTree::Group(g) => {
+            for t in &g.items {
+                collect_imports(t, prefix, out);
+            }
+        }
+        syn::UseTree::Glob(_) => {}
+    }
 }
 
 impl Symbols {
@@ -165,6 +203,7 @@ impl Symbols {
                     if quote::quote!(#u).to_string().contains("ferroswift") {
                         self.ui = true;
                     }
+                    collect_imports(&u.tree, &mut Vec::new(), &mut self.imports);
                 }
                 _ => f(self, item),
             }

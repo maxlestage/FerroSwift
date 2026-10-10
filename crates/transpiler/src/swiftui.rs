@@ -210,6 +210,30 @@ impl Translator<'_> {
         if !self.ui() || self.syms.is_user_type(owner) {
             return None;
         }
+        let arity = match (owner, name) {
+            ("Color", "rgb") => 3,
+            ("Color", "rgba") => 4,
+            ("Color", "hex") | ("Font", "system") => 1,
+            ("Font", "system_weight" | "system_design") => 2,
+            _ => return None,
+        };
+        if args.len() != arity {
+            // rustc rejects the call too; the rest of the file is still translated.
+            let span = args
+                .first()
+                .map_or_else(proc_macro2::Span::call_site, syn::spanned::Spanned::span);
+            self.error(
+                span,
+                format!(
+                    "{owner}::{name} takes {arity} argument{}, not {}",
+                    if arity == 1 { "" } else { "s" },
+                    args.len()
+                ),
+            );
+            return Some(format!(
+                "fatalError(\"FerroSwift: wrong arguments for {owner}::{name}\")"
+            ));
+        }
         let a: Vec<String> = args.iter().map(|e| self.ui_arg(e)).collect();
         let implicit = self.implicit_member;
         let prefix = if implicit { "" } else { owner };

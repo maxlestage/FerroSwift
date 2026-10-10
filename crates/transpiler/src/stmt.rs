@@ -178,6 +178,8 @@ impl Translator<'_> {
         declared: Option<Ty>,
         value: &Expr,
     ) -> Vec<String> {
+        // `RefCell::new(…)` is mutated through a shared reference: a `var` in Swift.
+        let mutable = mutable || interior_mutable(value);
         let kw = if mutable { "var" } else { "let" };
         let declared_ty = declared.clone().unwrap_or(Ty::Unknown);
         if needs_statements(value) {
@@ -1491,6 +1493,25 @@ fn user_call_returns_value(t: &Translator<'_>, e: &Expr) -> bool {
             let name = m.method.to_string();
             t.syms.methods.values().any(|ms| ms.contains_key(&name))
         }
+        _ => false,
+    }
+}
+
+/// `RefCell::new(x)`, `Rc::new(Cell::new(x))`, `Arc::new(Mutex::new(x))`…
+pub fn interior_mutable(e: &Expr) -> bool {
+    let Expr::Call(c) = e else { return false };
+    let Expr::Path(p) = &*c.func else {
+        return false;
+    };
+    let segs: Vec<String> = p
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    match segs.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        [.., "RefCell" | "Cell" | "Mutex" | "RwLock", "new"] => true,
+        [.., "Rc" | "Arc" | "Box", "new"] => c.args.first().is_some_and(interior_mutable),
         _ => false,
     }
 }
