@@ -106,7 +106,7 @@ impl Translator<'_> {
                 let (en, case) = &found[0];
                 let args = self.variant_args(en, &last, &c.args);
                 let ty = Ty::Named(en.clone(), vec![]);
-                let prefix = if self.implicit_member || expected.named() == Some(en.as_str()) { String::new() } else { en.clone() };
+                let prefix = if expected.named() == Some(en.as_str()) { String::new() } else { en.clone() };
                 return Ex::primary(format!("{prefix}.{case}({})", args.join(", ")), ty);
             }
             if let Some(ex) = self.ui_call(&last, &c.args, expected) {
@@ -125,7 +125,7 @@ impl Translator<'_> {
             if let Some(v) = en.variant(&last) {
                 let args = self.variant_args(&owner_rust, &last, &c.args);
                 let ty = Ty::Named(en.swift.clone(), vec![]);
-                let prefix = if self.implicit_member || expected.named() == Some(en.swift.as_str()) {
+                let prefix = if expected.named() == Some(en.swift.as_str()) {
                     String::new()
                 } else {
                     self.type_path_name(&owner)
@@ -569,7 +569,10 @@ impl Translator<'_> {
         }
         let recv = self.settle(recv);
         let args = self.method_args(&recv, &name, m);
-        let ex = self.std_method(recv, &name, args, &turbofish, expected, m.span());
+        let mut ex = self.std_method(recv, &name, args, &turbofish, expected, m.span());
+        if self.no_trailing == 0 {
+            ex.code = trailing_closure(ex.code);
+        }
         // Learn the types of collections from their uses.
         if let Expr::Path(p) = &*m.receiver {
             if let Some(id) = p.path.get_ident() {
@@ -1476,6 +1479,87 @@ impl Translator<'_> {
             }
         }
     }
+}
+
+/// `xs.map({ x in x + 1 })` → `xs.map { x in x + 1 }`, `reduce(0, { … })` → `reduce(0) { … }`,
+/// `first(where: { … })` → `first { … }`. Only when the last argument is a closure.
+pub fn trailing_closure(code: String) -> String {
+    if !code.ends_with("})") {
+        return code;
+    }
+    let chars: Vec<char> = code.chars().collect();
+    let last = chars.len() - 1;
+    // Find the parenthesis that the final `)` closes, skipping strings and interpolations.
+    enum Frame {
+        Paren(usize),
+        Brace(usize),
+        Interp,
+        Str,
+    }
+    let mut stack: Vec<Frame> = Vec::new();
+    let mut open_paren = None;
+    let mut closure_start = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let in_str = matches!(stack.last(), Some(Frame::Str));
+        if in_str {
+            match c {
+                '\\' if chars.get(i + 1) == Some(&'(') => {
+                    stack.push(Frame::Interp);
+                    i += 2;
+                    continue;
+                }
+                '\\' => {
+                    i += 2;
+                    continue;
+                }
+                '"' => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' => stack.push(Frame::Str),
+            '(' => stack.push(Frame::Paren(i)),
+            '{' => stack.push(Frame::Brace(i)),
+            ')' => match stack.pop() {
+                Some(Frame::Paren(j)) if i == last => open_paren = Some(j),
+                Some(Frame::Paren(_)) | Some(Frame::Interp) => {}
+                _ => return code,
+            },
+            '}' => match stack.pop() {
+                Some(Frame::Brace(j)) if i == last - 1 => closure_start = Some(j),
+                Some(Frame::Brace(_)) => {}
+                _ => return code,
+            },
+            _ => {}
+        }
+        i += 1;
+    }
+    let (Some(p), Some(b)) = (open_paren, closure_start) else {
+        return code;
+    };
+    if b <= p {
+        return code;
+    }
+    let callee: String = chars[..p].iter().collect();
+    let before: String = chars[p + 1..b].iter().collect();
+    let closure: String = chars[b..last].iter().collect();
+    let before = before.trim();
+    if before.is_empty() || matches!(before, "where:" | "by:" | "while:" | "catching:") {
+        return format!("{callee} {closure}");
+    }
+    if let Some(args) = before.strip_suffix(',') {
+        // Only plain arguments before the closure (no label of the closure itself).
+        if !args.trim().is_empty() {
+            return format!("{callee}({}) {closure}", args.trim());
+        }
+    }
+    code
 }
 
 /// Binds the generic parameters of `param` to the parts of `arg`.

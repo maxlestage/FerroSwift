@@ -6,8 +6,8 @@ members = [
   "crates/transpiler",
   "crates/cli",
   "site",
-  # "examples/counter",
-  # "examples/todo",
+  "examples/counter",
+  "examples/todo",
 ]
 
 [workspace.package]
