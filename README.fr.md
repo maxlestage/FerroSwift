@@ -133,7 +133,7 @@ La liste complète, et ce qui n'est pas pris en charge, se trouve dans [le guide
 | [`crates/macros`](crates/macros) | `#[derive(View)]`, `#[derive(Observable)]`, `#[preview]` (des marqueurs, sans code généré) |
 | [`crates/transpiler`](crates/transpiler) | Le traducteur : arbre syntaxique syn → traduction typée → Swift |
 | [`crates/cli`](crates/cli) | La commande `ferroswift` |
-| [`examples`](examples) | `counter`, `todo` (modèle testé avec `cargo test`) et `showcase` (onglets, navigation, modèle observable, formulaires) |
+| [`examples`](examples) | `counter`, `todo` (modèle testé avec `cargo test`), `showcase` (onglets, navigation, modèle observable, formulaires) et `gallery` (toutes les vues et tous les modificateurs du crate) |
 | [`site`](site) | Site web, documentation (en/fr) et bac à sable, écrits avec active |
 
 ## Tests
@@ -145,6 +145,8 @@ cargo test --workspace
 - `tests/differential.rs` compile et exécute chaque programme de `crates/transpiler/tests/programs` avec `rustc` et avec `swiftc`, puis compare leurs sorties.
 - `tests/swiftui.rs` traduit les exemples et les vérifie : avec le SwiftUI d'Apple sur macOS (`FERROSWIFT_SDK=iphonesimulator`), avec [un substitut aux mêmes signatures](crates/transpiler/tests/swiftui-shim/SwiftUI.swift) ailleurs.
 - `tests/snapshots.rs` compare les traductions au Swift attendu dans `tests/snapshots`.
+- `tests/deployment.rs` compile chaque programme, snapshot et exemple en mode Swift 6 et, sur macOS, pour iOS 17 et macOS 14.
+- `crates/cli/tests/scaffold.rs` lance `ferroswift new`, puis `cargo check` et `swift build` sur la nouvelle application.
 
 Les parties Swift demandent `swiftc` dans le `PATH` (ou `FERROSWIFT_SWIFTC`) et sont ignorées sans lui.
 

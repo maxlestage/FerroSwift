@@ -10,7 +10,7 @@ The `ferroswift` crate describes SwiftUI in Rust. Its functions return builders 
 use ferroswift::prelude::*;
 ```
 
-> **Note:** the transpiler recognizes the views of a file through this `use` line. Without it, `vstack()` and friends are translated as ordinary function calls.
+> **Note:** the transpiler recognizes the views of a crate through this `use` line, or through `#[derive(View)]`, `impl View` and `impl App`. In a file with none of them, `vstack()` and friends are translated as ordinary function calls.
 
 ## A view
 

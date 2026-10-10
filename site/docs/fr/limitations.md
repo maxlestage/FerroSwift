@@ -13,6 +13,7 @@ rustc vérifie la possession et les durées de vie ; Swift n’en a pas besoin. 
 - `&T` devient `T`, et un paramètre `&mut T` devient `inout T` : l’appelant voit les modifications, comme en Rust.
 - Une référence **stockée** dans une struct devient une copie. Les modifications faites à travers elle ne sont pas vues par l’original.
 - Les déplacements (moves) et `Drop` n’ont pas d’effet : Swift copie les structs et compte les références vers les classes.
+- Une méthode qui renvoie une référence mutable dans son receveur (`fn find_mut(&mut self, id) -> Option<&mut Task>`) est signalée : renvoyez l’indice de la tâche et modifiez `self.tasks[i]` à la place.
 
 Écrivez le modèle avec des valeurs (structs, enums, `Vec`, `HashMap`) et passez `&mut` aux fonctions qui le modifient : ce code a le même sens dans les deux langages.
 
@@ -36,7 +37,8 @@ Les macros de la bibliothèque standard sont traduites : `println!`, `eprintln!`
 
 ## Différences de comportement
 
-- Un **dépassement d’entier** arrête un programme Swift dans tous les modes ; Rust panique en debug et boucle en release. Les conversions `as` gardent le sens de Rust (`n as u8` tronque).
+- Un **dépassement d’entier** arrête un programme Swift dans tous les modes ; Rust panique en debug et boucle en release. `i32` est l’`Int` 64 bits de Swift : `+` déborde à 2⁶³ plutôt qu’à 2³¹ ; `wrapping_add`, `checked_add`, `saturating_add` et `overflowing_add` gardent les limites 32 bits. Les conversions `as` gardent le sens de Rust : `n as u8` tronque, un flottant converti en entier sature et `NaN` donne 0.
+- **Display et largeur :** comme en Rust, `{:>10}` est ignoré par une impl `Display` écrite avec `write!` (seuls `f.pad(…)` et `self.0.fmt(f)` l’honorent) ; `{:?}` n’applique une largeur qu’aux nombres.
 - Les **tables de hachage et ensembles** sont parcourus dans un ordre non spécifié dans les deux langages, mais pas le même. Une `BTreeMap` est parcourue dans l’ordre des clés.
 - Les **chaînes** sont indexées par octets en Rust et par caractères en Swift : le découpage (`&s[0..3]`) passe par une aide qui compte les octets, comme Rust.
 

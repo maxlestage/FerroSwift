@@ -33,7 +33,8 @@ Les longueurs `usize` sont des `Int` Swift : `v.len()` donne `v.count`. Le `len(
 - Les **structs** deviennent des `struct` avec leur initialiseur membre à membre ; les structs tuples reçoivent des champs `_0`, `_1`… `#[derive(Default)]` donne à chaque champ sa valeur par défaut.
 - **Derives :** `PartialEq`/`Eq` → `Equatable`, `Hash` → `Hashable`, `PartialOrd`/`Ord` → `Comparable`. `Clone` et `Copy` n’ont besoin de rien : les structs Swift sont des valeurs. `Debug` est pris en charge par `{:?}` (voir plus bas).
 - Les **enums** deviennent des `enum` ; les variantes à données reçoivent des valeurs associées (`Card { last4: String }` → `case card(last4: String)`).
-- Les blocs **`impl`** deviennent des `extension`. `fn new(…) -> Self` devient un `init`, les méthodes `&mut self` des `mutating func`, les `const` associées des `static let`.
+- Les blocs **`impl`** deviennent des `extension`. `fn new(…) -> Self` devient un `init`, les méthodes `&mut self` des `mutating func`, les `const` associées des `static let`. Une méthode qui renvoie `&mut Self` (un builder) est appelée comme une instruction : `a.b().c()` devient `a.b()` puis `a.c()`. Une méthode qui porte le nom d’un champ (`fn count(&self)` à côté de `count`) devient une propriété calculée, le champ étant stocké sous `_count`.
+- **`impl Iterator for Type`** fait du type une `Sequence` : `for x in Counter { … }`, `.filter`, `.sum()` fonctionnent dessus.
 - Les **traits** deviennent des `protocol` ; les méthodes par défaut vont dans une extension du protocole, les types associés dans des `associatedtype`. `impl Trait for Type` ajoute la conformité.
 - Les **traits d’opérateurs** (`Add`, `Sub`, `Mul`, `Neg`…) deviennent des fonctions d’opérateur ; `impl Display` devient `CustomStringConvertible`.
 - Les **génériques** gardent leurs bornes : `fn largest<T: Describe>(items: &[T])` → `func largest<T: Describe>(_ items: [T])`. Les clauses `where` sont conservées.
@@ -89,7 +90,7 @@ Les enums d’erreur se conforment à `Error`. Le `throws` typé demande Swift 6
 
 ## Les commentaires
 
-Les commentaires et la documentation `///` sont conservés, à côté du code qu’ils décrivent : le Swift généré reste lisible. Les commentaires placés au milieu d’une chaîne d’appels de méthodes ne sont pas conservés.
+Les commentaires et la documentation `///` sont conservés, à côté du code qu’ils décrivent : le Swift généré reste lisible. Avant et après les instructions, entre les enfants et les modificateurs d’une vue, et les lignes vides entre groupes d’instructions restent. Les commentaires placés au milieu d’une autre chaîne d’appels de méthodes (`v.iter() // … .map(…)`) ne sont pas conservés.
 
 ## Le fichier de support
 

@@ -13,6 +13,7 @@ rustc checks ownership and lifetimes; Swift does not need them. FerroSwift drops
 - `&T` becomes `T`, and a `&mut T` parameter becomes `inout T`: the caller sees the changes, as in Rust.
 - A reference **stored** in a struct becomes a copy. Changes made through it are not seen by the original.
 - Moves and `Drop` have no effect: Swift copies structs and counts references to classes.
+- A method returning a mutable reference into its receiver (`fn find_mut(&mut self, id) -> Option<&mut Task>`) is reported: return the index of the task and change `self.tasks[i]` instead.
 
 Write the model with values (structs, enums, `Vec`, `HashMap`) and pass `&mut` to the functions that change it: that code means the same thing in both languages.
 
@@ -36,7 +37,8 @@ Macros of the standard library are translated: `println!`, `eprintln!`, `format!
 
 ## Behaviour differences
 
-- **Integer overflow** stops a Swift program in every build; Rust panics in debug builds and wraps in release builds. `as` conversions keep Rust's meaning (`n as u8` truncates).
+- **Integer overflow** stops a Swift program in every build; Rust panics in debug builds and wraps in release builds. `i32` is Swift's 64-bit `Int`, so `+` overflows at 2⁶³ rather than 2³¹; `wrapping_add`, `checked_add`, `saturating_add` and `overflowing_add` keep the 32-bit limits. `as` conversions keep Rust's meaning: `n as u8` truncates, a float cast to an integer saturates and `NaN` gives 0.
+- **Display and width:** as in Rust, `{:>10}` is ignored by a `Display` impl written with `write!` (only `f.pad(…)` and `self.0.fmt(f)` honor it); `{:?}` applies a width to numbers only.
 - **Hash maps and sets** are iterated in an unspecified order in both languages, but not the same one. A `BTreeMap` is iterated in key order.
 - **Strings** are indexed by bytes in Rust and by characters in Swift: slicing (`&s[0..3]`) goes through a support helper that counts bytes, like Rust.
 
