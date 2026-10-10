@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::f64::consts::{self, PI};
 use std::fmt;
 
 /// A shape.
@@ -12,7 +13,7 @@ enum Shape {
 impl Shape {
     fn area(&self) -> f64 {
         match self {
-            Shape::Circle(r) => std::f64::consts::PI * r * r,
+            Shape::Circle(r) => PI * r * r,
             Shape::Rect { w, h } => w * h,
             Shape::Empty => 0.0,
         }
@@ -82,6 +83,7 @@ fn main() {
     }
     let total: f64 = shapes.iter().map(|s| s.area()).sum();
     println!("total = {:.3}", total);
+    println!("e = {:.5}, tau = {:.4}", consts::E, consts::TAU);
 
     let mut p = Point::new(3, -4);
     println!("p = {} manhattan {}", p, p.manhattan());

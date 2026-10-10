@@ -495,10 +495,20 @@ impl Translator<'_> {
                     Ty::Map(Box::new(k), Box::new(val), owner == "BTreeMap"),
                 ))
             }
-            (
-                "Box" | "Rc" | "Arc" | "RefCell" | "Cell" | "Mutex" | "RwLock" | "Cow",
-                "new" | "from",
-            ) if args.len() == 1 => Some(arg(self, 0, expected)),
+            ("RefCell" | "Cell" | "Mutex" | "RwLock", "new") if args.len() == 1 => {
+                self.warn(
+                    args.span(),
+                    format!(
+                        "{owner} is translated as its value: Swift copies it, so a change made \
+                         through one clone is not seen by the others; use an \
+                         `#[derive(Observable)]` model (a class) for shared state"
+                    ),
+                );
+                Some(arg(self, 0, expected))
+            }
+            ("Box" | "Rc" | "Arc" | "Cow", "new" | "from") if args.len() == 1 => {
+                Some(arg(self, 0, expected))
+            }
             ("cmp", "max" | "min") | ("std", "max" | "min") if args.len() == 2 => {
                 let a = arg(self, 0, expected);
                 let b = arg(self, 1, &a.ty);

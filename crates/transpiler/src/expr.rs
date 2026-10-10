@@ -485,6 +485,14 @@ impl Translator<'_> {
             if let Some(ty) = self.syms.consts.get(n) {
                 return Ex::primary(names::constant(n), ty.clone());
             }
+            // `use std::f64::consts::PI;` then `PI`.
+            if let Some(full) = self.syms.imports.get(n).cloned() {
+                if full.len() >= 2 {
+                    if let Some(ex) = self.std_constant(&full) {
+                        return ex;
+                    }
+                }
+            }
             if let Some(st) = self.syms.structs.get(n) {
                 if st.fields.is_empty() {
                     return Ex::primary(
@@ -521,6 +529,14 @@ impl Translator<'_> {
         let owner_rust = self.rust_type_name(owner);
         if let Some(ex) = self.std_constant(&segs) {
             return ex;
+        }
+        // `use std::f64::consts;` then `consts::E`.
+        if let Some(full) = self.syms.imports.get(&segs[0]) {
+            let mut full = full.clone();
+            full.extend(segs[1..].iter().cloned());
+            if let Some(ex) = self.std_constant(&full) {
+                return ex;
+            }
         }
         if let Some(en) = self.syms.enums.get(&owner_rust).cloned() {
             if let Some(v) = en.variant(last) {
@@ -1243,6 +1259,10 @@ impl Translator<'_> {
         };
         let mut args = Vec::new();
         for field in &info.fields {
+            // `@Environment` values are provided by SwiftUI, not by the caller.
+            if matches!(field.role, FieldRole::Environment(_)) {
+                continue;
+            }
             let Some(fv) = s
                 .fields
                 .iter()
@@ -1276,6 +1296,9 @@ impl Translator<'_> {
             for f in &s.fields {
                 let name = member_name(&f.member);
                 let field = info.field(&name);
+                if field.is_some_and(|f| matches!(f.role, FieldRole::Environment(_))) {
+                    continue;
+                }
                 let swift = field.map_or_else(|| names::lower_camel(&name), |f| f.swift.clone());
                 let fty = field.map_or(Ty::Unknown, |f| f.ty.clone());
                 let v = self.expr_with(&f.expr, &fty);
