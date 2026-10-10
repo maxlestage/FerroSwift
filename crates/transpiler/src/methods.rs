@@ -639,6 +639,8 @@ impl Translator<'_> {
             {
                 Ty::Option(Box::new(expected.clone()))
             }
+            // `text.parse().map_err(…)?` with an `f64` expected: the same target for `parse`.
+            "map_err" | "ok" | "or" | "or_else" | "ok_or" | "ok_or_else" => expected.clone(),
             _ => Ty::Unknown,
         };
         // `map.entry(k).or_insert_with(Vec::new).push(x)`: the receiver is a place.
@@ -1025,6 +1027,26 @@ impl Translator<'_> {
             _ => Ty::Unknown,
         };
         let prim = |code: String, ty: Ty| Ex::primary(code, ty);
+        // An iterator kept in a variable (`RsIter`).
+        if let Ty::Named(n, targs) = &rty {
+            if n == "RsIter" {
+                let t = targs.first().cloned().unwrap_or(Ty::Unknown);
+                match name {
+                    "next" | "peek" => {
+                        return prim(format!("{r}.{name}()"), Ty::Option(Box::new(t)));
+                    }
+                    "next_if" => {
+                        return prim(format!("{r}.nextIf({})", a(0)), Ty::Option(Box::new(t)));
+                    }
+                    "nth" => return prim(format!("{r}.nth({})", a(0)), Ty::Option(Box::new(t))),
+                    "by_ref" | "peekable" => return recv,
+                    _ => {
+                        let rest = Ex::primary(format!("{r}.rest()"), Ty::Iter(Box::new(t)));
+                        return self.std_method(rest, name, args, turbofish, expected, span);
+                    }
+                }
+            }
+        }
         let is_seq = matches!(
             rty,
             Ty::Vec(_) | Ty::Iter(_) | Ty::Range(_) | Ty::Set(..) | Ty::Map(..)
@@ -1345,23 +1367,23 @@ impl Translator<'_> {
                                 "{r}.split(omittingEmptySubsequences: false, whereSeparator: {}).map(String.init)",
                                 a(0)
                             ),
-                            Ty::Vec(Box::new(Ty::Str)),
+                            Ty::Iter(Box::new(Ty::Str)),
                         );
                     }
                     return prim(
                         format!("{r}.components(separatedBy: {})", str_arg(0)),
-                        Ty::Vec(Box::new(Ty::Str)),
+                        Ty::Iter(Box::new(Ty::Str)),
                     );
                 }
                 "split_whitespace" | "split_ascii_whitespace" => {
                     return prim(
                         format!("{r}.split(whereSeparator: \\.isWhitespace).map(String.init)"),
-                        Ty::Vec(Box::new(Ty::Str)),
+                        Ty::Iter(Box::new(Ty::Str)),
                     );
                 }
                 "lines" => {
                     self.helper("string");
-                    return prim(format!("{r}.lines()"), Ty::Vec(Box::new(Ty::Str)));
+                    return prim(format!("{r}.lines()"), Ty::Iter(Box::new(Ty::Str)));
                 }
                 "split_once" | "rsplit_once" => {
                     self.helper("string");
@@ -1391,7 +1413,7 @@ impl Translator<'_> {
                     self.helper("string");
                     return prim(
                         format!("{r}.charIndices()"),
-                        Ty::Vec(Box::new(Ty::Tuple(vec![usize_ty, Ty::Char]))),
+                        Ty::Iter(Box::new(Ty::Tuple(vec![usize_ty, Ty::Char]))),
                     );
                 }
                 "repeat" => {
