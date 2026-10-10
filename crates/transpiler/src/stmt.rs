@@ -42,7 +42,19 @@ impl Translator<'_> {
             let last = i + 1 == stmts.len();
             let start = s.span().start().line;
             let end = s.span().end().line;
-            out.extend(self.comments.take_between(prev, start));
+            // A blank line between two groups of statements stays one, comments included.
+            let leading = self.comments.take_between_lines(prev, start);
+            let mut at = prev;
+            for (line, text) in leading {
+                if i > 0 && line > at + 1 && !out.last().is_some_and(String::is_empty) {
+                    out.push(String::new());
+                }
+                out.push(text);
+                at = line;
+            }
+            if i > 0 && start > at + 1 && !out.last().is_some_and(String::is_empty) {
+                out.push(String::new());
+            }
             prev = end;
             let mut lines = match s {
                 Stmt::Local(l) => self.with_prelude(|t| t.local(l)),

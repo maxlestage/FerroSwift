@@ -878,6 +878,10 @@ impl Translator<'_> {
         let mut i = 0;
         while i < methods.len() {
             let name = methods[i].method.to_string();
+            // The comments written before `.padding()` go before it.
+            let before = methods[i].receiver.span().end().line;
+            let dot = methods[i].dot_token.span().start().line;
+            out.extend(self.comments.take_between(before, dot));
             if FRAME.contains(&name.as_str()) {
                 let mut j = i;
                 let mut fixed: Vec<(String, String)> = Vec::new();
@@ -942,7 +946,12 @@ impl Translator<'_> {
                 i = j;
                 continue;
             }
-            let code = self.modifier(methods[i]);
+            let mut code = self.modifier(methods[i]);
+            // `.padding() // around`
+            if let Some(c) = self.comments.take_trailing(methods[i].span().end().line) {
+                code.push(' ');
+                code.push_str(&c);
+            }
             out.push(code);
             i += 1;
         }
