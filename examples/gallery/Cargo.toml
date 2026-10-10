@@ -1,0 +1,9 @@
+[package]
+name = "gallery"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Every view and modifier of the ferroswift crate, in one app: text styles, images, inputs, lists and lazy stacks."
+
+[dependencies]
+ferroswift = { path = "../../crates/ferroswift" }
