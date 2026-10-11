@@ -3,7 +3,7 @@ import Foundation
 func stats(_ values: [Double]) -> (Double, Double) {
     let total = values.reduce(0.0, +)
     let mean = total / Double(values.count)
-    let max = values.reduce(-Double.greatestFiniteMagnitude) { x, y in Swift.max(x, y) }
+    let max = values.reduce(-Double.greatestFiniteMagnitude) { x, y in Double.maximum(x, y) }
     return (mean, max)
 }
 

@@ -147,6 +147,8 @@ pub struct Symbols {
     pub imports: HashMap<String, Vec<String>>,
     /// Types implementing `Iterator`, with their `Item` type (by Rust and by Swift name).
     pub iterators: HashMap<String, Ty>,
+    /// `fn index_mut` of the `IndexMut` impls, by Rust type name: the setter of the subscript.
+    pub index_mut: HashMap<String, syn::ImplItemFn>,
 }
 
 /// The names of a `use` tree with their full paths.
@@ -430,6 +432,15 @@ impl Symbols {
             }
             Some("Error") => {
                 self.errors.insert(type_name.clone());
+            }
+            Some("IndexMut") => {
+                for it in &imp.items {
+                    if let syn::ImplItem::Fn(f) = it {
+                        if f.sig.ident == "index_mut" {
+                            self.index_mut.insert(type_name.clone(), f.clone());
+                        }
+                    }
+                }
             }
             Some("From") => {
                 if let Some((_, path, _)) = &imp.trait_ {

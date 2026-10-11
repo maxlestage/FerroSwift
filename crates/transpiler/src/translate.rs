@@ -486,6 +486,12 @@ impl<'a> Translator<'a> {
                 Item::Impl(i) => {
                     let ty_name = crate::symbols::type_name(&i.self_ty).unwrap_or_default();
                     let trait_name = impl_trait_name(i);
+                    // `impl IndexMut`: its `index_mut` is the setter of the `Index` subscript.
+                    if trait_name.as_deref() == Some("IndexMut")
+                        && self.syms.index_mut.contains_key(&ty_name)
+                    {
+                        continue;
+                    }
                     let merged = matches!(trait_name.as_deref(), Some("View" | "App"))
                         && self
                             .syms
@@ -1582,7 +1588,10 @@ impl<'a> Translator<'a> {
             Some(op) if operator_of(op).is_some() => {
                 for it in &imp.items {
                     if let ImplItem::Fn(f) = it {
-                        members.push(self.operator_fn(op, f));
+                        let member = self.operator_fn(op, f);
+                        if !member.is_empty() {
+                            members.push(member);
+                        }
                     }
                 }
             }
@@ -1807,7 +1816,11 @@ impl<'a> Translator<'a> {
         let (op, assign, prefix) = operator_of(trait_name).expect("operator trait");
         let imp = self.imp.clone().expect("impl");
         let swift = imp.swift.clone();
-        if f.sig.ident == "index" || f.sig.ident == "index_mut" {
+        if f.sig.ident == "index_mut" {
+            // Emitted as the setter of the `Index` subscript.
+            return String::new();
+        }
+        if f.sig.ident == "index" {
             return self.subscript_fn(f);
         }
         self.push_scope();
@@ -1862,9 +1875,13 @@ impl<'a> Translator<'a> {
         }
     }
 
+    /// `fn index(&self, i: I) -> &T` → `subscript(i: I) -> T`, with a `set` when the type
+    /// also implements `IndexMut`.
     fn subscript_fn(&mut self, f: &syn::ImplItemFn) -> String {
         self.push_scope();
         let mut params = Vec::new();
+        // The Swift names and types of the index parameters, reused by the setter.
+        let mut names = Vec::new();
         let mut prologue = Vec::new();
         for arg in &f.sig.inputs {
             if let FnArg::Typed(p) = arg {
@@ -1873,6 +1890,7 @@ impl<'a> Translator<'a> {
                     Pat::Ident(i) => {
                         let name = self.declare(&i.ident.to_string(), ty.clone());
                         params.push(format!("{name}: {}", self.swift_ty(&ty, p.ty.span())));
+                        names.push((name, ty));
                     }
                     // `fn index(&self, (r, c): (usize, usize))`.
                     pat => {
@@ -1880,6 +1898,7 @@ impl<'a> Translator<'a> {
                         params.push(format!("_ {name}: {}", self.swift_ty(&ty, p.ty.span())));
                         let (lines, _) = self.let_pattern(pat, &name, &ty, false);
                         prologue.extend(lines);
+                        names.push((name, ty));
                     }
                 }
             }
@@ -1900,11 +1919,78 @@ impl<'a> Translator<'a> {
         self.fns.pop();
         self.pop_scope();
         let ret_swift = self.swift_ty(&ret, f.sig.output.span());
-        let body = indent_lines(&self.resolve_slots(&body.join("\n")));
+        let getter = self.resolve_slots(&body.join("\n"));
+        let rust = self
+            .imp
+            .as_ref()
+            .map(|i| i.rust.clone())
+            .unwrap_or_default();
+        let setter = self
+            .syms
+            .index_mut
+            .get(&rust)
+            .cloned()
+            .and_then(|m| self.subscript_setter(&m, &names, &ret));
+        let body = match setter {
+            Some(setter) => format!(
+                "get {{\n{}\n}}\nset {{\n{}\n}}",
+                indent_lines(&getter),
+                indent_lines(&setter)
+            ),
+            None => getter,
+        };
         format!(
-            "subscript({}) -> {ret_swift} {{\n{body}\n}}",
-            params.join(", ")
+            "subscript({}) -> {ret_swift} {{\n{}\n}}",
+            params.join(", "),
+            indent_lines(&body)
         )
+    }
+
+    /// The `set` of a subscript, from `fn index_mut(&mut self, i: I) -> &mut T`: its
+    /// statements, then `newValue` assigned to the place it returns.
+    fn subscript_setter(
+        &mut self,
+        f: &syn::ImplItemFn,
+        names: &[(String, Ty)],
+        ret: &Ty,
+    ) -> Option<String> {
+        let Some(syn::Stmt::Expr(syn::Expr::Reference(r), None)) = f.block.stmts.last() else {
+            return None;
+        };
+        let place = (*r.expr).clone();
+        self.push_scope();
+        let mut lines = Vec::new();
+        let mut typed = f.sig.inputs.iter().filter_map(|a| match a {
+            FnArg::Typed(p) => Some(p),
+            _ => None,
+        });
+        for (name, ty) in names {
+            let Some(p) = typed.next() else { break };
+            match &*p.pat {
+                Pat::Ident(i) => {
+                    self.declare_alias(&i.ident.to_string(), name.clone(), ty.clone());
+                }
+                pat => {
+                    let (pattern_lines, _) = self.let_pattern(pat, name, ty, false);
+                    lines.extend(pattern_lines);
+                }
+            }
+        }
+        self.declare_alias("newValue", "newValue".into(), ret.clone());
+        self.fns.push(FnCx {
+            ret: Ty::Unit,
+            throws: None,
+            init: false,
+            closure: false,
+            self_name: None,
+        });
+        let mut stmts: Vec<syn::Stmt> = f.block.stmts[..f.block.stmts.len() - 1].to_vec();
+        stmts.push(syn::parse_quote!(#place = newValue;));
+        let (open, close) = (f.block.span().start().line, f.block.span().end().line);
+        lines.extend(self.stmts(&stmts, Sink::Discard, open, close));
+        self.fns.pop();
+        self.pop_scope();
+        Some(self.resolve_slots(&lines.join("\n")))
     }
 
     // ----- Functions -----

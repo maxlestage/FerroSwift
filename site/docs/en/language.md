@@ -39,7 +39,7 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 - **`impl` blocks** become `extension`s. `fn new(…) -> Self` becomes an `init`, `&mut self` methods become `mutating func`, associated `const`s become `static let`. A method returning `&mut Self` (a builder) is called as a statement, so `a.b().c()` becomes `a.b()` then `a.c()`. A method with the name of a field (`fn count(&self)` next to `count`) becomes a computed property, the field being stored as `_count`.
 - **`impl Iterator for Type`** makes the type a `Sequence`: `for x in Counter { … }`, `.filter`, `.sum()` work on it. Its adapters are lazy, like `(1..)`'s, so an endless iterator ends with `take(5)`; `let mut it = …` keeps an iterator that `next()`, `peek()` and `nth()` advance.
 - **Traits** become `protocol`s; default methods go into a protocol extension, associated types into `associatedtype`. `impl Trait for Type` adds the conformance.
-- **Operator traits** (`Add`, `Sub`, `Mul`, `Neg`…) become operator functions; `impl Display` becomes `CustomStringConvertible`.
+- **Operator traits** (`Add`, `Sub`, `Mul`, `Neg`…) become operator functions, `impl Index` a `subscript` (with a `set` when `IndexMut` is implemented too); `impl Display` becomes `CustomStringConvertible`.
 - **Conversions:** `impl From<A> for B` becomes an `init`; `impl FromStr for B` and `impl TryFrom<A> for B` become the static functions `fromStr` and `tryFrom`, which `s.parse::<B>()`, `B::from_str(s)`, `B::try_from(x)` and `x.try_into()` call.
 - **Generics** keep their bounds: `fn largest<T: Describe>(items: &[T])` → `func largest<T: Describe>(_ items: [T])`. `where` clauses are kept.
 - **Functions** take unlabeled parameters (`_ name: Type`), so calls look like Rust's.
@@ -56,6 +56,7 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 | `for (i, x) in v.iter().enumerate()` | `for (i, x) in v.enumerated()` |
 | `for i in 0..n`, `0..=n`, `(0..n).rev()` | `for i in 0..<n`, `0...n`, `(0..<n).reversed()` |
 | `if c { a } else { b }` as a value | `c ? a : b` |
+| `v.push(match op { '+' => a + b, … })` | `v.append({ () -> Int in switch op { … } }())` |
 | `x as f64`, `n as u8` | `Double(x)`, `UInt8(truncatingIfNeeded: n)` |
 | `matches!(x, Some(1..=5))` | a `switch` that returns a `Bool` |
 | `assert!(c, "…")`, `panic!("…")` | `precondition(c, "…")`, `fatalError("…")` |

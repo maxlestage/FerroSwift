@@ -2415,6 +2415,11 @@ impl Translator<'_> {
             let ts = t.swift().unwrap_or_else(|| "Double".into());
             match name {
                 "abs" => return prim(format!("{}({})", self.global_fn("abs"), recv.code), t),
+                // `f64::max` ignores a NaN operand: IEEE `maximum`/`minimum`.
+                "min" | "max" if args.len() == 1 && float => {
+                    let f = if name == "max" { "maximum" } else { "minimum" };
+                    return prim(format!("{ts}.{f}({}, {})", recv.code, a(0)), t);
+                }
                 "min" | "max" if args.len() == 1 => {
                     return prim(
                         format!("{}({}, {})", self.global_fn(name), recv.code, a(0)),
@@ -2552,7 +2557,7 @@ impl Translator<'_> {
                 "checked_add" | "checked_sub" | "checked_mul" | "checked_div" | "checked_rem"
                 | "saturating_add" | "saturating_sub" | "saturating_mul" | "rem_euclid"
                 | "div_euclid" | "abs_diff" | "isqrt" | "checked_pow" | "overflowing_add"
-                | "overflowing_sub" | "overflowing_mul" => {
+                | "overflowing_sub" | "overflowing_mul" | "div_ceil" => {
                     self.helper("int");
                     let ret = if name.starts_with("checked") {
                         Ty::Option(Box::new(t.clone()))
@@ -2582,6 +2587,37 @@ impl Translator<'_> {
                         return prim(code, ret);
                     }
                     return prim(format!("{r}.{}({})", names::lower_camel(name), a(0)), ret);
+                }
+                "next_power_of_two" | "ilog2" | "ilog10" if t.is_int() => {
+                    self.helper("int");
+                    let f = names::lower_camel(name);
+                    let ret = if name == "next_power_of_two" {
+                        t.clone()
+                    } else {
+                        Ty::Int(IntKind::U32)
+                    };
+                    return prim(format!("{r}.{f}()"), ret);
+                }
+                // `x.unsigned_abs()`: the magnitude, in the unsigned type of the same width.
+                "unsigned_abs" => {
+                    let Ty::Int(k) = t else {
+                        return prim(format!("{r}.magnitude"), t);
+                    };
+                    let unsigned = match k {
+                        IntKind::I8 => IntKind::U8,
+                        IntKind::I16 => IntKind::U16,
+                        IntKind::I32 => IntKind::U32,
+                        IntKind::I64 => IntKind::U64,
+                        IntKind::I128 => IntKind::U128,
+                        IntKind::Isize => IntKind::Usize,
+                        k => k,
+                    };
+                    let code = if k == IntKind::I32 {
+                        format!("UInt32(truncatingIfNeeded: {r}.magnitude)")
+                    } else {
+                        format!("{r}.magnitude")
+                    };
+                    return prim(code, Ty::Int(unsigned));
                 }
                 // `x.checked_abs()`, `x.wrapping_neg()`: within the 32-bit limits of `i32`.
                 "checked_abs" | "checked_neg" | "wrapping_neg" | "wrapping_abs"
