@@ -110,6 +110,8 @@ pub struct FnSig {
     /// `fn get(&mut self, …) -> &mut T` (or `Option`/`Result` of it): returns a
     /// `WritableKeyPath` to the value.
     pub key_path: bool,
+    /// Declared in an `impl Trait for`: the protocol fixes its shape (a function).
+    pub trait_method: bool,
     /// The type parameters, in order (`fn largest<T: PartialOrd>(…)`).
     pub generics: Vec<String>,
 }
@@ -240,7 +242,9 @@ impl Symbols {
             };
             for field in &mut st.fields {
                 let clash = methods.get_mut(&field.rust).filter(|m| {
-                    m.params.is_empty() && matches!(m.self_kind, SelfKind::Ref | SelfKind::Value)
+                    m.params.is_empty()
+                        && matches!(m.self_kind, SelfKind::Ref | SelfKind::Value)
+                        && !m.trait_method
                 });
                 if let Some(m) = clash {
                     m.property = true;
@@ -503,6 +507,7 @@ impl Symbols {
         for it in &imp.items {
             if let syn::ImplItem::Fn(f) = it {
                 let mut sig = self.sig(&f.sig, Some(&self_ty));
+                sig.trait_method = trait_name.is_some();
                 let name = f.sig.ident.to_string();
                 if trait_name.is_none() && !observable && sig.self_kind == SelfKind::None {
                     sig.is_init = name == "new" && returns_self(&sig.ret, &self_ty);
@@ -622,6 +627,7 @@ impl Symbols {
             property: false,
             returns_self_mut,
             key_path,
+            trait_method: false,
             generics: type_params(&sig.generics),
         }
     }

@@ -34,6 +34,8 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("int", &[], INT),
     ("mem", &[], MEM),
     ("refcell", &["debug_custom", "mem"], REFCELL),
+    ("default", &[], DEFAULT),
+    ("into_double", &[], INTO_DOUBLE),
     ("async_result", &[], ASYNC_RESULT),
     ("eprint", &[], EPRINT),
     ("StringError", &[], STRING_ERROR),
@@ -1691,6 +1693,43 @@ func rsReplace<T>(_ place: inout T, _ value: T) -> T {
     place = value
     return old
 }
+"#;
+
+const DEFAULT: &str = r#"
+/// `T: Default` in generic code: the types with a default value.
+protocol RsDefault { init() }
+extension Int: RsDefault {}
+extension Int8: RsDefault {}
+extension Int16: RsDefault {}
+extension Int32: RsDefault {}
+extension UInt: RsDefault {}
+extension UInt8: RsDefault {}
+extension UInt16: RsDefault {}
+extension UInt32: RsDefault {}
+extension Double: RsDefault {}
+extension Float: RsDefault {}
+extension Bool: RsDefault {}
+extension String: RsDefault {}
+extension Array: RsDefault {}
+extension Dictionary: RsDefault {}
+extension Set: RsDefault {}
+extension Character: RsDefault { init() { self = "\0" } }
+extension Optional: RsDefault { init() { self = nil } }
+"#;
+
+const INTO_DOUBLE: &str = r#"
+/// `T: Into<f64>` in generic code: the numbers that convert to a `Double`.
+protocol RsIntoDouble { var rsDouble: Double { get } }
+extension Int: RsIntoDouble { var rsDouble: Double { Double(self) } }
+extension Int8: RsIntoDouble { var rsDouble: Double { Double(self) } }
+extension Int16: RsIntoDouble { var rsDouble: Double { Double(self) } }
+extension Int32: RsIntoDouble { var rsDouble: Double { Double(self) } }
+extension UInt: RsIntoDouble { var rsDouble: Double { Double(self) } }
+extension UInt8: RsIntoDouble { var rsDouble: Double { Double(self) } }
+extension UInt16: RsIntoDouble { var rsDouble: Double { Double(self) } }
+extension UInt32: RsIntoDouble { var rsDouble: Double { Double(self) } }
+extension Float: RsIntoDouble { var rsDouble: Double { Double(self) } }
+extension Double: RsIntoDouble { var rsDouble: Double { self } }
 "#;
 
 const REFCELL: &str = r#"

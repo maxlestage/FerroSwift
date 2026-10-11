@@ -140,6 +140,11 @@ impl Translator<'_> {
                 }
             }
             if let Some(mut sig) = self.syms.fns.get(&last).cloned() {
+                // A result that is a bare type parameter (`fn make<T: Animal>() -> T`).
+                let generic_ret = match &sig.ret {
+                    Ty::Named(n, a) if a.is_empty() && sig.generics.contains(n) => sig.ret.clone(),
+                    _ => Ty::Unknown,
+                };
                 // `generic_max::<u8>(&[])`: the turbofish fixes the type parameters.
                 if !turbofish.is_empty() && turbofish.len() == sig.generics.len() {
                     let map: std::collections::HashMap<String, Ty> = sig
@@ -156,10 +161,17 @@ impl Translator<'_> {
                 if !sig.generics.is_empty() {
                     self.generic_call += 1;
                 }
-                let ex = self.sig_call(names::lower_camel(&last), &sig, &c.args);
+                let mut ex = self.sig_call(names::lower_camel(&last), &sig, &c.args);
                 if !sig.generics.is_empty() {
                     self.generic_call -= 1;
                 }
+                // `make::<Cat>("tom")`: a result type that only the turbofish tells.
+                if !turbofish.is_empty() && !generic_ret.is_unknown() && ex.throws.is_none() {
+                    if let Some(t) = ex.ty.swift() {
+                        ex = Ex::new(format!("{} as {t}", ex.code), P_CMP, ex.ty);
+                    }
+                }
+                let _ = &generic_ret;
                 return ex;
             }
             // A tuple variant imported with `use Enum::*`.
@@ -214,8 +226,13 @@ impl Translator<'_> {
             .and_then(|m| m.get(&last))
             .cloned()
         {
-            let tname = self.type_path_name(&owner);
+            let mut tname = self.type_path_name(&owner);
             if sig.is_init {
+                // `Pair::<f64>::default()`: the type arguments, which nothing else tells.
+                if !turbofish.is_empty() && turbofish.iter().all(Ty::is_complete) {
+                    let args: Vec<String> = turbofish.iter().map(Ty::swift_lossy).collect();
+                    tname = format!("{tname}<{}>", args.join(", "));
+                }
                 let mut ex = self.sig_call(tname.clone(), &sig, &c.args);
                 if let Ty::Result(_, e) = &sig.ret {
                     let self_ty = Ty::Named(self.struct_or_enum_swift(&owner_rust), vec![]);
@@ -270,9 +287,15 @@ impl Translator<'_> {
         }
         if let Some(st) = self.syms.structs.get(&owner_rust).cloned() {
             if last == "default" {
+                // `Pair::<f64>::default()`: the type arguments, which nothing else tells.
+                let mut tname = self.type_path_name(&owner);
+                if !turbofish.is_empty() && turbofish.iter().all(Ty::is_complete) {
+                    let args: Vec<String> = turbofish.iter().map(Ty::swift_lossy).collect();
+                    tname = format!("{tname}<{}>", args.join(", "));
+                }
                 return Ex::primary(
-                    format!("{}()", self.type_path_name(&owner)),
-                    Ty::Named(st.swift.clone(), vec![]),
+                    format!("{tname}()"),
+                    Ty::Named(st.swift.clone(), turbofish.to_vec()),
                 );
             }
         }
@@ -1357,6 +1380,16 @@ impl Translator<'_> {
                 if self.syms.from_impls.contains_key(&rust) {
                     return Ex::primary(format!("{n}({})", v.code), expected.clone());
                 }
+            }
+        }
+        // `x.into()` with `T: Into<f64>` in generic code.
+        if let Ty::Named(n, _) = &v.ty {
+            if self.into_double_params.contains(n) {
+                self.helper("into_double");
+                return Ex::primary(
+                    format!("{}.rsDouble", wrap(&v, P_PRIMARY)),
+                    Ty::Float(crate::ty::FloatKind::F64),
+                );
             }
         }
         match (expected, &v.ty) {
