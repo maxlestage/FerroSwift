@@ -1000,6 +1000,10 @@ impl Translator<'_> {
             ("^", Ty::Bool) => "!=",
             (op, _) => op,
         };
+        // `Some(1) < None`: options compare as in Rust, `None` first.
+        if matches!(op, "<" | ">" | "<=" | ">=") && matches!(operand_ty, Ty::Option(_)) {
+            self.helper("option_cmp");
+        }
         let (lmin, rmin) = if comparison {
             (P_CMP + 1, P_CMP + 1)
         } else if prec == P_SHIFT {
@@ -1803,6 +1807,11 @@ impl Translator<'_> {
         let mut typed = false;
         let mut tys = Vec::new();
         let mut prologue = Vec::new();
+        // `|f: fn(i32) -> i32| move |x| f(x)`: a closure given to a closure that returns a
+        // closure is captured by it, so it escapes.
+        let returns_closure = body_is_closure(&c.body)
+            || matches!(&c.output, syn::ReturnType::Type(_, t) if matches!(self.ty(t), Ty::Fn(..)))
+            || matches!(&ret_ty, Ty::Fn(..));
         for (i, p) in c.inputs.iter().enumerate() {
             let hint = param_tys.get(i).cloned().unwrap_or(Ty::Unknown);
             let (pat, annot) = match p {
@@ -1815,7 +1824,12 @@ impl Translator<'_> {
             match annot {
                 Some(t) => {
                     typed = true;
-                    params.push(format!("{name}: {}", t.swift_lossy()));
+                    let escaping = if returns_closure && matches!(t, Ty::Fn(..)) {
+                        "@escaping "
+                    } else {
+                        ""
+                    };
+                    params.push(format!("{name}: {escaping}{}", t.swift_lossy()));
                 }
                 None => params.push(name),
             }
@@ -2171,4 +2185,15 @@ fn closure_returns_result(body: &Expr) -> bool {
     v.visit_expr(body);
     // Only the tail or returns matter, but any Ok/Err is a strong hint.
     v.0
+}
+
+/// A closure, or a block ending with one.
+fn body_is_closure(e: &Expr) -> bool {
+    match e {
+        Expr::Closure(_) => true,
+        Expr::Block(b) => {
+            matches!(b.block.stmts.last(), Some(syn::Stmt::Expr(e, None)) if body_is_closure(e))
+        }
+        _ => false,
+    }
 }

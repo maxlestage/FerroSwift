@@ -37,9 +37,11 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("ord_tuple", &[], ORD_TUPLE),
     ("chars", &[], CHARS),
     ("exp", &[], EXP),
+    ("cbrt", &[], CBRT),
     ("map", &[], MAP),
     ("iter", &[], ITER),
     ("option", &[], OPTION),
+    ("option_cmp", &[], OPTION_CMP),
     ("result", &[], RESULT),
     ("int", &[], INT),
     ("mem", &[], MEM),
@@ -927,6 +929,25 @@ extension String {
         return String(decoding: bytes[start..<end], as: UTF8.self)
     }
 
+    /// `s.escape_default()`: tabs, newlines, quotes and backslashes escaped, anything
+    /// outside printable ASCII as `\u{…}`.
+    func escapeDefault() -> String {
+        var out = ""
+        for c in unicodeScalars {
+            switch c {
+            case "\t": out += "\\t"
+            case "\r": out += "\\r"
+            case "\n": out += "\\n"
+            case "\\": out += "\\\\"
+            case "'": out += "\\'"
+            case "\"": out += "\\\""
+            case " "..."~": out.unicodeScalars.append(c)
+            default: out += "\\u{" + String(c.value, radix: 16) + "}"
+            }
+        }
+        return out
+    }
+
     /// `s.get(a..b)`: the slice when both byte offsets fall on character boundaries.
     func rsGet(_ r: some RangeExpression<Int>) -> String? {
         let bytes = Array(utf8)
@@ -1233,6 +1254,25 @@ struct RsReverse<T: Comparable>: Comparable {
     let value: T
     init(_ value: T) { self.value = value }
     static func < (a: RsReverse, b: RsReverse) -> Bool { a.value > b.value }
+}
+"#;
+
+const CBRT: &str = r#"
+/// `x.cbrt()`: the cube root, corrected to the closest of its neighbours (the system's
+/// `cbrt(27)` is a step above 3).
+func rsCbrt<F: BinaryFloatingPoint>(_ x: F) -> F {
+    let r = F(cbrt(Double(x)))
+    guard r.isFinite, r != 0 else { return r }
+    var best = r
+    var error = abs(r * r * r - x)
+    for c in [r.nextDown, r.nextUp] {
+        let e = abs(c * c * c - x)
+        if e < error {
+            best = c
+            error = e
+        }
+    }
+    return best
 }
 "#;
 
@@ -1777,6 +1817,20 @@ extension Set {
 }
 "#;
 
+const OPTION_CMP: &str = r#"
+/// `Some(1) < None`: options ordered as Rust does, `None` before any `Some`.
+extension Optional: @retroactive Comparable where Wrapped: Comparable {
+    public static func < (lhs: Wrapped?, rhs: Wrapped?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): return false
+        case (nil, _): return true
+        case (_, nil): return false
+        case let (a?, b?): return a < b
+        }
+    }
+}
+"#;
+
 const OPTION: &str = r#"
 extension Optional {
     /// `o.take()`.
@@ -2050,6 +2104,36 @@ extension FixedWidthInteger {
     func overflowingAdd(_ o: Self) -> (Self, Bool) { let r = addingReportingOverflow(o); return (r.partialValue, r.overflow) }
     func overflowingSub(_ o: Self) -> (Self, Bool) { let r = subtractingReportingOverflow(o); return (r.partialValue, r.overflow) }
     func overflowingMul(_ o: Self) -> (Self, Bool) { let r = multipliedReportingOverflow(by: o); return (r.partialValue, r.overflow) }
+    func overflowingNeg() -> (Self, Bool) { (0 &- self, Self.isSigned ? self == Self.min : self != 0) }
+    func overflowingAbs() -> (Self, Bool) { self < 0 ? overflowingNeg() : (self, false) }
+    /// `x.checked_pow(n)` and its wrapping, saturating and overflowing forms.
+    func overflowingPow(_ exponent: some BinaryInteger) -> (Self, Bool) {
+        var result: Self = 1
+        var base = self
+        var e = Int(exponent)
+        var overflow = false
+        while e > 0 {
+            if e & 1 == 1 {
+                let r = result.multipliedReportingOverflow(by: base)
+                result = r.partialValue
+                overflow = overflow || r.overflow
+            }
+            e >>= 1
+            if e > 0 {
+                let b = base.multipliedReportingOverflow(by: base)
+                base = b.partialValue
+                overflow = overflow || b.overflow
+            }
+        }
+        return (result, overflow)
+    }
+    func checkedPow(_ exponent: some BinaryInteger) -> Self? { let (v, overflow) = overflowingPow(exponent); return overflow ? nil : v }
+    func wrappingPow(_ exponent: some BinaryInteger) -> Self { overflowingPow(exponent).0 }
+    func saturatingPow(_ exponent: some BinaryInteger) -> Self {
+        let (v, overflow) = overflowingPow(exponent)
+        if !overflow { return v }
+        return self < 0 && Int(exponent) & 1 == 1 ? .min : .max
+    }
 }
 "#;
 
