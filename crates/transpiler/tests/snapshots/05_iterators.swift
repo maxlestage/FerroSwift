@@ -263,6 +263,27 @@ extension Sequence {
         return acc
     }
 
+    /// `iter.position(p)`: how many items come before the first that matches.
+    func rsPosition(where p: (Element) throws -> Bool) rethrows -> Int? {
+        var i = 0
+        for x in self {
+            if try p(x) { return i }
+            i += 1
+        }
+        return nil
+    }
+
+    /// `iter.rposition(p)`.
+    func rsRposition(where p: (Element) throws -> Bool) rethrows -> Int? {
+        var found: Int? = nil
+        var i = 0
+        for x in self {
+            if try p(x) { found = i }
+            i += 1
+        }
+        return found
+    }
+
     func partitioned(_ p: (Element) throws -> Bool) rethrows -> ([Element], [Element]) {
         var yes: [Element] = [], no: [Element] = []
         for x in self { if try p(x) { yes.append(x) } else { no.append(x) } }

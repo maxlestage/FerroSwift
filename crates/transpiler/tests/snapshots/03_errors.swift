@@ -26,7 +26,7 @@ func portOrDefault(_ text: String) -> UInt16 {
 }
 
 func firstCharUpper(_ s: String) -> Character? {
-    guard let c = s.first else { return nil }
+    guard let c = s.rsChars.first else { return nil }
     return Character(c.uppercased())
 }
 
@@ -192,6 +192,14 @@ func rsCharTryFrom(_ n: some BinaryInteger) -> Result<Character, RsCharTryFromEr
         return .failure(RsCharTryFromError())
     }
     return .success(Character(scalar))
+}
+
+extension String {
+    /// `s.chars()`: the Unicode scalars, which Rust's `char`s are, as characters; Swift's own
+    /// iteration goes by grapheme clusters.
+    var rsChars: LazyMapSequence<String.UnicodeScalarView, Character> {
+        unicodeScalars.lazy.map { Character($0) }
+    }
 }
 
 extension Result {

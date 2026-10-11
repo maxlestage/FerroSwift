@@ -512,7 +512,15 @@ impl Translator<'_> {
                 } else {
                     ""
                 };
-                let base = format!("String({x}, radix: {radix}{upper})");
+                // A negative number prints its two's complement, in the width of its type.
+                let bits = match &v.ty {
+                    Ty::Int(k) if k.signed() => {
+                        let b = k.rust_bits();
+                        format!("UInt{b}(bitPattern: Int{b}(truncatingIfNeeded: {x}))")
+                    }
+                    _ => x.clone(),
+                };
+                let base = format!("String({bits}, radix: {radix}{upper})");
                 if spec.alternate {
                     let prefix = match radix {
                         16 => "0x",

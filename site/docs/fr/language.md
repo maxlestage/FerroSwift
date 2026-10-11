@@ -92,7 +92,7 @@ Les enums d’erreur se conforment à `Error`. Le `throws` typé demande Swift 6
 
 ## Chaînes et formatage
 
-`format!`, `println!`, `eprintln!` et `write!` deviennent de l’interpolation de chaînes. Les valeurs s’affichent exactement comme en Rust grâce à de petites fonctions du fichier de support : `{}` de `1.0` donne `1`, `{:.2}` arrondit de la même façon, `{:?}` écrit `Some(Point { x: 1.0, y: 2.5 })`, et largeurs, alignements et remplissages (`{:>8}`, `{:05}`) sont conservés — dans `{:>7?}` ils atteignent les nombres à l’intérieur de la valeur, comme avec le `Debug` dérivé de Rust. Les méthodes de chaînes courantes ont leur équivalent Swift (`trim` → `trimmingCharacters(in:)`, `split` → `components(separatedBy:)`, `to_uppercase` → `uppercased()`, `starts_with` → `hasPrefix`…).
+`format!`, `println!`, `eprintln!` et `write!` deviennent de l’interpolation de chaînes. Les valeurs s’affichent exactement comme en Rust grâce à de petites fonctions du fichier de support : `{}` de `1.0` donne `1`, `{:.2}` arrondit de la même façon, `{:?}` écrit `Some(Point { x: 1.0, y: 2.5 })`, et largeurs, alignements et remplissages (`{:>8}`, `{:05}`) sont conservés — dans `{:>7?}` ils atteignent les nombres à l’intérieur de la valeur, comme avec le `Debug` dérivé de Rust. Les méthodes de chaînes courantes ont leur équivalent Swift (`trim` → `trimmingCharacters(in:)`, `split` → `components(separatedBy:)`, `to_uppercase` → `uppercased()`, `starts_with` → `hasPrefix`…). `s.chars()` parcourt les scalaires Unicode, comme Rust (`s.rsChars`) : `chars().count()`, `rev()` et `nth()` donnent le résultat de Rust sur les accents combinants et les séquences d’emojis, que le parcours propre à Swift regroupe en un seul caractère.
 
 ## Les commentaires
 

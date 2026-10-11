@@ -92,7 +92,7 @@ Error enums conform to `Error`. Typed `throws` needs Swift 6 (Xcode 16).
 
 ## Strings and formatting
 
-`format!`, `println!`, `eprintln!` and `write!` become string interpolation. Values print exactly as in Rust thanks to small functions of the support file: `{}` of `1.0` is `1`, `{:.2}` rounds the same way, `{:?}` writes `Some(Point { x: 1.0, y: 2.5 })`, and widths, alignment and padding (`{:>8}`, `{:05}`) are kept — in `{:>7?}` they reach the numbers inside the value, as with Rust's derived `Debug`. Common string methods have their Swift equivalent (`trim` → `trimmingCharacters(in:)`, `split` → `components(separatedBy:)`, `to_uppercase` → `uppercased()`, `starts_with` → `hasPrefix`…).
+`format!`, `println!`, `eprintln!` and `write!` become string interpolation. Values print exactly as in Rust thanks to small functions of the support file: `{}` of `1.0` is `1`, `{:.2}` rounds the same way, `{:?}` writes `Some(Point { x: 1.0, y: 2.5 })`, and widths, alignment and padding (`{:>8}`, `{:05}`) are kept — in `{:>7?}` they reach the numbers inside the value, as with Rust's derived `Debug`. Common string methods have their Swift equivalent (`trim` → `trimmingCharacters(in:)`, `split` → `components(separatedBy:)`, `to_uppercase` → `uppercased()`, `starts_with` → `hasPrefix`…). `s.chars()` iterates Unicode scalars, as Rust does (`s.rsChars`): `chars().count()`, `rev()` and `nth()` agree with Rust on combining marks and emoji sequences, which Swift's own iteration groups into one character.
 
 ## Comments
 

@@ -24,6 +24,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("heap", &[], HEAP),
     ("tuple_keys", &[], TUPLE_KEYS),
     ("ord_tuple", &[], ORD_TUPLE),
+    ("chars", &[], CHARS),
     ("exp", &[], EXP),
     ("map", &[], MAP),
     ("iter", &[], ITER),
@@ -238,6 +239,34 @@ private func rsTypeName(_ value: Any) -> String {
     return String(name.prefix { $0 != "<" })
 }
 
+/// One scalar as Rust's `{:?}` writes it between quotes: control, format and other invisible
+/// characters as `\u{…}`, a combining mark too when nothing comes before it.
+private func rsEscapeDebug(_ c: Unicode.Scalar, quote: Unicode.Scalar, graphemeExtended: Bool) -> String {
+    switch c {
+    case "\t": return "\\t"
+    case "\r": return "\\r"
+    case "\n": return "\\n"
+    case "\\": return "\\\\"
+    case "\0": return "\\0"
+    case quote: return "\\" + String(c)
+    default: break
+    }
+    let p = c.properties
+    let printable: Bool
+    switch p.generalCategory {
+    case .control, .format, .surrogate, .privateUse, .unassigned, .lineSeparator, .paragraphSeparator:
+        printable = false
+    case .spaceSeparator:
+        printable = c == " "
+    default:
+        printable = true
+    }
+    if !printable || (graphemeExtended && p.isGraphemeExtend) {
+        return "\\u{" + String(c.value, radix: 16) + "}"
+    }
+    return String(c)
+}
+
 private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: inout String, _ style: RsDebugStyle = RsDebugStyle()) {
     if let custom = value as? RsDebugCustom {
         out += custom.rsDebugText
@@ -305,21 +334,17 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
     switch value {
     case let s as String:
         out += "\""
+        var first = true
         for c in s.unicodeScalars {
-            switch c {
-            case "\"": out += "\\\""
-            case "\\": out += "\\\\"
-            case "\n": out += "\\n"
-            case "\r": out += "\\r"
-            case "\t": out += "\\t"
-            case "\0": out += "\\0"
-            default: out.unicodeScalars.append(c)
-            }
+            out += rsEscapeDebug(c, quote: "\"", graphemeExtended: first)
+            first = false
         }
         out += "\""
         return
     case let c as Character:
-        out += c == "'" ? "'\\''" : c == "\n" ? "'\\n'" : "'\(c)'"
+        out += "'"
+        for s in c.unicodeScalars { out += rsEscapeDebug(s, quote: "'", graphemeExtended: true) }
+        out += "'"
         return
     case let d as Double:
         out += style.pad(rsDebugFloat(d, style.precision))
@@ -635,9 +660,9 @@ extension String {
     /// `s.find(char::is_whitespace)`: the byte offset of the first character that matches.
     func findWhere(_ p: (Character) -> Bool) -> Int? {
         var offset = 0
-        for c in self {
-            if p(c) { return offset }
-            offset += c.utf8.count
+        for s in unicodeScalars {
+            if p(Character(s)) { return offset }
+            offset += s.utf8.count
         }
         return nil
     }
@@ -646,31 +671,31 @@ extension String {
     func rfindWhere(_ p: (Character) -> Bool) -> Int? {
         var found: Int? = nil
         var offset = 0
-        for c in self {
-            if p(c) { found = offset }
-            offset += c.utf8.count
+        for s in unicodeScalars {
+            if p(Character(s)) { found = offset }
+            offset += s.utf8.count
         }
         return found
     }
 
     /// `s.trim_end_matches(char::is_numeric)`.
     func trimEndMatches(where p: (Character) -> Bool) -> String {
-        var s = Substring(self)
-        while let last = s.last, p(last) { s = s.dropLast() }
-        return String(s)
+        var scalars = unicodeScalars[...]
+        while let last = scalars.last, p(Character(last)) { scalars = scalars.dropLast() }
+        return String(scalars)
     }
 
     /// `s.trim_matches(char::is_numeric)`.
     func trimMatches(where p: (Character) -> Bool) -> String {
-        String(drop(while: p)).trimEndMatches(where: p)
+        String(unicodeScalars.drop(while: { p(Character($0)) })).trimEndMatches(where: p)
     }
 
     /// `s.char_indices()`: characters with their byte offsets.
     func charIndices() -> [(Int, Character)] {
         var offset = 0
-        return map { c in
-            defer { offset += String(c).utf8.count }
-            return (offset, c)
+        return unicodeScalars.map { s in
+            defer { offset += s.utf8.count }
+            return (offset, Character(s))
         }
     }
 
@@ -942,6 +967,27 @@ extension Sequence {
         guard var acc = it.next() else { return nil }
         while let x = it.next() { acc = try f(acc, x) }
         return acc
+    }
+
+    /// `iter.position(p)`: how many items come before the first that matches.
+    func rsPosition(where p: (Element) throws -> Bool) rethrows -> Int? {
+        var i = 0
+        for x in self {
+            if try p(x) { return i }
+            i += 1
+        }
+        return nil
+    }
+
+    /// `iter.rposition(p)`.
+    func rsRposition(where p: (Element) throws -> Bool) rethrows -> Int? {
+        var found: Int? = nil
+        var i = 0
+        for x in self {
+            if try p(x) { found = i }
+            i += 1
+        }
+        return found
     }
 
     func partitioned(_ p: (Element) throws -> Bool) rethrows -> ([Element], [Element]) {
@@ -1308,6 +1354,12 @@ func rsInt<T: FixedWidthInteger>(_: T.Type, _ x: some BinaryFloatingPoint) -> T 
 }
 
 extension FixedWidthInteger {
+    func wrappingNeg() -> Self { 0 &- self }
+    func wrappingAbs() -> Self { self < 0 ? 0 &- self : self }
+    func checkedAbs() -> Self? { Self.isSigned && self == Self.min ? nil : (self < 0 ? 0 - self : self) }
+    func checkedNeg() -> Self? { Self.isSigned ? (self == Self.min ? nil : 0 - self) : (self == 0 ? 0 : nil) }
+    func saturatingNeg() -> Self { Self.isSigned && self == Self.min ? Self.max : 0 - self }
+    func saturatingAbs() -> Self { Self.isSigned && self == Self.min ? Self.max : (self < 0 ? 0 - self : self) }
     func checkedAdd(_ o: Self) -> Self? { let (v, overflow) = addingReportingOverflow(o); return overflow ? nil : v }
     func checkedSub(_ o: Self) -> Self? { let (v, overflow) = subtractingReportingOverflow(o); return overflow ? nil : v }
     func checkedMul(_ o: Self) -> Self? { let (v, overflow) = multipliedReportingOverflow(by: o); return overflow ? nil : v }
@@ -2040,4 +2092,14 @@ struct RsOrd3<A: Comparable, B: Comparable, C: Comparable>: Comparable {
     static func < (lhs: RsOrd3, rhs: RsOrd3) -> Bool { (lhs.a < rhs.a) || (lhs.a == rhs.a && lhs.b < rhs.b) || (lhs.a == rhs.a && lhs.b == rhs.b && lhs.c < rhs.c) }
 }
 extension RsOrd3: Hashable where A: Hashable, B: Hashable, C: Hashable {}
+"#;
+
+const CHARS: &str = r#"
+extension String {
+    /// `s.chars()`: the Unicode scalars, which Rust's `char`s are, as characters; Swift's own
+    /// iteration goes by grapheme clusters.
+    var rsChars: LazyMapSequence<String.UnicodeScalarView, Character> {
+        unicodeScalars.lazy.map { Character($0) }
+    }
+}
 "#;
