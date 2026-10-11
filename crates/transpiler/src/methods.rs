@@ -1302,6 +1302,18 @@ impl Translator<'_> {
                 let v = arg(self, 0, &Ty::Int(IntKind::I32));
                 Some(Ex::primary(format!("exit(Int32({}))", v.code), Ty::Never))
             }
+            // `env::var("HOME")`: the variable, or `Err(NotPresent)`.
+            ("env", "var") if args.len() == 1 => {
+                self.helper("env");
+                let v = arg(self, 0, &Ty::Str);
+                Some(Ex::primary(
+                    format!("rsEnvVar({})", v.code),
+                    Ty::Result(
+                        Box::new(Ty::Str),
+                        Box::new(Ty::Named("RsVarError".into(), vec![])),
+                    ),
+                ))
+            }
             ("env", "args") => Some(Ex::primary(
                 "CommandLine.arguments",
                 Ty::Vec(Box::new(Ty::Str)),

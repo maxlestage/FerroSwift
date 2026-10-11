@@ -28,6 +28,7 @@ cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli
 | --- | --- |
 | `-o`, `--out <dossier>` | Où écrire les fichiers Swift. |
 | `--no-previews` | Laisse de côté les fonctions `#[preview]` (`#Preview` demande Xcode). |
+| `--overflow-checks` | L’arithmétique entière panique en cas de dépassement comme le debug de Rust (`attempt to add with overflow`), à travers des fonctions du fichier de support. |
 | `-h`, `--help` | Affiche l’aide. |
 | `-V`, `--version` | Affiche la version. |
 

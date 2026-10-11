@@ -123,8 +123,10 @@ fn errors_only(output: &str) -> String {
 fn check(program: &Path, swiftc: Option<&Path>, work: &Path) -> Result<(), String> {
     let name = program.file_stem().unwrap().to_string_lossy().into_owned();
     let source = std::fs::read_to_string(program).map_err(|e| e.to_string())?;
+    // `overflow_*.rs`: translated with Rust's overflow checks.
     let options = ferroswift_transpiler::Options {
         source_path: Some(program.display().to_string()),
+        overflow_checks: name.starts_with("overflow"),
         ..Default::default()
     };
     let out = ferroswift_transpiler::transpile_with(&source, &options);

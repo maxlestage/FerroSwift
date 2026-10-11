@@ -85,6 +85,19 @@ impl IntKind {
         }
     }
 
+    /// The Rust type is signed (`usize` is not, though Swift's `Int` is).
+    pub fn rust_signed(self) -> bool {
+        matches!(
+            self,
+            IntKind::I8
+                | IntKind::I16
+                | IntKind::I32
+                | IntKind::I64
+                | IntKind::I128
+                | IntKind::Isize
+        )
+    }
+
     /// The bits of the Rust type when Swift's is wider (`i32` in `Int`): the limits to keep.
     pub fn narrow_bits(self) -> Option<u32> {
         let rust = self.rust_bits();

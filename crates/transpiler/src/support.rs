@@ -53,6 +53,8 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("const_generic", &[], CONST_GENERIC),
     ("error_source", &[], ERROR_SOURCE),
     ("io", &["debug_custom"], IO),
+    ("overflow", &["panic"], OVERFLOW),
+    ("env", &["debug_custom"], ENV),
     ("panic", &["debug", "debug_custom"], PANIC),
     ("thread", &["debug", "duration", "panic"], THREAD),
     ("cow", &["debug"], COW),
@@ -4609,5 +4611,58 @@ struct RsOutput {
         fflush(nil)
         return .success(())
     }
+}
+"#;
+
+const OVERFLOW: &str = r#"
+/// `a + b`, `a - b`, `a * b` with Rust's overflow checks: the type is Rust's (`bits`,
+/// `signed`), which Swift's may be wider than (`i32` in `Int`, `usize` signed).
+func rsAdd<T: FixedWidthInteger>(_ a: T, _ b: T, _ bits: Int, _ signed: Bool, _ location: String) -> T {
+    rsChecked(a.addingReportingOverflow(b), bits, signed, "add", location)
+}
+
+func rsSub<T: FixedWidthInteger>(_ a: T, _ b: T, _ bits: Int, _ signed: Bool, _ location: String) -> T {
+    rsChecked(a.subtractingReportingOverflow(b), bits, signed, "subtract", location)
+}
+
+func rsMul<T: FixedWidthInteger>(_ a: T, _ b: T, _ bits: Int, _ signed: Bool, _ location: String) -> T {
+    rsChecked(a.multipliedReportingOverflow(by: b), bits, signed, "multiply", location)
+}
+
+func rsNeg<T: FixedWidthInteger>(_ a: T, _ bits: Int, _ location: String) -> T {
+    rsChecked(T.zero.subtractingReportingOverflow(a), bits, true, "negate", location)
+}
+
+private func rsChecked<T: FixedWidthInteger>(
+    _ r: (partialValue: T, overflow: Bool), _ bits: Int, _ signed: Bool, _ verb: String, _ location: String
+) -> T {
+    let v = r.partialValue
+    var overflow = r.overflow
+    if !overflow && T.isSigned {
+        if !signed {
+            overflow = v < 0
+        } else if bits < T.bitWidth {
+            let top = v >> (bits - 1)
+            overflow = top != 0 && top != ~T.zero
+        }
+    } else if !overflow && bits < T.bitWidth {
+        overflow = v >> bits != 0
+    }
+    if overflow { rsPanic("attempt to \(verb) with overflow", location) }
+    return v
+}
+"#;
+
+const ENV: &str = r#"
+/// The error of `env::var`.
+struct RsVarError: Error, CustomStringConvertible, RsDebugCustom {
+    var description: String { "environment variable not found" }
+    var rsDebugText: String { "NotPresent" }
+}
+
+/// `env::var(name)`.
+func rsEnvVar(_ name: String) -> Result<String, RsVarError> {
+    guard let value = ProcessInfo.processInfo.environment[name] else { return .failure(RsVarError()) }
+    return .success(value)
 }
 "#;
