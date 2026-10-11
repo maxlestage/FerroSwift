@@ -501,6 +501,22 @@ impl Translator<'_> {
     }
 
     /// `String::new()`, `Vec::with_capacity(n)`, `HashMap::from(…)`, `i64::from(x)`…
+    /// `value.fmt(f)` with a formatter the `fmt` of this type was given: `f.display(value)`,
+    /// or `f.debug(value)` in a `Debug`.
+    fn forwarded_fmt(&mut self, value: &Expr, formatter: &Expr) -> Option<Ex> {
+        let f = self.expr(formatter);
+        if f.ty != Ty::Named("Formatter".into(), vec![]) || f.code.contains("fmt:") {
+            return None;
+        }
+        let v = self.expr(value);
+        let v = self.settle(v);
+        let method = if self.fmt_debug { "debug" } else { "display" };
+        Some(Ex::primary(
+            format!("{}.{method}({})", f.code, v.code),
+            Ty::Unit,
+        ))
+    }
+
     fn std_path_call(
         &mut self,
         segs: &[String],
@@ -516,6 +532,14 @@ impl Translator<'_> {
         };
         match (owner, last) {
             ("String", "new" | "with_capacity") => Some(Ex::primary("\"\"", Ty::Str)),
+            // `fmt::Display::fmt(&self.0, f)`.
+            ("Display" | "Debug", "fmt") if args.len() == 2 => {
+                let debug = owner == "Debug";
+                let was_debug = std::mem::replace(&mut self.fmt_debug, debug);
+                let ex = self.forwarded_fmt(&args[0], &args[1]);
+                self.fmt_debug = was_debug;
+                ex
+            }
             // `String::from_iter(chars)`, `Vec::from_iter(it)`, `HashSet::from_iter(it)`.
             ("String", "from_iter") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Iter(Box::new(Ty::Char)));
@@ -973,6 +997,12 @@ impl Translator<'_> {
         }
         if name == "into" && m.args.is_empty() {
             return self.convert_into(m, expected);
+        }
+        // `self.0.fmt(f)`: the value written with the formatter's spec.
+        if name == "fmt" && m.args.len() == 1 {
+            if let Some(ex) = self.forwarded_fmt(&m.receiver, &m.args[0]) {
+                return ex;
+            }
         }
         if name == "try_into" && m.args.is_empty() {
             return self.convert_try_into(m, expected);
@@ -1898,37 +1928,83 @@ impl Translator<'_> {
             _ => Ty::Unknown,
         };
         let prim = |code: String, ty: Ty| Ex::primary(code, ty);
-        // `f.precision()`, `f.width()`, `f.alternate()` in a `Display` impl: Swift's
-        // `description` knows nothing of the format spec.
         if rty == Ty::Named("Formatter".into(), vec![]) {
-            match name {
-                "precision" | "width" => {
-                    self.warn(span, format!("`{name}()` of the formatter is always `None` in Swift: `description` does not know the format spec"));
-                    return Ex::primary(
-                        "(nil as Int?)",
-                        Ty::Option(Box::new(Ty::Int(IntKind::Usize))),
-                    );
+            let plain = recv.code.trim_start_matches('\u{2}').starts_with("fmt:");
+            let builder = Ty::Named("RsDebugBuilder".into(), vec![]);
+            let usize_opt = Ty::Option(Box::new(Ty::Int(IntKind::Usize)));
+            if plain {
+                // A `fmt` that only writes: the formatter is the text (`out`) being built.
+                let target = recv
+                    .code
+                    .trim_start_matches('\u{2}')
+                    .trim_start_matches("fmt:")
+                    .to_string();
+                match name {
+                    "write_str" | "write_char" | "write_fmt" => {
+                        let value = if name == "write_char" {
+                            format!("String({})", a(0))
+                        } else {
+                            a(0)
+                        };
+                        return Ex::new(
+                            format!("{target} += {value}"),
+                            crate::expr::P_ASSIGN,
+                            Ty::Unit,
+                        );
+                    }
+                    _ => {}
                 }
-                "alternate" | "sign_plus" | "sign_minus" | "sign_aware_zero_pad" => {
-                    return Ex::primary("false", Ty::Bool);
+            } else {
+                // A `fmt` written with its formatter: the spec is asked from `RsFormatter`.
+                match name {
+                    "precision" | "width" => return prim(format!("{r}.{name}"), usize_opt),
+                    "alternate" => return prim(format!("{r}.alternate"), Ty::Bool),
+                    "sign_plus" => return prim(format!("{r}.signPlus"), Ty::Bool),
+                    "sign_minus" => return prim(format!("{r}.signMinus"), Ty::Bool),
+                    "sign_aware_zero_pad" => return prim(format!("{r}.zero"), Ty::Bool),
+                    "fill" => return prim(format!("{r}.fill"), Ty::Char),
+                    "write_str" | "write_fmt" => {
+                        return prim(format!("{r}.write({})", a(0)), Ty::Unit);
+                    }
+                    "write_char" => {
+                        return prim(format!("{r}.write(String({}))", a(0)), Ty::Unit);
+                    }
+                    "pad" => return prim(format!("{r}.pad({})", a(0)), Ty::Unit),
+                    "pad_integral" if args.len() == 3 => {
+                        return prim(
+                            format!("{r}.padIntegral({}, {}, {})", a(0), a(1), a(2)),
+                            Ty::Unit,
+                        );
+                    }
+                    "debug_struct" | "debug_tuple" if args.len() == 1 => {
+                        let kind = if name == "debug_struct" {
+                            "Struct"
+                        } else {
+                            "Tuple"
+                        };
+                        return prim(format!("{r}.debug{kind}({})", a(0)), builder);
+                    }
+                    "debug_list" | "debug_set" | "debug_map" if args.is_empty() => {
+                        let kind = names::upper_camel(&name["debug_".len()..]);
+                        return prim(format!("{r}.debug{kind}()"), builder);
+                    }
+                    _ => {}
                 }
-                // `f.write_str(s)`, `f.write_char(c)`, `f.pad(s)`: appended to the text.
-                "write_str" | "write_char" | "pad" | "write_fmt" => {
-                    let target = recv
-                        .code
-                        .trim_start_matches('\u{2}')
-                        .trim_start_matches("fmt:")
-                        .to_string();
-                    let value = if name == "write_char" {
-                        format!("String({})", a(0))
-                    } else {
-                        a(0)
-                    };
-                    return Ex::new(
-                        format!("{target} += {value}"),
-                        crate::expr::P_ASSIGN,
-                        Ty::Unit,
-                    );
+            }
+        }
+        // `f.debug_struct("Name").field("x", &self.x).finish()`.
+        if rty == Ty::Named("RsDebugBuilder".into(), vec![]) {
+            let chain = |code: String| Ex::primary(code, rty.clone());
+            match (name, args.len()) {
+                ("field" | "entry", 2) => {
+                    return chain(format!("{r}.{name}({}, {})", a(0), a(1)));
+                }
+                ("field" | "entry" | "key" | "value" | "entries", 1) => {
+                    return chain(format!("{r}.{name}({})", a(0)));
+                }
+                ("finish", 0) => return prim(format!("{r}.finish()"), Ty::Unit),
+                ("finish_non_exhaustive", 0) => {
+                    return prim(format!("{r}.finishNonExhaustive()"), Ty::Unit);
                 }
                 _ => {}
             }
@@ -2282,6 +2358,11 @@ impl Translator<'_> {
                     Ty::Char => prim(format!("String({})", recv.code), Ty::Str),
                     Ty::Int(_) | Ty::Bool => prim(format!("String({})", recv.code), Ty::Str),
                     Ty::Float(_) => {
+                        self.helper("display");
+                        prim(format!("rsDisplay({})", recv.code), Ty::Str)
+                    }
+                    // A type parameter: a float as Rust writes it, if that is what it holds.
+                    Ty::Named(n, _) if self.generics.contains(n) => {
                         self.helper("display");
                         prim(format!("rsDisplay({})", recv.code), Ty::Str)
                     }

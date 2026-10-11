@@ -439,21 +439,67 @@ impl Translator<'_> {
     ) -> (bool, String) {
         let x = &v.code;
         let mut plain = false;
-        // A `Display` written with `write!` ignores the width and precision it is given
-        // (only `f.pad` and forwarding honor them); Rust's derived `Debug` pads numbers only.
+        // A `Display` written with `write!` ignores the spec it is given; one asking its
+        // formatter (`f.pad`, `f.precision()`) is given the spec.
         let user_display = match &v.ty {
-            Ty::Named(n, _) => self.rust_name_of_swift(n).map(|rust| {
-                self.syms.display.contains(&rust) && !self.syms.display_pads.contains(&rust)
-            }),
+            Ty::Named(n, _) => self
+                .rust_name_of_swift(n)
+                .filter(|rust| self.syms.display.contains(rust))
+                .map(|rust| self.syms.fmt_queries.contains(&rust)),
             _ => None,
         };
-        let (precision, width) = match (spec.kind.as_str(), user_display) {
-            ("", Some(true)) => (None, None),
-            _ => (precision, width),
-        };
+        if spec.kind.is_empty() {
+            match user_display {
+                Some(true) => {
+                    let mut parts = Vec::new();
+                    if let Some(w) = &width {
+                        parts.push(format!("width: {w}"));
+                    }
+                    if let Some(p) = &precision {
+                        parts.push(format!("precision: {p}"));
+                    }
+                    if let Some(a) = spec.align {
+                        parts.push(format!("align: \"{a}\""));
+                    }
+                    if let Some(f) = spec.fill.filter(|f| *f != ' ') {
+                        parts.push(format!(
+                            "fill: {}",
+                            crate::expr::swift_string(&f.to_string())
+                        ));
+                    }
+                    if spec.zero {
+                        parts.push("zero: true".into());
+                    }
+                    if spec.alternate {
+                        parts.push("alternate: true".into());
+                    }
+                    if spec.plus {
+                        parts.push("signPlus: true".into());
+                    }
+                    if parts.is_empty() {
+                        return (true, x.clone());
+                    }
+                    return (
+                        false,
+                        format!(
+                            "{}.rsFormatted(RsFormatter({}))",
+                            wrap(v, P_PRIMARY),
+                            parts.join(", ")
+                        ),
+                    );
+                }
+                Some(false) => return (true, x.clone()),
+                None => {}
+            }
+        }
         let is_debug = matches!(spec.kind.as_str(), "?" | "x?" | "X?");
+        let hex = match spec.kind.as_str() {
+            "x?" => Some('x'),
+            "X?" => Some('X'),
+            _ => None,
+        };
         // Rust's derived `Debug` passes the width and precision down to the numbers inside.
-        let debug_style = if is_debug && (width.is_some() || precision.is_some()) {
+        let debug_style = if is_debug && (width.is_some() || precision.is_some() || hex.is_some()) {
             let mut parts = Vec::new();
             if let Some(w) = &width {
                 parts.push(format!("width: {w}"));
@@ -474,6 +520,9 @@ impl Translator<'_> {
             }
             if let Some(p) = &precision {
                 parts.push(format!("precision: {p}"));
+            }
+            if let Some(h) = hex {
+                parts.push(format!("hex: \"{h}\""));
             }
             Some(format!(", style: RsDebugStyle({})", parts.join(", ")))
         } else {
@@ -560,6 +609,11 @@ impl Translator<'_> {
                 }
                 (Ty::Str, Some(p)) => format!("String({}.prefix({p}))", wrap(v, P_PRIMARY)),
                 (Ty::Float(_), None) => {
+                    self.helper("display");
+                    format!("rsDisplay({x})")
+                }
+                // A type parameter: a float as Rust writes it, if that is what it holds.
+                (Ty::Named(n, _), None) if self.generics.contains(n) => {
                     self.helper("display");
                     format!("rsDisplay({x})")
                 }

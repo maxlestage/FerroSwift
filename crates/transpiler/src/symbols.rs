@@ -139,9 +139,12 @@ pub struct Symbols {
     pub user_type_names: HashSet<String>,
     /// Types that implement `Display` (their `description`).
     pub display: HashSet<String>,
-    /// Display impls that forward the formatter (`f.pad(…)`, `self.0.fmt(f)`): the width
-    /// applies to them, unlike `write!`-based impls.
-    pub display_pads: HashSet<String>,
+    /// Types whose `Display` asks its formatter for the spec (`f.pad(…)`, `f.precision()`,
+    /// `self.0.fmt(f)`): written with a formatter, so that the width applies to them, unlike
+    /// `write!`-based impls.
+    pub fmt_queries: HashSet<String>,
+    /// Types whose `Debug` uses its formatter (`f.debug_struct(…)`, `f.alternate()`).
+    pub debug_queries: HashSet<String>,
     /// Types used as the error of a `Result`: they conform to `Error`.
     pub errors: HashSet<String>,
     /// Types with a `From<…>` implementation, by target.
@@ -431,12 +434,13 @@ impl Symbols {
             }
             Some("Display") => {
                 self.display.insert(type_name.clone());
-                let text = quote::quote!(#imp).to_string();
-                if text.contains(". pad (")
-                    || text.contains("pad_integral")
-                    || text.contains(". fmt (")
-                {
-                    self.display_pads.insert(type_name.clone());
+                if impl_queries_formatter(imp) {
+                    self.fmt_queries.insert(type_name.clone());
+                }
+            }
+            Some("Debug") => {
+                if impl_queries_formatter(imp) {
+                    self.debug_queries.insert(type_name.clone());
                 }
             }
             Some("Iterator") => {
@@ -824,6 +828,98 @@ pub fn type_name(t: &Type) -> Option<String> {
         Type::Reference(r) => type_name(&r.elem),
         _ => None,
     }
+}
+
+/// The formatter parameter of `fn fmt(&self, f: &mut Formatter) -> fmt::Result`.
+pub fn formatter_param(f: &syn::ImplItemFn) -> Option<String> {
+    f.sig.inputs.iter().find_map(|a| match a {
+        FnArg::Typed(p) => match &*p.pat {
+            syn::Pat::Ident(i) => Some(i.ident.to_string()),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn impl_queries_formatter(imp: &syn::ItemImpl) -> bool {
+    imp.items.iter().any(|it| match it {
+        syn::ImplItem::Fn(f) => f.sig.ident == "fmt" && formatter_queried(f),
+        _ => false,
+    })
+}
+
+/// Whether the `fmt` of a `Display` or `Debug` asks its formatter for anything beyond writing
+/// text (`f.pad`, `f.precision()`, `f.alternate()`, `f.debug_struct`, `x.fmt(f)`): it is then
+/// translated with a formatter, instead of as a plain `description`.
+pub fn formatter_queried(f: &syn::ImplItemFn) -> bool {
+    use syn::visit::Visit;
+
+    let Some(param) = formatter_param(f) else {
+        return false;
+    };
+    struct Finder<'a> {
+        param: &'a str,
+        queried: bool,
+    }
+    fn mentions(tokens: proc_macro2::TokenStream, param: &str) -> bool {
+        tokens.into_iter().any(|t| match t {
+            proc_macro2::TokenTree::Ident(i) => i == param,
+            proc_macro2::TokenTree::Group(g) => mentions(g.stream(), param),
+            _ => false,
+        })
+    }
+    impl<'ast> Visit<'ast> for Finder<'_> {
+        fn visit_expr_method_call(&mut self, m: &'ast syn::ExprMethodCall) {
+            if let Expr::Path(p) = &*m.receiver {
+                if p.path.is_ident(self.param) {
+                    if !matches!(
+                        m.method.to_string().as_str(),
+                        "write_str" | "write_char" | "write_fmt"
+                    ) {
+                        self.queried = true;
+                    }
+                    for a in &m.args {
+                        self.visit_expr(a);
+                    }
+                    return;
+                }
+            }
+            syn::visit::visit_expr_method_call(self, m);
+        }
+
+        fn visit_expr_path(&mut self, p: &'ast syn::ExprPath) {
+            if p.path.is_ident(self.param) {
+                self.queried = true;
+            }
+        }
+
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            let name = mac
+                .path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
+            let mut tokens = mac.tokens.clone().into_iter().peekable();
+            // `write!(f, …)`: the formatter as the target only writes.
+            if matches!(name.as_str(), "write" | "writeln") {
+                if let Some(proc_macro2::TokenTree::Ident(i)) = tokens.peek() {
+                    if i == self.param {
+                        tokens.next();
+                    }
+                }
+            }
+            if mentions(tokens.collect(), self.param) {
+                self.queried = true;
+            }
+        }
+    }
+    let mut finder = Finder {
+        param: &param,
+        queried: false,
+    };
+    finder.visit_block(&f.block);
+    finder.queried
 }
 
 /// `&mut T`, `Option<&mut T>`, `Result<&mut T, E>` as a return type.
