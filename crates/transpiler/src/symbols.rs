@@ -122,6 +122,10 @@ pub struct FnSig {
     /// The type parameters no parameter nor the result mentions (`fn report<T: FromStr>(…)`):
     /// Swift cannot infer them, so each is a trailing `T.Type` parameter, given at the call.
     pub phantom: Vec<String>,
+    /// The type parameters bounded by `FromStr` (`fn read<T: FromStr>`): each has a hidden
+    /// `rsBitsT` parameter telling the width of the Rust integer it stands for (`i32` is
+    /// Swift's `Int`), so that a parse keeps its limits.
+    pub parse_generics: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -835,6 +839,7 @@ impl Symbols {
             trait_method: false,
             generics: type_params(&sig.generics),
             phantom: phantom_params(sig, &closures),
+            parse_generics: parse_generics(&sig.generics),
         }
     }
 
@@ -843,6 +848,10 @@ impl Symbols {
         match t {
             Type::Path(p) => {
                 if p.qself.is_some() {
+                    // `<T as FromStr>::Err`.
+                    if p.path.segments.last().is_some_and(|s| s.ident == "Err") {
+                        return Ty::Named("RsAnyParseError".into(), vec![]);
+                    }
                     return Ty::Unknown;
                 }
                 let Some(last) = p.path.segments.last() else {
@@ -853,6 +862,17 @@ impl Symbols {
                     return self_ty
                         .cloned()
                         .unwrap_or_else(|| Ty::Named("Self".into(), vec![]));
+                }
+                // `T::Err` of a type parameter bounded by `FromStr`: the error of a generic
+                // parse.
+                if p.path.segments.len() == 2
+                    && name == "Err"
+                    && p.path.segments[0].ident != "Self"
+                    && !self
+                        .user_type_names
+                        .contains(&p.path.segments[0].ident.to_string())
+                {
+                    return Ty::Named("RsAnyParseError".into(), vec![]);
                 }
                 // `Self::Err`, `Self::Item`: an associated type of the impl.
                 if p.path.segments.len() == 2 && p.path.segments[0].ident == "Self" {
@@ -968,7 +988,17 @@ impl Symbols {
             match name.as_str() {
                 "Fn" | "FnMut" | "FnOnce" => {
                     if let syn::PathArguments::Parenthesized(p) = &seg.arguments {
-                        let params = p.inputs.iter().map(|t| self.ty(t, self_ty)).collect();
+                        // `Fn(&mut State)`: an `inout` parameter of the closure.
+                        let params = p
+                            .inputs
+                            .iter()
+                            .map(|t| match t {
+                                Type::Reference(r) if r.mutability.is_some() => {
+                                    Ty::Inout(Box::new(self.ty(&r.elem, self_ty)))
+                                }
+                                t => self.ty(t, self_ty),
+                            })
+                            .collect();
                         let ret = match &p.output {
                             ReturnType::Default => Ty::Unit,
                             ReturnType::Type(_, t) => self.ty(t, self_ty),
@@ -1029,6 +1059,7 @@ pub fn substitute(t: &Ty, map: &HashMap<String, Ty>) -> Ty {
         Ty::Result(a, b) => Ty::Result(Box::new(s(a)), Box::new(s(b))),
         Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(s).collect()),
         Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(s).collect(), Box::new(s(r))),
+        Ty::Inout(t) => Ty::Inout(Box::new(s(t))),
         other => other.clone(),
     }
 }
@@ -1177,6 +1208,40 @@ pub fn phantom_params(sig: &syn::Signature, closures: &HashMap<String, Ty>) -> V
             !in_params && !in_ret
         })
         .collect()
+}
+
+/// The type parameters bounded by `FromStr`, in the list or in the `where` clause.
+pub fn parse_generics(g: &syn::Generics) -> Vec<String> {
+    let is_from_str =
+        |bounds: &syn::punctuated::Punctuated<syn::TypeParamBound, syn::token::Plus>| {
+            bounds.iter().any(|b| {
+                matches!(b, syn::TypeParamBound::Trait(t)
+                if t.path.segments.last().is_some_and(|s| s.ident == "FromStr"))
+            })
+        };
+    let mut out: Vec<String> = Vec::new();
+    for p in &g.params {
+        if let GenericParam::Type(t) = p {
+            if is_from_str(&t.bounds) {
+                out.push(t.ident.to_string());
+            }
+        }
+    }
+    if let Some(w) = &g.where_clause {
+        for pred in &w.predicates {
+            if let syn::WherePredicate::Type(pt) = pred {
+                if let Type::Path(tp) = &pt.bounded_ty {
+                    if let Some(id) = tp.path.get_ident() {
+                        let name = id.to_string();
+                        if is_from_str(&pt.bounds) && !out.contains(&name) {
+                            out.push(name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn type_params(g: &syn::Generics) -> Vec<String> {
