@@ -117,6 +117,20 @@ pub struct Translator<'a> {
     pub deque_locals: std::collections::HashSet<String>,
     /// The Rust source, for the text of a failed `assert!`.
     pub source_text: String,
+    /// The locals that are references to a value with `impl Deref` (Rust names): `*r` is
+    /// the value, `**r` its target.
+    pub ref_locals: HashMap<String, usize>,
+    /// The closures whose parameter is a reference (`v.iter().map(|m| …)`), by the start of
+    /// their span, with the number of `&`.
+    pub ref_closures: HashMap<(usize, usize), usize>,
+    /// The `inout` parameters of the function (Swift names): an `RsMut` taken on one
+    /// works on a copy written back at the end of the block.
+    pub inout_params: HashSet<String>,
+    /// The slots of `let`s of integer literals, with the type they were given: annotated
+    /// only when a later use changed it (`let mut buf = vec![9]` passed as `&mut Vec<u8>`).
+    pub weak_slots: HashMap<usize, Ty>,
+    /// The start of the path call being translated (`thread::scope(…)` panics there).
+    pub call_span: Option<proc_macro2::Span>,
     /// The type parameters a call knows before its arguments (turbofish, expected result).
     pub pending_bindings: std::collections::HashMap<String, Ty>,
     /// The variables being assigned by the branches of a `let x = match …` (Swift names),
@@ -196,6 +210,11 @@ impl<'a> Translator<'a> {
             parse_bits: std::collections::HashMap::new(),
             deque_locals: std::collections::HashSet::new(),
             source_text: source.to_string(),
+            ref_locals: HashMap::new(),
+            ref_closures: HashMap::new(),
+            inout_params: HashSet::new(),
+            weak_slots: HashMap::new(),
+            call_span: None,
             pending_bindings: std::collections::HashMap::new(),
             last_closure_inouts: Vec::new(),
             closure_inouts: std::collections::HashMap::new(),
@@ -267,9 +286,23 @@ impl<'a> Translator<'a> {
         self.scopes.pop();
     }
 
+    /// `rust` holds a reference: with `impl Deref` on its type, `*rust` is the value itself.
+    pub fn mark_reference(&mut self, rust: &str) {
+        self.mark_references(rust, 1);
+    }
+
+    /// `rust` holds `depth` references (`&&Meters` in `v.iter().filter(|m| …)`).
+    pub fn mark_references(&mut self, rust: &str, depth: usize) {
+        let ty = self.lookup(rust).map(|l| l.ty.clone());
+        if depth > 0 && ty.is_some_and(|t| self.deref_target(&t).is_some()) {
+            self.ref_locals.insert(rust.to_string(), depth);
+        }
+    }
+
     /// Declares a local and returns its Swift name, renamed when the current scope already
     /// declares that name (Rust allows `let x = …; let x = …;`, Swift does not).
     pub fn declare(&mut self, rust: &str, ty: Ty) -> String {
+        self.ref_locals.remove(rust);
         let base = if rust == "self" {
             "copy".to_string()
         } else {
@@ -464,6 +497,23 @@ impl<'a> Translator<'a> {
         }
     }
 
+    /// `&mut buf` given where a `&mut Vec<u8>` is wanted, `buf` being a `let` of integer
+    /// literals: they are `u8`s.
+    pub fn retype_literals(&mut self, rust: &str, ty: &Ty) {
+        let Some(slot) = self.lookup(rust).and_then(|l| l.slot) else {
+            return;
+        };
+        if self.weak_slots.contains_key(&slot)
+            && ty.is_complete()
+            && same_shape_but_ints(&self.slots[slot], ty)
+        {
+            self.slots[slot] = ty.clone();
+            if let Some(local) = self.lookup_mut(rust) {
+                local.ty = ty.clone();
+            }
+        }
+    }
+
     /// Learns more about the type of a local from its use.
     pub fn refine(&mut self, rust: &str, ty: &Ty) {
         let Some(local) = self.lookup(rust) else {
@@ -543,7 +593,13 @@ impl<'a> Translator<'a> {
         let mut is_slot = true;
         for part in parts {
             if is_slot {
-                if let Some(t) = part.parse::<usize>().ok().and_then(|i| self.slots.get(i)) {
+                let index = part.parse::<usize>().ok();
+                let unchanged = index.is_some_and(|i| {
+                    self.weak_slots
+                        .get(&i)
+                        .is_some_and(|t| Some(t) == self.slots.get(i))
+                });
+                if let Some(t) = index.and_then(|i| self.slots.get(i)).filter(|_| !unchanged) {
                     if let Some(swift) = t.swift() {
                         out.push_str(": ");
                         out.push_str(&swift);
@@ -1012,6 +1068,9 @@ impl<'a> Translator<'a> {
         let where_clause = self.where_clause(&s.generics);
         self.closure_generics.clear();
         self.generics = info.generics.clone();
+        if info.fields.iter().any(|f| f.ty.named() == Some("RsMut")) {
+            self.helper("mutref");
+        }
         let derives = derives(&s.attrs);
         // A generic struct cannot default its fields (`var first: T = T()`): it gets an
         // `init()` under `where T: RsDefault` instead.
@@ -1815,8 +1874,24 @@ impl<'a> Translator<'a> {
             }
         }
         self.imp = None;
+        // `trait Converter<T>`: `protocol Converter<T>`, its primary associated type, so that
+        // `dyn Converter<f64>` is `any Converter<Double>`.
+        let primary: Vec<String> = t
+            .generics
+            .params
+            .iter()
+            .filter_map(|p| match p {
+                GenericParam::Type(tp) => Some(tp.ident.to_string()),
+                _ => None,
+            })
+            .collect();
+        let primary = if primary.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", primary.join(", "))
+        };
         let mut out = format!(
-            "{}protocol {name}{conf} {{\n{}\n}}",
+            "{}protocol {name}{primary}{conf} {{\n{}\n}}",
             docs(&t.attrs),
             indent_lines(&reqs.join("\n"))
         );
@@ -2429,6 +2504,9 @@ impl<'a> Translator<'a> {
                 let ty = self.ty(&p.ty);
                 if let Pat::Ident(i) = &*p.pat {
                     let swift_name = self.declare(&i.ident.to_string(), ty.clone());
+                    if matches!(&*p.ty, syn::Type::Reference(_)) {
+                        self.mark_reference(&i.ident.to_string());
+                    }
                     params.push(format!(
                         "_ {swift_name}: {}",
                         self.swift_ty(&ty, p.ty.span())
@@ -2745,7 +2823,7 @@ impl<'a> Translator<'a> {
         self.fns.pop();
         self.pop_scope();
         let throws_clause = match &throws {
-            Some(Ty::Dyn(_)) | Some(Ty::Unknown) => " throws".to_string(),
+            Some(Ty::Dyn(..)) | Some(Ty::Unknown) => " throws".to_string(),
             Some(e) => format!(" throws({})", e.swift_lossy()),
             None => String::new(),
         };
@@ -2844,6 +2922,7 @@ impl<'a> Translator<'a> {
         let where_clause = self.where_clause(&sig.generics);
         let mut params = Vec::new();
         let mut prologue = Vec::new();
+        self.inout_params.clear();
         let mut self_kind = SelfKind::None;
         let mut self_name = None;
         for (i, arg) in sig.inputs.iter().enumerate() {
@@ -2866,8 +2945,16 @@ impl<'a> Translator<'a> {
                     if matches!(&*p.ty, Type::Ptr(_)) {
                         self.error(p.ty.span(), "raw pointers have no Swift equivalent here");
                     }
-                    let ty = self.ty(&p.ty);
+                    let stored = crate::symbols::stored_mut_ref(&p.ty);
+                    let ty = match stored {
+                        Some(elem) => {
+                            self.helper("mutref");
+                            Ty::Named("RsMut".into(), vec![self.ty(elem)])
+                        }
+                        None => self.ty(&p.ty),
+                    };
                     let inout = matches!(&*p.ty, Type::Reference(r) if r.mutability.is_some())
+                        && stored.is_none()
                         && !matches!(ty, Ty::Fn(..) | Ty::View);
                     let returns_closure = match &sig.output {
                         ReturnType::Type(_, t) => matches!(self.ty(t), Ty::Fn(..)),
@@ -2880,7 +2967,7 @@ impl<'a> Translator<'a> {
                     if inout {
                         // `&mut dyn Visitor`: an existential cannot be passed `inout` from a
                         // concrete variable; an opaque type (a generic) can.
-                        if matches!(ty, Ty::Dyn(_)) {
+                        if matches!(ty, Ty::Dyn(..)) {
                             swift_ty = swift_ty.replacen("any ", "some ", 1);
                         }
                         swift_ty = format!("inout {swift_ty}");
@@ -2894,6 +2981,11 @@ impl<'a> Translator<'a> {
                         Pat::Ident(id) => {
                             let rust = id.ident.to_string();
                             let n = self.declare(&rust, ty.clone());
+                            if inout {
+                                self.inout_params.insert(n.clone());
+                            } else if matches!(&*p.ty, Type::Reference(_)) {
+                                self.mark_reference(&rust);
+                            }
                             params.push(format!("_ {n}: {swift_ty}"));
                             if id.mutability.is_some() && !inout {
                                 prologue.push(format!("var {n} = {n}"));
@@ -2921,10 +3013,20 @@ impl<'a> Translator<'a> {
             params.push(format!("{name}: Int = 0"));
             self.parse_bits.insert(g, name);
         }
-        let ret = match &sig.output {
+        let mut ret = match &sig.output {
             ReturnType::Default => Ty::Unit,
             ReturnType::Type(_, t) => self.ty(t),
         };
+        // `fn hash(…) -> usize` computing past `i64::MAX`: `UInt64`, as collected.
+        if ret == Ty::Int(crate::ty::IntKind::Usize) {
+            let collected = match &self.imp {
+                Some(imp) => self.syms.methods.get(&imp.rust).and_then(|m| m.get(&name)),
+                None => self.syms.fns.get(&name),
+            };
+            if let Some(c) = collected {
+                ret = c.ret.clone();
+            }
+        }
         // `fn get(&mut self, …) -> &mut T`: a `WritableKeyPath` into the type.
         let mut key_path_root = None;
         if let ReturnType::Type(_, t) = &sig.output {
@@ -2979,7 +3081,7 @@ impl<'a> Translator<'a> {
         };
         let throws_clause = match &throws {
             None => "",
-            Some(Ty::Dyn(_)) | Some(Ty::Unknown) => " throws",
+            Some(Ty::Dyn(..)) | Some(Ty::Unknown) => " throws",
             Some(_) => "",
         };
         let typed_throws = match &throws {
@@ -3675,4 +3777,13 @@ fn with_bound(generics: &str, name: &str, bound: &str) -> String {
         })
         .collect();
     format!("<{}>", parts.join(", "))
+}
+
+/// `[Int]` and `[UInt8]`: the same type but for the kind of integers.
+fn same_shape_but_ints(a: &Ty, b: &Ty) -> bool {
+    match (a, b) {
+        (Ty::Int(_), Ty::Int(_)) => true,
+        (Ty::Vec(x), Ty::Vec(y)) => same_shape_but_ints(x, y),
+        _ => false,
+    }
 }

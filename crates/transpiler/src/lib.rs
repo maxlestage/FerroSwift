@@ -125,6 +125,9 @@ pub fn transpile_with(source: &str, options: &Options) -> Output {
     let mut t = Translator::new(&symbols, options, source, None);
     let mut swift = t.file(&file, options.entry_point);
     helpers.extend(t.helpers.iter().copied());
+    if uses_int128(&swift) {
+        helpers.insert("int128");
+    }
     let mut diagnostics = std::mem::take(&mut t.diags);
     if let Some(code) = support::render(&helpers, symbols.ui || t.used_ui) {
         swift.push_str("\n// MARK: - FerroSwift support\n\n");
@@ -172,6 +175,9 @@ pub fn transpile_crate(
         let is_entry = entry == Some(src.path.as_str());
         let swift = t.file(file, is_entry);
         helpers.extend(t.helpers.iter().copied());
+        if uses_int128(&swift) {
+            helpers.insert("int128");
+        }
         ui |= t.used_ui;
         out.diagnostics.append(&mut t.diags);
         out.files
@@ -226,4 +232,10 @@ fn parse_error(error: &syn::Error, file: Option<&str>) -> Diagnostic {
         line,
         column,
     }
+}
+
+/// `i128` and `u128` are `RsInt128` and `RsUInt128` of the support file: Swift's own need
+/// iOS 18 and macOS 15.
+fn uses_int128(swift: &str) -> bool {
+    swift.contains("RsInt128") || swift.contains("RsUInt128")
 }

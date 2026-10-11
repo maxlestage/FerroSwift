@@ -199,10 +199,35 @@ impl Translator<'_> {
     // ----- let -----
 
     fn local(&mut self, l: &Local) -> Vec<String> {
-        let (pat, declared) = match &l.pat {
+        let lines = self.local_inner(l);
+        // `let r = &x;`, `let r: &Meters = …;`: `r` is a reference.
+        let (pat, reference) = match &l.pat {
+            Pat::Type(pt) => (&*pt.pat, matches!(&*pt.ty, syn::Type::Reference(_))),
+            p => (p, false),
+        };
+        let reference = reference
+            || l.init
+                .as_ref()
+                .is_some_and(|i| matches!(&*i.expr, Expr::Reference(r) if r.mutability.is_none()));
+        if let (Pat::Ident(id), true) = (pat, reference) {
+            self.mark_reference(&id.ident.to_string());
+        }
+        lines
+    }
+
+    fn local_inner(&mut self, l: &Local) -> Vec<String> {
+        let (pat, mut declared) = match &l.pat {
             Pat::Type(pt) => (&*pt.pat, Some(self.ty(&pt.ty))),
             p => (p, None),
         };
+        // `let mut h: usize = 0xcbf29ce484222325;`: past `Int.max`, a `UInt64`.
+        if declared == Some(Ty::Int(crate::ty::IntKind::Usize))
+            && l.init
+                .as_ref()
+                .is_some_and(|i| crate::symbols::wide_usize_literal(&i.expr))
+        {
+            declared = Some(Ty::Int(crate::ty::IntKind::U64));
+        }
         let declared_ty = declared.clone().unwrap_or(Ty::Unknown);
         let Some(init) = &l.init else {
             // `let x;` initialized later.
@@ -524,6 +549,14 @@ impl Translator<'_> {
             // Completed by later uses (`v.push(1)`), or left out if still unknown.
             let (slot, placeholder) = self.new_slot(ty);
             self.attach_slot(rust, slot);
+            return vec![format!("{kw} {name}{placeholder} = {}", v.code)];
+        }
+        // `let mut buf = vec![9, 9];` then `fill(&mut buf)` with a `&mut Vec<u8>`: the
+        // integers take the type of that use, written only when it is not `Int`.
+        if declared.is_none() && unsuffixed_ints(value) {
+            let (slot, placeholder) = self.new_slot(ty.clone());
+            self.attach_slot(rust, slot);
+            self.weak_slots.insert(slot, ty);
             return vec![format!("{kw} {name}{placeholder} = {}", v.code)];
         }
         vec![format!("{kw} {name} = {}", v.code)]
@@ -1860,6 +1893,11 @@ impl Translator<'_> {
             }
             None => {
                 let pat = self.binding_pattern(&f.pat, &iter.item);
+                // `for m in &v`, `for m in v.iter()`: `m` is a reference.
+                if let Pat::Ident(id) = &*f.pat {
+                    let depth = crate::expr::chain_ref_depth(&f.expr);
+                    self.mark_references(&id.ident.to_string(), depth);
+                }
                 format!("for {pat} in {}", iter.code)
             }
         };
@@ -2800,6 +2838,31 @@ pub fn simple_place(e: &Expr) -> bool {
         Expr::Unary(u) if matches!(u.op, syn::UnOp::Deref(_)) => simple_place(&u.expr),
         Expr::Index(i) => {
             simple_place(&i.expr) && matches!(&*i.index, Expr::Lit(_) | Expr::Path(_))
+        }
+        _ => false,
+    }
+}
+
+/// Integer literals without a suffix (`5`, `-1`, `vec![1, 2]`, `[0; 4]`): Rust gives them
+/// the type of a later use.
+fn unsuffixed_ints(e: &Expr) -> bool {
+    match e {
+        Expr::Lit(l) => matches!(&l.lit, syn::Lit::Int(i) if i.suffix().is_empty()),
+        Expr::Unary(u) => matches!(u.op, syn::UnOp::Neg(_)) && unsuffixed_ints(&u.expr),
+        Expr::Paren(p) => unsuffixed_ints(&p.expr),
+        Expr::Array(a) => !a.elems.is_empty() && a.elems.iter().all(unsuffixed_ints),
+        Expr::Repeat(r) => unsuffixed_ints(&r.expr),
+        Expr::Macro(m) if m.mac.path.is_ident("vec") => {
+            if let Ok(a) = m.mac.parse_body_with(
+                syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated,
+            ) {
+                return !a.is_empty() && a.iter().all(unsuffixed_ints);
+            }
+            let tokens = &m.mac.tokens;
+            match syn::parse2::<syn::ExprRepeat>(quote::quote!([#tokens])) {
+                Ok(r) => unsuffixed_ints(&r.expr),
+                Err(_) => false,
+            }
         }
         _ => false,
     }

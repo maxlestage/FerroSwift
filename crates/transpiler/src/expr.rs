@@ -117,9 +117,72 @@ impl Translator<'_> {
             return Ex::primary(code, Ty::Unknown);
         }
         self.depth += 1;
+        // `Counter { count: &mut n }`: a reference kept in a struct reads and writes `n`.
+        if expected.named() == Some("RsMut") {
+            if let Some(ex) = self.mut_ref(e, expected) {
+                self.depth -= 1;
+                return ex;
+            }
+        }
         let v = self.expr_raw(e, expected);
         self.depth -= 1;
         self.coerce(v, expected)
+    }
+
+    /// An `RsMut` on the place `e` (`&mut n`, or a `&mut` parameter passed on), whose getter
+    /// and setter go to that place. `None` when `e` is already an `RsMut`.
+    fn mut_ref(&mut self, e: &Expr, expected: &Ty) -> Option<Ex> {
+        let target = match e {
+            Expr::Reference(r) if r.mutability.is_some() => &*r.expr,
+            Expr::Paren(p) => return self.mut_ref(&p.expr, expected),
+            e if is_place(e) => {
+                if self.place_ty(e).named() == Some("RsMut") {
+                    return None;
+                }
+                e
+            }
+            _ => return None,
+        };
+        // `&mut *count` of an `RsMut`: the same reference.
+        if let Expr::Unary(u) = target {
+            if matches!(u.op, UnOp::Deref(_)) && self.place_ty(&u.expr).named() == Some("RsMut") {
+                let v = self.expr(&u.expr);
+                return Some(self.settle(v));
+            }
+        }
+        self.helper("mutref");
+        // `let mut log = Vec::new();` then `&mut log` given as a `&mut Vec<String>`.
+        if let (Expr::Path(p), Ty::Named(_, args)) = (target, expected) {
+            let inner = args.first()?;
+            if let Some(id) = p.path.get_ident() {
+                let name = id.to_string();
+                if let Some(local) = self.lookup(&name).cloned() {
+                    let ty = self.local_ty(&local);
+                    if !ty.is_complete() && inner.is_complete() {
+                        self.refine(&name, inner);
+                    }
+                }
+                self.retype_literals(&name, inner);
+            }
+        }
+        // On an `inout` parameter: a copy, written back when the block ends (the struct
+        // holding the reference cannot outlive it).
+        if let Some(root) = place_root(target) {
+            if let Some(local) = self.lookup(&root).cloned() {
+                if self.inout_params.contains(&local.swift) {
+                    let ty = self.local_ty(&local);
+                    let shadow = self.fresh(&format!("{}Ref", local.swift));
+                    self.declare_alias(&root, shadow.clone(), ty);
+                    self.prelude(format!("var {shadow} = {}", local.swift));
+                    self.prelude(format!("defer {{ {} = {shadow} }}", local.swift));
+                }
+            }
+        }
+        let place = self.place(target);
+        Some(Ex::primary(
+            format!("RsMut(get: {{ {place} }}, set: {{ {place} = $0 }})"),
+            expected.clone(),
+        ))
     }
 
     /// Converts a number to the numeric type the context expects.
@@ -287,7 +350,7 @@ impl Translator<'_> {
                 // `Result(catching:)` takes no async closure.
                 self.helper("async_result");
                 let effects = match err.swift() {
-                    Some(e) if !matches!(err, Ty::Dyn(_)) => format!("async throws({e})"),
+                    Some(e) if !matches!(err, Ty::Dyn(..)) => format!("async throws({e})"),
                     _ => "async throws".into(),
                 };
                 let ret = ok.swift().map(|o| format!(" -> {o}")).unwrap_or_default();
@@ -302,7 +365,7 @@ impl Translator<'_> {
             }
             self.note_support_types(&err);
             let code = match (ok.swift(), err.swift()) {
-                (Some(o), Some(e)) if !matches!(err, Ty::Dyn(_)) => {
+                (Some(o), Some(e)) if !matches!(err, Ty::Dyn(..)) => {
                     format!(
                         "Result<{o}, {e}> {{ () throws({e}) -> {o} in try {} }}",
                         v.code
@@ -553,13 +616,14 @@ impl Translator<'_> {
                     _ => None,
                 };
                 let ty = match (expected, explicit) {
-                    (Ty::Option(_), _) => expected.clone(),
+                    (Ty::Option(_), _) if expected.is_complete() => expected.clone(),
                     (_, Some(t)) if t.is_complete() => {
                         return Ex::primary(
                             format!("(nil as {}?)", t.swift_lossy()),
                             Ty::Option(Box::new(t)),
                         );
                     }
+                    (Ty::Option(_), _) => expected.clone(),
                     _ => Ty::Option(Box::new(Ty::Unknown)),
                 };
                 return Ex::primary("nil", ty);
@@ -1246,13 +1310,40 @@ impl Translator<'_> {
         ex
     }
 
+    /// A reference, by what declared it: `&x`, a `&T` parameter, `let r = &x;`, the item of
+    /// `for m in &v` or the parameter of a closure on `v.iter()`.
+    fn ref_depth(&self, e: &Expr) -> usize {
+        match e {
+            Expr::Reference(r) => 1 + self.ref_depth(&r.expr),
+            Expr::Paren(p) => self.ref_depth(&p.expr),
+            Expr::Unary(u) if matches!(u.op, UnOp::Deref(_)) => {
+                self.ref_depth(&u.expr).saturating_sub(1)
+            }
+            Expr::Path(p) => p
+                .path
+                .get_ident()
+                .and_then(|i| self.ref_locals.get(&i.to_string()))
+                .copied()
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
+
     fn unary(&mut self, u: &syn::ExprUnary, expected: &Ty) -> Ex {
         match u.op {
             UnOp::Deref(_) => {
                 let v = self.expr_with(&u.expr, expected);
+                // `*r` with `r: &Meters`: the value itself, `**r` its target.
+                if self.ref_depth(&u.expr) > 0 {
+                    return v;
+                }
                 // `*name` of a type with `impl Deref`: its target (unless the value itself is
                 // wanted, as in `*n == other`).
                 match self.deref_target(&v.ty) {
+                    Some(target) if v.ty.named() == Some("RsMut") => {
+                        let v = self.settle(v);
+                        Ex::primary(format!("{}.value", wrap(&v, P_PRIMARY)), target)
+                    }
                     Some(target) if expected.swift() != v.ty.swift() => {
                         let v = self.settle(v);
                         Ex::primary(format!("{}.deref()", wrap(&v, P_PRIMARY)), target)
@@ -1554,7 +1645,7 @@ impl Translator<'_> {
         let Ty::Named(swift, _) = &target else {
             return None;
         };
-        if source.is_unknown() || *source == target || matches!(source, Ty::Dyn(_)) {
+        if source.is_unknown() || *source == target || matches!(source, Ty::Dyn(..)) {
             return None;
         }
         let rust = self.rust_name_of_swift(swift)?;
@@ -1573,9 +1664,17 @@ impl Translator<'_> {
                 .and_then(|i| self.lookup(&i.to_string()).cloned())
                 .map(|l| self.local_ty(&l))
                 .unwrap_or(Ty::Unknown),
-            Expr::Unary(u) => self.place_ty(&u.expr),
+            Expr::Unary(u) => match self.place_ty(&u.expr) {
+                Ty::Named(n, a) if n == "RsMut" => a.first().cloned().unwrap_or(Ty::Unknown),
+                t => t,
+            },
             Expr::Field(f) => {
-                let base = self.place_ty(&f.base);
+                let base = match self.place_ty(&f.base) {
+                    Ty::Named(n, a) if n == "RsMut" || n == "RsRc" => {
+                        a.first().cloned().unwrap_or(Ty::Unknown)
+                    }
+                    t => t,
+                };
                 let base = if base.is_unknown() && is_self(&f.base) {
                     self.self_ty()
                 } else {
@@ -1584,7 +1683,12 @@ impl Translator<'_> {
                 self.field_ty(&base, &f.member)
             }
             Expr::Index(i) => {
-                let base = self.place_ty(&i.expr);
+                let base = match self.place_ty(&i.expr) {
+                    Ty::Named(n, a) if n == "RsMut" || n == "RsRc" => {
+                        a.first().cloned().unwrap_or(Ty::Unknown)
+                    }
+                    t => t,
+                };
                 match base {
                     Ty::Map(_, v, _) => *v,
                     t => t.item(),
@@ -1597,7 +1701,14 @@ impl Translator<'_> {
     /// An assignment target: `*x` is `x`, `*map.entry(k).or_insert(0)` is `map[k, default: 0]`.
     pub fn place(&mut self, e: &Expr) -> String {
         match e {
-            Expr::Unary(u) if matches!(u.op, UnOp::Deref(_)) => self.place(&u.expr),
+            Expr::Unary(u) if matches!(u.op, UnOp::Deref(_)) => {
+                let inner = self.place(&u.expr);
+                if self.place_ty(&u.expr).named() == Some("RsMut") {
+                    format!("{inner}.value")
+                } else {
+                    inner
+                }
+            }
             Expr::Paren(p) => self.place(&p.expr),
             Expr::MethodCall(m) => {
                 if let Some(code) = self.entry_place(m) {
@@ -1784,7 +1895,7 @@ impl Translator<'_> {
         let base = self.settle(base);
         // `rc.field` of an `Rc` handle: the field of the value it shares.
         let base = match &base.ty {
-            Ty::Named(n, a) if n == "RsRc" => Ex::primary(
+            Ty::Named(n, a) if n == "RsRc" || n == "RsMut" => Ex::primary(
                 format!("{}.value", wrap(&base, P_PRIMARY)),
                 a.first().cloned().unwrap_or(Ty::Unknown),
             ),
@@ -1851,6 +1962,14 @@ impl Translator<'_> {
     fn index(&mut self, i: &syn::ExprIndex) -> Ex {
         let base = self.expr(&i.expr);
         let base = self.settle(base);
+        // `self.buf[i]` through a `&mut Vec` kept in the struct.
+        let base = match &base.ty {
+            Ty::Named(n, a) if n == "RsMut" || n == "RsRc" => Ex::primary(
+                format!("{}.value", wrap(&base, P_PRIMARY)),
+                a.first().cloned().unwrap_or(Ty::Unknown),
+            ),
+            _ => base,
+        };
         if let Expr::Range(r) = &*i.index {
             let range = self.range(r, &Ty::Range(Box::new(Ty::Int(IntKind::Usize))));
             if base.ty == Ty::Str {
@@ -2161,6 +2280,19 @@ impl Translator<'_> {
             };
             let ty = annot.clone().unwrap_or(hint);
             let name = self.closure_param(pat, &ty, &mut prologue, i);
+            // `|m: &Meters|`, `v.iter().map(|m| …)`: `m` is a reference.
+            if let Pat::Ident(id) = pat {
+                let start = c.or1_token.span.start();
+                let depth = match p {
+                    Pat::Type(pt) => reference_count(&pt.ty),
+                    _ => self
+                        .ref_closures
+                        .get(&(start.line, start.column))
+                        .copied()
+                        .unwrap_or(0),
+                };
+                self.mark_references(&id.ident.to_string(), depth);
+            }
             // `|out: &mut Vec<Token>|`: an `inout` parameter of the closure.
             let inout = hinted_inout
                 || matches!(p, Pat::Type(pt)
@@ -2276,7 +2408,7 @@ impl Translator<'_> {
         };
         self.pop_scope();
         let throws_clause = match &throws {
-            Some(Ty::Unknown) | Some(Ty::Dyn(_)) => " throws".to_string(),
+            Some(Ty::Unknown) | Some(Ty::Dyn(..)) => " throws".to_string(),
             Some(e) => format!(" throws({})", e.swift_lossy()),
             None => String::new(),
         };
@@ -2652,4 +2784,41 @@ fn is_simple_code(code: &str) -> bool {
         && code
             .chars()
             .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-')
+}
+
+/// `&&T` → 2.
+fn reference_count(t: &syn::Type) -> usize {
+    match t {
+        syn::Type::Reference(r) => 1 + reference_count(&r.elem),
+        syn::Type::Paren(p) => reference_count(&p.elem),
+        _ => 0,
+    }
+}
+
+/// The number of `&` on the items of an iterator chain: `v.iter()` gives references,
+/// `filter` and `find` pass references to them.
+pub fn chain_ref_depth(e: &Expr) -> usize {
+    match e {
+        Expr::Reference(r) if r.mutability.is_none() => 1,
+        Expr::Paren(p) => chain_ref_depth(&p.expr),
+        Expr::MethodCall(m) => match m.method.to_string().as_str() {
+            "iter" => 1,
+            "rev" | "skip" | "take" | "step_by" | "filter" | "skip_while" | "take_while"
+            | "peekable" | "inspect" | "chain" | "cycle" => chain_ref_depth(&m.receiver),
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
+/// The variable a place starts from: `v` for `v[i].x`.
+fn place_root(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Path(p) => p.path.get_ident().map(ToString::to_string),
+        Expr::Field(f) => place_root(&f.base),
+        Expr::Index(i) => place_root(&i.expr),
+        Expr::Paren(p) => place_root(&p.expr),
+        Expr::Unary(u) => place_root(&u.expr),
+        _ => None,
+    }
 }

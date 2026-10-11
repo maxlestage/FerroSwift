@@ -582,7 +582,10 @@ impl Translator<'_> {
                 let bits = match &v.ty {
                     Ty::Int(k) if k.signed() => {
                         let b = k.rust_bits();
-                        format!("UInt{b}(bitPattern: Int{b}(truncatingIfNeeded: {x}))")
+                        let prefix = if b == 128 { "Rs" } else { "" };
+                        format!(
+                            "{prefix}UInt{b}(bitPattern: {prefix}Int{b}(truncatingIfNeeded: {x}))"
+                        )
                     }
                     _ => x.clone(),
                 };
