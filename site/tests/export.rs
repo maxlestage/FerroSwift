@@ -49,6 +49,8 @@ fn exports_every_page_behind_the_base_path() {
         "fr/docs/language/index.html",
         "en/docs/cli/index.html",
         "fr/docs/limitations/index.html",
+        "fr/404/index.html",
+        "en/404/index.html",
         "index.html",
         "404.html",
     ];
@@ -97,14 +99,13 @@ fn exports_every_page_behind_the_base_path() {
 
     // What a static host cannot compute.
     let root = read(&dir, "index.html");
-    assert!(
-        root.contains(r#"location.replace("/FerroSwift"+'/'+c+'/'"#),
-        "{root}"
-    );
+    assert!(root.contains("navigator.languages"), "{root}");
     assert!(root.contains(r#"content="0; url=/FerroSwift/fr/""#));
     let not_found = read(&dir, "404.html");
     assert!(not_found.contains(r#"<meta name="robots" content="noindex,follow"/>"#));
-    assert!(not_found.contains(r#"href="/FerroSwift/en/""#));
+    assert!(not_found.contains("navigator.languages") && not_found.contains(r#""404/""#));
+    assert!(not_found.contains(r#"href="/FerroSwift/en/404/""#));
+    assert!(read(&dir, "en/404/index.html").contains("Page not found"));
     let sitemap = read(&dir, "sitemap.xml");
     assert!(
         sitemap.contains("<loc>https://maxlestage.github.io/FerroSwift/fr/docs/swiftui/</loc>")

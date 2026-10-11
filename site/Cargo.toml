@@ -5,7 +5,6 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
-repository.workspace = true
 homepage.workspace = true
 publish = false
 # `examples/*.rs` are the playground's Rust sources (read with `include_str!`), not cargo

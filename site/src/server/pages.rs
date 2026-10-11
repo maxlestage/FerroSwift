@@ -10,13 +10,12 @@ use crate::islands::{Props, Variant};
 use crate::labels::labels;
 use crate::routes::{Lang, Page, Route, base, link};
 
-pub const GITHUB: &str = "https://github.com/maxlestage/FerroSwift";
-pub const ACTIVE: &str = "https://github.com/maxlestage/Active";
-/// The license, read online: proprietary, all rights reserved.
-pub const LICENSE: &str = "https://github.com/maxlestage/FerroSwift/blob/master/LICENSE";
+/// The website of active, which renders this site.
+pub const ACTIVE: &str = "https://maxlestage.github.io/Active/";
+/// The license, served by the site (`static/LICENSE.txt`): proprietary, all rights reserved.
+pub const LICENSE_PATH: &str = "/static/LICENSE.txt";
 /// Who designed and built FerroSwift and its sister projects.
 pub const AUTHOR: &str = "Maxime Nathan Lestage";
-pub const AUTHOR_URL: &str = "https://github.com/maxlestage";
 
 /// How a page loads the browser bundle.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -142,13 +141,6 @@ fn arrow() -> Element {
         )
 }
 
-fn github_icon() -> Element {
-    svg().attr("viewBox", "0 0 24 24").attr("aria-hidden", "true").attr("width", "18").attr("height", "18").child(path().attr("fill", "currentColor").attr(
-        "d",
-        "M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.77.11 3.06.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.27 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z",
-    ))
-}
-
 fn external(link: Element) -> Element {
     link.attr("target", "_blank")
         .attr("rel", "noopener noreferrer")
@@ -210,16 +202,7 @@ fn header(route: &Route) -> Element {
                         .child(nav_link(Page::Playground, d.nav.playground))
                         .child(nav_link(Page::Docs, d.nav.docs)),
                 )
-                .child(
-                    div().class("top-actions").child(lang_switch(route)).child(
-                        external(
-                            a().class("icon-btn")
-                                .href(GITHUB)
-                                .attr("aria-label", "GitHub"),
-                        )
-                        .child(github_icon()),
-                    ),
-                ),
+                .child(div().class("top-actions").child(lang_switch(route))),
         )
 }
 
@@ -322,14 +305,14 @@ fn footer(route: &Route, site: &Site) -> Element {
     let credits = div()
         .class("wrap foot-credits")
         .child(p().class("credits-by").text(f.by))
-        .child(external(
-            a().class("credits-name").href(AUTHOR_URL).children(
+        .child(
+            p().class("credits-name").children(
                 AUTHOR
                     .split(' ')
                     .enumerate()
                     .map(|(i, word)| span().style(format!("--i:{i}")).text(word.to_string())),
             ),
-        ))
+        )
         .child(p().class("credits-note").text(f.crafted));
     let wordmark = div()
         .class("wordmark")
@@ -361,14 +344,12 @@ fn footer(route: &Route, site: &Site) -> Element {
                 .child(column(
                     f.project,
                     vec![
-                        external(a().href(GITHUB).text("GitHub")),
                         external(
                             a().href("https://crates.io/crates/ferroswift")
                                 .text("crates.io"),
                         ),
                         external(a().href("https://docs.rs/ferroswift").text("docs.rs")),
-                        external(a().href(format!("{GITHUB}/issues")).text("Issues")),
-                        external(a().href(LICENSE).text(f.license)),
+                        external(a().href(link(LICENSE_PATH)).text(f.license)),
                     ],
                 ))
                 .child(column(
@@ -397,7 +378,7 @@ fn footer(route: &Route, site: &Site) -> Element {
             div()
                 .class("wrap foot-bottom")
                 .child(span().text(f.rights))
-                .child(external(a().href(LICENSE).text(f.proprietary)))
+                .child(external(a().href(link(LICENSE_PATH)).text(f.proprietary)))
                 .child(
                     external(a().class("made").href(ACTIVE))
                         .text(f.made_with)
@@ -567,11 +548,6 @@ fn hero(lang: Lang) -> Element {
                                                 .href(),
                                         )
                                         .text(d.cta_start),
-                                )
-                                .child(
-                                    external(a().class("btn ghost").href(GITHUB))
-                                        .child(github_icon())
-                                        .text("GitHub"),
                                 ),
                         ),
                 )
@@ -663,10 +639,11 @@ fn home(site: &Site, route: &Route) -> Node {
     let seo = seo(route, d.title, d.description)
         .title_template("%s")
         .json_ld(format!(
-            r#"{{"@context":"https://schema.org","@type":"SoftwareSourceCode","name":"FerroSwift","description":"{}","codeRepository":"{GITHUB}","programmingLanguage":["Rust","Swift"],"license":"{LICENSE}","author":{{"@type":"Person","name":"{AUTHOR}","url":"{AUTHOR_URL}"}},"url":"{}/{}/"}}"#,
+            r#"{{"@context":"https://schema.org","@type":"SoftwareSourceCode","name":"FerroSwift","description":"{}","programmingLanguage":["Rust","Swift"],"license":"{origin}{}","author":{{"@type":"Person","name":"{AUTHOR}"}},"url":"{origin}{}"}}"#,
             json(d.description),
-            site.origin,
-            lang.code()
+            link(LICENSE_PATH),
+            link(&format!("/{}/", lang.code())),
+            origin = site.origin
         ));
     let props = Props {
         lang,
@@ -972,13 +949,6 @@ fn doc_page(site: &Site, route: &Route, slug: &str) -> Node {
         .child(p().class("doc-lead").text(doc.description.clone()))
         .child(div().class("prose").html(doc.html.clone()))
         .child(
-            external(a().class("edit").href(format!(
-                "{GITHUB}/edit/master/site/docs/{}/{slug}.md",
-                lang.code()
-            )))
-            .text(d.edit),
-        )
-        .child(
             nav()
                 .class("pager")
                 .attr("aria-label", "Pagination")
@@ -1044,30 +1014,39 @@ fn not_found(lang: Lang) -> Node {
         .into()
 }
 
-/// The root page: sends the visitor to their language (French unless the browser prefers
-/// English), with links to both for those without JavaScript.
-pub fn root(site: &Site) -> String {
+/// The page a static host serves at the root (`target` empty) and for an unknown address
+/// (`target` = `404/`): it goes to the visitor's language by itself (the language of the
+/// address first, then the browser's, French otherwise) and links both languages for those
+/// without JavaScript.
+pub fn root(site: &Site, target: &str) -> String {
+    let codes: Vec<String> = Lang::ALL.iter().map(|l| js_string(l.code())).collect();
     let script = format!(
         concat!(
-            "<script>(function(){{var l=navigator.languages||[navigator.language||''],c='fr';",
-            "for(var i=0;i<l.length;i++){{var x=String(l[i]).slice(0,2).toLowerCase();",
-            "if(x==='fr'||x==='en'){{c=x;break}}}}",
-            "location.replace({base}+'/'+c+'/'+location.search+location.hash)}})()</script>",
+            "<script>(function(){{var b={base},L=[{codes}],c=null;",
+            "var s=location.pathname.slice(b.length).split('/').filter(Boolean)[0];",
+            "if(L.indexOf(s)>=0)c=s;",
+            "var l=navigator.languages||[navigator.language||''];",
+            "for(var i=0;i<l.length&&!c;i++){{var x=String(l[i]).slice(0,2).toLowerCase();",
+            "if(L.indexOf(x)>=0)c=x}}",
+            "location.replace(b+'/'+(c||'fr')+'/'+{target}+location.search+location.hash)}})()</script>",
             r#"<noscript><meta http-equiv="refresh" content="0; url={href}"/></noscript>"#,
         ),
         base = js_string(base()),
-        href = escape(&link("/fr/")),
+        codes = codes.join(","),
+        target = js_string(target),
+        href = escape(&link(&format!("/fr/{target}"))),
     );
     let fr = &t(Lang::Fr).home;
+    let french = format!("/fr/{target}");
     let seo = Seo::new()
         .site_name("FerroSwift")
         .title("FerroSwift")
         .description(fr.description)
         .base_url(site.origin.clone())
-        .canonical("/fr/")
-        .alternate("fr", "/fr/")
-        .alternate("en", "/en/")
-        .alternate("x-default", "/fr/")
+        .canonical(french.clone())
+        .alternate("fr", french.clone())
+        .alternate("en", format!("/en/{target}"))
+        .alternate("x-default", french)
         .image("/og.png")
         .noindex(true);
     let body = main().class("root").child(
@@ -1079,7 +1058,7 @@ pub fn root(site: &Site) -> String {
             .child(ul().children(Lang::ALL.map(|l| {
                 li().child(
                     a().class("btn")
-                        .href(link(&format!("/{}/", l.code())))
+                        .href(link(&format!("/{}/{target}", l.code())))
                         .attr("hreflang", l.code())
                         .attr("lang", l.code())
                         .text(t(l).lang_name),

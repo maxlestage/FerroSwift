@@ -1,6 +1,6 @@
 # FerroSwift website
 
-The presentation site, documentation and live playground of FerroSwift, in French and English, written in Rust with [active](https://github.com/maxlestage/Active).
+The presentation site, documentation and live playground of FerroSwift, in French and English, written in Rust with [active](https://maxlestage.github.io/Active/).
 
 - Pages are rendered by Rust (`src/server/pages.rs`) into static HTML with complete SEO tags (title, description, canonical URL, `hreflang` alternates, Open Graph, JSON-LD).
 - The **playground** (`src/islands.rs`) is an active island: the server renders it with the first example already translated, and the browser hydrates it with the same code compiled to WebAssembly, where `ferroswift_transpiler::transpile` runs on every keystroke.
