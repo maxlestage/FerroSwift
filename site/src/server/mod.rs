@@ -121,7 +121,7 @@ impl Site {
             return self.not_found(Lang::Fr);
         }
         match path {
-            "/" | "/index.html" => return Response::html(200, pages::root(self)),
+            "/" | "/index.html" => return Response::html(200, pages::root(self, "")),
             "/sitemap.xml" => return Response::ok(assets::content_type(path), self.sitemap()),
             "/robots.txt" => return Response::ok(assets::content_type(path), self.robots()),
             "/favicon.svg" | "/og.png" => return self.file(&format!("/static{path}")),

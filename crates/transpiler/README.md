@@ -1,6 +1,6 @@
 # ferroswift-transpiler
 
-The engine of [FerroSwift](https://github.com/maxlestage/FerroSwift): Rust source in, idiomatic Swift (and SwiftUI) out. Pure Rust, it also runs in the browser compiled to WebAssembly.
+The engine of [FerroSwift](https://maxlestage.github.io/FerroSwift/): Rust source in, idiomatic Swift (and SwiftUI) out. Pure Rust, it also runs in the browser compiled to WebAssembly.
 
 ```rust
 let out = ferroswift_transpiler::transpile("fn double(x: i32) -> i32 { x * 2 }");
