@@ -45,7 +45,7 @@ struct Counter: View {
 
 Les vues s'écrivent avec des fonctions Rust ordinaires (`vstack()`, `text()`, `button()`…) du crate [`ferroswift`](crates/ferroswift) : `cargo check` et rust-analyzer les connaissent, et chacune documente le code SwiftUI qu'elle devient. Tout le reste est du Rust normal — structs, enums, traits, `match`, `Option`, `Result`, itérateurs — traduit en Swift tel que vous l'écririez à la main.
 
-📚 **Site web, documentation et bac à sable en direct** (le transpileur compilé en WebAssembly, dans votre navigateur) : [`site/`](site), écrit avec [active](https://github.com/maxlestage/Active). Lancez-le avec `cargo run -p ferroswift-site`.
+📚 **Site web, documentation et bac à sable en direct** (le transpileur compilé en WebAssembly, dans votre navigateur) : [`site/`](site), écrit avec [active](https://maxlestage.github.io/Active/). Lancez-le avec `cargo run -p ferroswift-site`.
 
 ## Pourquoi
 
@@ -58,7 +58,7 @@ Les vues s'écrivent avec des fonctions Rust ordinaires (`vstack()`, `text()`, `
 ## Installation
 
 ```sh
-cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli
+cargo install ferroswift-cli
 ```
 
 ## Démarrage rapide
@@ -152,4 +152,18 @@ Les parties Swift demandent `swiftc` dans le `PATH` (ou `FERROSWIFT_SWIFTC`) et 
 
 ## Licence
 
-[MIT](LICENSE)
+FerroSwift est un logiciel propriétaire : © 2026 Maxime Nathan Lestage, tous
+droits réservés. Ce n'est pas un logiciel open source. Le code source est
+publié sur crates.io et GitHub pour pouvoir être lu, audité et compilé, et
+vous pouvez l'utiliser librement comme dépendance de vos propres programmes,
+y compris commerciaux. Le modifier ou redistribuer son code source demande
+l'accord écrit de l'auteur. Conditions complètes : [LICENSE](LICENSE).
+
+Les contributions (code, documentation, idées) sont les bienvenues et
+rejoignent le projet aux mêmes conditions : en soumettre une, c'est en céder
+les droits à l'auteur, comme l'indique la licence.
+
+## Crédits
+
+Conçu et développé par Maxime Nathan Lestage,
+au sein d'une même famille de projets Rust : [Active](https://maxlestage.github.io/Active/), [Vitesse](https://maxlestage.github.io/Vitesse/), [Securite](https://maxlestage.github.io/Securite/), [Memoire](https://maxlestage.github.io/Memoire/), [Paquets](https://maxlestage.github.io/Paquets/) et [FerroSwift](https://maxlestage.github.io/FerroSwift/).

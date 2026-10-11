@@ -60,7 +60,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-ferroswift = { git = "https://github.com/maxlestage/FerroSwift" }
+ferroswift = "0.1"
 "#;
 
 const LIB: &str = r#"//! The app, in Rust. `ferroswift build` (or `ferroswift watch`) writes its Swift
@@ -113,7 +113,7 @@ const GITIGNORE: &str = "target\nswift/.build\nswift/.swiftpm\n";
 
 const README: &str = r#"# {name}
 
-An app written in Rust and translated to SwiftUI by [FerroSwift](https://github.com/maxlestage/FerroSwift).
+An app written in Rust and translated to SwiftUI by [FerroSwift](https://maxlestage.github.io/FerroSwift/).
 
 - `src/` — the app, in Rust. `cargo check` type-checks it, `cargo test` runs its tests.
 - `swift/` — the Swift package. `swift/Sources/{App}` is generated: do not edit it.

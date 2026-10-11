@@ -30,6 +30,9 @@ mod symbols;
 mod translate;
 mod ty;
 
+/// The version of this crate, e.g. `"0.1.0"` (the FerroSwift crates share it).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub use diag::{Diagnostic, Severity};
 
 use std::collections::BTreeSet;

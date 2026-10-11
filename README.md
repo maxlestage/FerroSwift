@@ -45,7 +45,7 @@ struct Counter: View {
 
 The views are written with ordinary Rust functions (`vstack()`, `text()`, `button()`…) from the [`ferroswift`](crates/ferroswift) crate: `cargo check` and rust-analyzer know them, and each one documents the SwiftUI code it becomes. Everything else is plain Rust — structs, enums, traits, `match`, `Option`, `Result`, iterators — translated into the Swift you would write by hand.
 
-📚 **Website, documentation and live playground** (the transpiler compiled to WebAssembly, in your browser): [`site/`](site), written with [active](https://github.com/maxlestage/Active). Run it with `cargo run -p ferroswift-site`.
+📚 **Website, documentation and live playground** (the transpiler compiled to WebAssembly, in your browser): [`site/`](site), written with [active](https://maxlestage.github.io/Active/). Run it with `cargo run -p ferroswift-site`.
 
 ## Why
 
@@ -58,7 +58,7 @@ The views are written with ordinary Rust functions (`vstack()`, `text()`, `butto
 ## Install
 
 ```sh
-cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli
+cargo install ferroswift-cli
 ```
 
 ## Quick start
@@ -152,4 +152,18 @@ The Swift parts need `swiftc` on the `PATH` (or `FERROSWIFT_SWIFTC`) and are ski
 
 ## License
 
-[MIT](LICENSE)
+FerroSwift is proprietary software: © 2026 Maxime Nathan Lestage, all rights
+reserved. It is not open source. The source code is published on crates.io
+and GitHub so that it can be read, audited and built, and you may use it
+freely as a dependency of your own programs, commercial ones included.
+Modifying it or redistributing its source needs the author's written
+permission. Full terms: [LICENSE](LICENSE).
+
+Contributions (code, documentation, ideas) are welcome and become part of
+the project under the same terms: by submitting one, you assign its rights
+to the author, as the license states.
+
+## Credits
+
+Designed and developed by Maxime Nathan Lestage,
+as part of one family of Rust projects: [Active](https://maxlestage.github.io/Active/), [Vitesse](https://maxlestage.github.io/Vitesse/), [Securite](https://maxlestage.github.io/Securite/), [Memoire](https://maxlestage.github.io/Memoire/), [Paquets](https://maxlestage.github.io/Paquets/) and [FerroSwift](https://maxlestage.github.io/FerroSwift/).
