@@ -769,6 +769,22 @@ impl Symbols {
             if let Some(target) = s.target_of_into(bounds, self_ty) {
                 return Some(target);
             }
+            // `S: AsRef<str>`, `S: Borrow<str>`: the parameter is the text itself.
+            for b in bounds {
+                if let syn::TypeParamBound::Trait(t) = b {
+                    let seg = t.path.segments.last()?;
+                    if matches!(seg.ident.to_string().as_str(), "AsRef" | "Borrow") {
+                        if let syn::PathArguments::AngleBracketed(a) = &seg.arguments {
+                            if let Some(syn::GenericArgument::Type(t)) = a.args.first() {
+                                let target = s.ty(t, self_ty);
+                                if matches!(target, Ty::Str) {
+                                    return Some(target);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             match s.bounds_ty(bounds, self_ty, true) {
                 t @ (Ty::Fn(..) | Ty::Iter(_)) => Some(t),
                 _ => None,
@@ -794,6 +810,11 @@ impl Symbols {
                     }
                 }
             }
+        }
+        // `I: IntoIterator<Item = S>, S: AsRef<str>`: the items are texts too.
+        let snapshot = out.clone();
+        for t in out.values_mut() {
+            *t = substitute(t, &snapshot);
         }
         out
     }
