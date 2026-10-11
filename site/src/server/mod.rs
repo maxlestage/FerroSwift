@@ -9,6 +9,7 @@ pub mod export;
 pub mod i18n;
 pub mod markdown;
 pub mod pages;
+pub mod pwa;
 
 use std::path::{Path, PathBuf};
 
@@ -87,6 +88,17 @@ impl Site {
         }
     }
 
+    /// A short hash of the crate version and of every static file: a new version means a
+    /// new service worker, which replaces the caches of the old one.
+    pub fn version(&self) -> String {
+        let mut all = ferroswift_transpiler::VERSION.to_string();
+        for (url, asset) in self.assets.iter() {
+            all.push_str(url);
+            all.push_str(&asset.version);
+        }
+        assets::hash(all.as_bytes())
+    }
+
     /// Whether the browser bundle has been built (see site/README.md).
     pub fn has_bundle(&self) -> bool {
         self.assets.get(BUNDLE_JS).is_some() && self.assets.get(BUNDLE_WASM).is_some()
@@ -124,9 +136,30 @@ impl Site {
             "/" | "/index.html" => return Response::html(200, pages::root(self, "")),
             "/sitemap.xml" => return Response::ok(assets::content_type(path), self.sitemap()),
             "/robots.txt" => return Response::ok(assets::content_type(path), self.robots()),
+            "/manifest.webmanifest" => return Self::manifest(Lang::Fr),
+            "/sw.js" => {
+                return Response::ok(assets::content_type(path), pwa::worker(self).to_js());
+            }
+            "/offline/" => return Response::html(200, pages::offline(self)),
+            "/offline" => {
+                return Response {
+                    status: 301,
+                    content_type: "text/plain; charset=utf-8",
+                    body: Vec::new(),
+                    location: Some(crate::routes::link("/offline/")),
+                };
+            }
             "/favicon.svg" | "/og.png" => return self.file(&format!("/static{path}")),
             p if p.starts_with("/static/") || p.starts_with("/pkg/") => return self.file(p),
             _ => {}
+        }
+        // The manifest of a language: `/en/manifest.webmanifest`.
+        if let Some(lang) = path
+            .strip_prefix('/')
+            .and_then(|p| p.strip_suffix("/manifest.webmanifest"))
+            .and_then(Lang::parse)
+        {
+            return Self::manifest(lang);
         }
         match Route::parse(path, self.docs.slugs()) {
             Some(route) if route.page == Page::NotFound => self.not_found(route.lang),
@@ -139,6 +172,10 @@ impl Site {
             Some(route) => Response::html(200, self.page(&route)),
             None => self.not_found(Lang::Fr),
         }
+    }
+
+    fn manifest(lang: Lang) -> Response {
+        Response::ok("application/manifest+json", pwa::manifest(lang).to_json())
     }
 
     fn not_found(&self, lang: Lang) -> Response {
