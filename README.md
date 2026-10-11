@@ -45,7 +45,7 @@ struct Counter: View {
 
 The views are written with ordinary Rust functions (`vstack()`, `text()`, `button()`…) from the [`ferroswift`](crates/ferroswift) crate: `cargo check` and rust-analyzer know them, and each one documents the SwiftUI code it becomes. Everything else is plain Rust — structs, enums, traits, `match`, `Option`, `Result`, iterators — translated into the Swift you would write by hand.
 
-📚 **Website, documentation and live playground** (the transpiler compiled to WebAssembly, in your browser): [`site/`](site), written with [active](https://maxlestage.github.io/Active/). Run it with `cargo run -p ferroswift-site`.
+📚 **Website, documentation and live playground** (the transpiler compiled to WebAssembly, in your browser): [`site/`](site), written with [Active](https://maxlestage.github.io/Active/). Run it with `cargo run -p ferroswift-site`.
 
 ## Why
 
@@ -135,7 +135,7 @@ The complete list, and what is not supported, is in [the language guide](site/do
 | [`crates/transpiler`](crates/transpiler) | The translator: syn syntax tree → typed translation → Swift |
 | [`crates/cli`](crates/cli) | The `ferroswift` command |
 | [`examples`](examples) | `counter`, `todo` (model tested with `cargo test`), `showcase` (tabs, navigation, observable model, forms) and `gallery` (every view and modifier of the crate) |
-| [`site`](site) | Website, docs (en/fr) and playground, written with active |
+| [`site`](site) | Website, docs (en/fr) and playground, written with Active |
 
 ## Tests
 

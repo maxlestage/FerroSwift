@@ -45,7 +45,7 @@ struct Counter: View {
 
 Les vues s'écrivent avec des fonctions Rust ordinaires (`vstack()`, `text()`, `button()`…) du crate [`ferroswift`](crates/ferroswift) : `cargo check` et rust-analyzer les connaissent, et chacune documente le code SwiftUI qu'elle devient. Tout le reste est du Rust normal — structs, enums, traits, `match`, `Option`, `Result`, itérateurs — traduit en Swift tel que vous l'écririez à la main.
 
-📚 **Site web, documentation et bac à sable en direct** (le transpileur compilé en WebAssembly, dans votre navigateur) : [`site/`](site), écrit avec [active](https://maxlestage.github.io/Active/). Lancez-le avec `cargo run -p ferroswift-site`.
+📚 **Site web, documentation et bac à sable en direct** (le transpileur compilé en WebAssembly, dans votre navigateur) : [`site/`](site), écrit avec [Active](https://maxlestage.github.io/Active/). Lancez-le avec `cargo run -p ferroswift-site`.
 
 ## Pourquoi
 
@@ -135,7 +135,7 @@ La liste complète, et ce qui n'est pas pris en charge, se trouve dans [le guide
 | [`crates/transpiler`](crates/transpiler) | Le traducteur : arbre syntaxique syn → traduction typée → Swift |
 | [`crates/cli`](crates/cli) | La commande `ferroswift` |
 | [`examples`](examples) | `counter`, `todo` (modèle testé avec `cargo test`), `showcase` (onglets, navigation, modèle observable, formulaires) et `gallery` (toutes les vues et tous les modificateurs du crate) |
-| [`site`](site) | Site web, documentation (en/fr) et bac à sable, écrits avec active |
+| [`site`](site) | Site web, documentation (en/fr) et bac à sable, écrits avec Active |
 
 ## Tests
 

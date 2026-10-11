@@ -318,7 +318,7 @@ fn footer(route: &Route, site: &Site) -> Element {
         .class("wordmark")
         .attr("aria-hidden", "true")
         .children(
-            "ferroswift"
+            "FerroSwift"
                 .chars()
                 .enumerate()
                 .map(|(i, c)| span().style(format!("--i:{i}")).text(c.to_string())),
