@@ -392,6 +392,7 @@ impl Translator<'_> {
                 Ty::Named(self.struct_or_enum_swift(&owner_rust), vec![]),
             );
         }
+        self.call_span = Some(c.func.span());
         if let Some(ex) = self.std_path_call(&segs, &c.args, expected, &turbofish) {
             return ex;
         }
@@ -631,8 +632,20 @@ impl Translator<'_> {
                     tys.push(v.ty);
                     continue;
                 }
-                let ty = self.place_ty(inner);
-                let place = self.place(inner);
+                if let (Some(p), Expr::Path(path)) = (param, inner) {
+                    if let Some(id) = path.path.get_ident() {
+                        self.retype_literals(&id.to_string(), &p.ty);
+                    }
+                }
+                let mut ty = self.place_ty(inner);
+                let mut place = self.place(inner);
+                // `bump(self.total)` with a `&mut i64` kept in the struct: its place.
+                if let Ty::Named(n, a) = &ty {
+                    if n == "RsMut" {
+                        place = format!("{place}.value");
+                        ty = a.first().cloned().unwrap_or(Ty::Unknown);
+                    }
+                }
                 // `let mut out = Vec::new(); fill(&mut out)`: the parameter tells the type.
                 if let (Some(p), Expr::Path(path)) = (param, inner) {
                     if let Some(id) = path.path.get_ident() {
@@ -1091,7 +1104,7 @@ impl Translator<'_> {
                 let b = arg(self, 1, &a.ty);
                 let shared = matches!(&a.ty, Ty::Named(n, _) if n == "RsRefCell")
                     || self.is_recursive_class(&a.ty)
-                    || matches!(&a.ty, Ty::Dyn(_));
+                    || matches!(&a.ty, Ty::Dyn(..));
                 if !shared {
                     self.warn(
                         args.span(),
@@ -1136,6 +1149,22 @@ impl Translator<'_> {
                 Some(Ex::primary("rsYieldNow()", Ty::Unit))
             }
             // `thread::scope(|s| { s.spawn(…); })`: the tasks spawned finish with the scope.
+            // `panic::catch_unwind(|| …)`: `Err` when the closure panics.
+            ("panic", "catch_unwind") if args.len() == 1 => {
+                self.helper("panic");
+                let f = arg(self, 0, &Ty::Fn(vec![], Box::new(Ty::Unknown)));
+                let ret = match &f.ty {
+                    Ty::Fn(_, r) => (**r).clone(),
+                    _ => Ty::Unknown,
+                };
+                Some(Ex::primary(
+                    format!("rsCatchUnwind({})", f.code),
+                    Ty::Result(
+                        Box::new(ret),
+                        Box::new(Ty::Named("RsJoinError".into(), vec![])),
+                    ),
+                ))
+            }
             ("thread", "scope") if args.len() == 1 => {
                 self.helper("thread");
                 let f = arg(
@@ -1150,7 +1179,14 @@ impl Translator<'_> {
                     Ty::Fn(_, r) => (**r).clone(),
                     _ => Ty::Unknown,
                 };
-                Some(Ex::primary(format!("rsThreadScope({})", f.code), ret))
+                let loc = self
+                    .call_span
+                    .map(|span| crate::expr::swift_string(&self.panic_location(span)))
+                    .unwrap_or_else(|| "\"\"".into());
+                Some(Ex::primary(
+                    format!("rsThreadScope({loc}, {})", f.code),
+                    ret,
+                ))
             }
             // `mpsc::channel()`: the type of the values is learned from the sends.
             ("mpsc", "channel" | "sync_channel") => {
@@ -1445,6 +1481,22 @@ impl Translator<'_> {
     // ----- Method calls -----
 
     pub fn method_call(&mut self, m: &ExprMethodCall, expected: &Ty) -> Ex {
+        // `v.iter().map(|m| *m)`: the parameter of the closure is a reference.
+        let items = crate::expr::chain_ref_depth(&m.receiver);
+        if items > 0 {
+            let extra = match m.method.to_string().as_str() {
+                "map" | "for_each" | "any" | "all" | "position" | "filter_map" | "find_map"
+                | "flat_map" | "max_by_key" | "min_by_key" | "inspect" | "take_while"
+                | "skip_while" => Some(0),
+                "filter" | "find" => Some(1),
+                _ => None,
+            };
+            if let (Some(extra), Some(Expr::Closure(c))) = (extra, m.args.first()) {
+                let start = c.or1_token.span.start();
+                self.ref_closures
+                    .insert((start.line, start.column), items + extra);
+            }
+        }
         // `q.remove(i)` of a `VecDeque`: an `Option`, unlike `Vec::remove`.
         if matches!(
             m.method.to_string().as_str(),
@@ -1634,6 +1686,13 @@ impl Translator<'_> {
         if value_results {
             self.result_values -= 1;
         }
+        // `None::<i32>.unwrap()`: a bare `nil` has no members.
+        let recv = match &recv.ty {
+            Ty::Option(t) if recv.code == "nil" && t.is_complete() => {
+                Ex::primary(format!("(nil as {}?)", t.swift_lossy()), recv.ty.clone())
+            }
+            _ => recv,
+        };
         // `name.len()` on a type with `impl Deref<Target = String>`: a method of the target.
         let recv = match self.deref_target(&recv.ty) {
             Some(target)
@@ -1661,7 +1720,13 @@ impl Translator<'_> {
                     && !(name == "to_string" && self.displays(&recv.ty)) =>
             {
                 let recv = self.settle(recv);
-                Ex::primary(format!("{}.deref()", wrap(&recv, P_PRIMARY)), target)
+                // `self.log.push(x)` through a `&mut Vec`: a place, which can change.
+                let member = if recv.ty.named() == Some("RsMut") {
+                    "value"
+                } else {
+                    "deref()"
+                };
+                Ex::primary(format!("{}.{member}", wrap(&recv, P_PRIMARY)), target)
             }
             _ => recv,
         };
@@ -2112,7 +2177,7 @@ impl Translator<'_> {
     /// The `Target` of the type's `impl Deref`, if it has one.
     pub fn deref_target(&self, ty: &Ty) -> Option<Ty> {
         match ty {
-            Ty::Named(n, a) if n == "RsCow" || n == "RsRc" => a.first().cloned(),
+            Ty::Named(n, a) if n == "RsCow" || n == "RsRc" || n == "RsMut" => a.first().cloned(),
             Ty::Named(n, _) => self.syms.derefs.get(n).cloned(),
             _ => None,
         }
@@ -2156,19 +2221,32 @@ impl Translator<'_> {
                 let sig = self.syms.methods.get(&rust)?.get(name)?;
                 Some((sig.clone(), n.clone()))
             }
-            Ty::Unknown | Ty::Dyn(_) | Ty::Opaque(_) => {
+            Ty::Unknown | Ty::Dyn(..) | Ty::Opaque(_) => {
                 if std_method_name(name) {
                     return None;
                 }
                 // `cmd.undo(…)` on a `dyn Command`: the trait's own signature.
-                if let Ty::Dyn(proto) | Ty::Opaque(proto) = ty {
+                let (proto, args) = match ty {
+                    Ty::Dyn(p, args) => (Some(p), args.clone()),
+                    Ty::Opaque(p) => (Some(p), vec![]),
+                    _ => (None, vec![]),
+                };
+                if let Some(proto) = proto {
                     let declared = self
                         .syms
                         .trait_methods
                         .iter()
                         .find(|(t, _)| names::upper_camel(t) == *proto)
                         .and_then(|(t, ms)| ms.get(name).map(|s| (s.clone(), t.clone())));
-                    if let Some((sig, owner)) = declared {
+                    if let Some((mut sig, owner)) = declared {
+                        // `c.convert(x)` on a `dyn Converter<f64>`: `T` is `f64`.
+                        if let Some(params) = self.syms.trait_generics.get(&owner) {
+                            let map: std::collections::HashMap<String, Ty> =
+                                params.iter().cloned().zip(args).collect();
+                            if !map.is_empty() {
+                                sig = sig.substituted(&map);
+                            }
+                        }
                         return Some((sig, names::upper_camel(&owner)));
                     }
                 }
@@ -4588,7 +4666,7 @@ impl Translator<'_> {
             _ => {}
         }
         // Anything else: same name, in lowerCamelCase.
-        if !rty.is_unknown() && !matches!(rty, Ty::Named(..) | Ty::Dyn(_) | Ty::Opaque(_)) {
+        if !rty.is_unknown() && !matches!(rty, Ty::Named(..) | Ty::Dyn(..) | Ty::Opaque(_)) {
             self.warn(
                 span,
                 format!(

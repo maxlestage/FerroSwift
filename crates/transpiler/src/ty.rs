@@ -46,12 +46,12 @@ impl IntKind {
             IntKind::I32 | IntKind::I64 | IntKind::Isize | IntKind::Usize => "Int",
             IntKind::I8 => "Int8",
             IntKind::I16 => "Int16",
-            IntKind::I128 => "Int128",
+            IntKind::I128 => "RsInt128",
             IntKind::U8 => "UInt8",
             IntKind::U16 => "UInt16",
             IntKind::U32 => "UInt32",
             IntKind::U64 => "UInt64",
-            IntKind::U128 => "UInt128",
+            IntKind::U128 => "RsUInt128",
         }
     }
 
@@ -61,13 +61,17 @@ impl IntKind {
             "Int8" | "UInt8" => 8,
             "Int16" | "UInt16" => 16,
             "UInt32" => 32,
-            "Int128" | "UInt128" => 128,
+            "RsInt128" | "RsUInt128" => 128,
             _ => 64,
         }
     }
 
+    /// The Swift type is signed (`usize` is Swift's `Int`).
     pub fn signed(self) -> bool {
-        !self.swift().starts_with('U')
+        !matches!(
+            self,
+            IntKind::U8 | IntKind::U16 | IntKind::U32 | IntKind::U64 | IntKind::U128
+        )
     }
 
     /// Bits of the Rust type.
@@ -125,8 +129,8 @@ pub enum Ty {
     Iter(Box<Ty>),
     /// A user type, a generic parameter, or a library type, with its arguments.
     Named(String, Vec<Ty>),
-    /// `dyn Trait`: `any Trait`.
-    Dyn(String),
+    /// `dyn Trait`, `dyn Converter<f64>`: `any Trait`, `any Converter<Double>`.
+    Dyn(String, Vec<Ty>),
     /// `impl Trait` in argument or return position: `some Trait`.
     Opaque(String),
     /// A SwiftUI view built with the ferroswift functions.
@@ -292,7 +296,7 @@ impl Ty {
                 out.push('>');
             }
             Ty::Option(t) => {
-                let wrap = matches!(**t, Ty::Fn(..) | Ty::Dyn(_) | Ty::Opaque(_));
+                let wrap = matches!(**t, Ty::Fn(..) | Ty::Dyn(..) | Ty::Opaque(_));
                 if wrap {
                     out.push('(');
                 }
@@ -375,8 +379,18 @@ impl Ty {
                     out.push('>');
                 }
             }
-            Ty::Dyn(name) => {
+            Ty::Dyn(name, args) => {
                 let _ = write!(out, "any {name}");
+                if !args.is_empty() {
+                    out.push('<');
+                    for (i, t) in args.iter().enumerate() {
+                        if i > 0 {
+                            out.push_str(", ");
+                        }
+                        t.write_swift(out);
+                    }
+                    out.push('>');
+                }
             }
             Ty::Opaque(name) => {
                 let _ = write!(out, "some {name}");

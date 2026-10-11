@@ -46,8 +46,10 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("array_cmp", &[], ARRAY_CMP),
     ("link", &[], LINK),
     ("rc", &["debug"], RC),
-    ("panic", &["debug"], PANIC),
-    ("thread", &["debug", "duration"], THREAD),
+    ("mutref", &["debug"], MUTREF),
+    ("int128", &["debug"], INT128),
+    ("panic", &["debug", "debug_custom"], PANIC),
+    ("thread", &["debug", "duration", "panic"], THREAD),
     ("cow", &["debug"], COW),
     ("result", &[], RESULT),
     ("int", &[], INT),
@@ -258,11 +260,17 @@ func rsDebugRecord(_ name: String, _ fields: [(String, Any)], pretty: Bool, styl
 }
 
 /// An integer in `{:?}`; in `{:x?}`, its two's complement in the width of its type.
+/// `i128` and `u128` (`RsInt128`, `RsUInt128`): integers for `{:?}`.
+protocol RsWideInteger {
+    func rsHex(uppercase: Bool) -> String
+}
+
 private func rsDebugInt(_ value: Any, _ hex: Character?, prefix: Bool) -> String {
     guard let hex else { return "\(value)" }
     let upper = hex == "X"
     let digits: String
     switch value {
+    case let v as RsWideInteger: digits = v.rsHex(uppercase: upper)
     case let v as Int: digits = String(UInt(bitPattern: v), radix: 16, uppercase: upper)
     case let v as Int8: digits = String(UInt8(bitPattern: v), radix: 16, uppercase: upper)
     case let v as Int16: digits = String(UInt16(bitPattern: v), radix: 16, uppercase: upper)
@@ -494,7 +502,7 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
     case is Bool:
         out += style.pad("\(value)", numeric: false)
         return
-    case is Int, is Int8, is Int16, is Int32, is Int64, is UInt, is UInt8, is UInt16, is UInt32, is UInt64:
+    case is Int, is Int8, is Int16, is Int32, is Int64, is UInt, is UInt8, is UInt16, is UInt32, is UInt64, is RsWideInteger:
         if style.hex != nil && pretty && style.zero, let width = style.width {
             out += "0x" + rsPadZero(rsDebugInt(value, style.hex, prefix: false), width - 2)
         } else {
@@ -698,7 +706,7 @@ final class RsFormatter {
         case let b as Bool: pad(b ? "true" : "false")
         case let d as Double: number(style.precision.map { rsFixed(d, $0) } ?? rsDisplay(d))
         case let x as Float: number(style.precision.map { rsFixed(x, $0) } ?? rsDisplay(x))
-        case is Int, is Int8, is Int16, is Int32, is Int64, is UInt, is UInt8, is UInt16, is UInt32, is UInt64:
+        case is Int, is Int8, is Int16, is Int32, is Int64, is UInt, is UInt8, is UInt16, is UInt32, is UInt64, is RsWideInteger:
             number("\(value)")
         default: out += "\(value)"
         }
@@ -2516,13 +2524,20 @@ const THREAD: &str = r#"
 /// its threads are joined, without data races.
 final class RsTask: @unchecked Sendable {
     var run: (() -> Void)?
+    /// The thread panicked: its `join` returns an error.
+    var panicked = false
+    var joined = false
+
     init(_ run: @escaping () -> Void) { self.run = run }
 
+    /// Runs the task on a thread of its own and waits for it: a panic ends that thread
+    /// alone, as in Rust.
     func finish() {
-        if let run {
-            self.run = nil
-            run()
-        }
+        guard let run else { return }
+        self.run = nil
+        let context = RsPanicContext(name: "<unnamed>")
+        context.run(RsThreadBody(run))
+        panicked = context.panicked
     }
 }
 
@@ -2554,14 +2569,10 @@ final class RsJoinHandle<T>: @unchecked Sendable {
 
     func join() -> Result<T, RsJoinError> {
         task?.finish()
+        task?.joined = true
+        if task?.panicked == true { return .failure(RsJoinError()) }
         return .success(result!)
     }
-}
-
-/// The error of `join` (a thread that panicked, which stops the Swift program instead).
-struct RsJoinError: Error, CustomStringConvertible, RsDebugCustom {
-    var description: String { "Any { .. }" }
-    var rsDebugText: String { "Any { .. }" }
 }
 
 func rsSpawn<T>(_ body: @escaping () -> T) -> RsJoinHandle<T> {
@@ -2593,10 +2604,14 @@ final class RsScope: @unchecked Sendable {
     }
 }
 
-func rsThreadScope<T>(_ body: (RsScope) -> T) -> T {
+func rsThreadScope<T>(_ location: String, _ body: (RsScope) -> T) -> T {
     let scope = RsScope()
     let result = body(scope)
     for task in scope.tasks { task.finish() }
+    // A thread that panicked and was not joined makes the scope panic.
+    if scope.tasks.contains(where: { $0.panicked && !$0.joined }) {
+        rsPanic("a scoped thread panicked", location)
+    }
     return result
 }
 
@@ -2760,9 +2775,69 @@ const PANIC: &str = r#"
 /// A Rust panic: what Rust's default hook writes to the standard error, then exit status 101.
 func rsPanic(_ message: String, _ location: String) -> Never {
     fflush(nil)
-    let text = "\nthread 'main' (\(getpid())) panicked at \(location):\n\(message)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    let thread = RsPanics.threads.last
+    var text = "\nthread '\(thread?.name ?? "main")' (\(getpid())) panicked at \(location):\n\(message)\n"
+    if !RsPanics.noted {
+        RsPanics.noted = true
+        text += "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    }
     FileHandle.standardError.write(Data(text.utf8))
+    // A spawned thread: only the thread ends, and its `join` returns an error.
+    if let thread {
+        thread.panicked = true
+        RsPanics.threads.removeLast()
+        thread.done.signal()
+        pthread_exit(nil)
+    }
     exit(101)
+}
+
+/// A spawned thread running: the one that panics, when `rsPanic` is called.
+final class RsPanicContext: @unchecked Sendable {
+    let name: String
+    var panicked = false
+    let done = DispatchSemaphore(value: 0)
+    init(name: String) { self.name = name }
+
+    /// Runs `body` on a thread of its own and waits for it: a panic ends that thread only.
+    func run(_ body: RsThreadBody) {
+        let thread = Thread { [self] in
+            RsPanics.threads.append(self)
+            body.run()
+            RsPanics.threads.removeLast()
+            done.signal()
+        }
+        thread.stackSize = 8 << 20
+        thread.start()
+        done.wait()
+    }
+}
+
+final class RsThreadBody: @unchecked Sendable {
+    let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
+}
+
+/// The error of `join` and `catch_unwind`: the thread panicked.
+struct RsJoinError: Error, CustomStringConvertible, RsDebugCustom {
+    var description: String { "Any { .. }" }
+    var rsDebugText: String { "Any { .. }" }
+}
+
+/// `std::panic::catch_unwind(|| …)`: a panic in the closure gives an error.
+func rsCatchUnwind<T>(_ body: @escaping () -> T) -> Result<T, RsJoinError> {
+    var result: T? = nil
+    let context = RsPanicContext(name: RsPanics.threads.last?.name ?? "main")
+    context.run(RsThreadBody { result = body() })
+    if context.panicked { return .failure(RsJoinError()) }
+    return .success(result!)
+}
+
+enum RsPanics {
+    /// Rust's note on backtraces follows the first panic only.
+    nonisolated(unsafe) static var noted = false
+    /// The spawned threads running, innermost last (one runs at a time).
+    nonisolated(unsafe) static var threads: [RsPanicContext] = []
 }
 
 extension String {
@@ -2851,12 +2926,14 @@ func rsAssertCmp<A, B>(_ a: A, _ b: B, _ op: String, _ location: String, _ messa
 
 extension Optional {
     /// `opt.unwrap()`.
+    @discardableResult
     func rsUnwrap(_ location: String) -> Wrapped {
         guard let value = self else { rsPanic("called `Option::unwrap()` on a `None` value", location) }
         return value
     }
 
     /// `opt.expect("…")`.
+    @discardableResult
     func rsExpect(_ message: String, _ location: String) -> Wrapped {
         guard let value = self else { rsPanic(message, location) }
         return value
@@ -2865,6 +2942,7 @@ extension Optional {
 
 extension Result {
     /// `result.unwrap()`, `result.expect("…")`.
+    @discardableResult
     func rsUnwrap(_ location: String, _ message: String? = nil) -> Success {
         switch self {
         case .success(let value):
@@ -2876,6 +2954,7 @@ extension Result {
     }
 
     /// `result.unwrap_err()`, `result.expect_err("…")`.
+    @discardableResult
     func rsUnwrapErr(_ location: String, _ message: String? = nil) -> Failure {
         switch self {
         case .success(let value):
@@ -2888,6 +2967,7 @@ extension Result {
 }
 
 /// `f()?.unwrap()` of a throwing call: its value, or the panic of `Result::unwrap`.
+@discardableResult
 func rsTryUnwrap<T>(_ location: String, _ message: String? = nil, _ body: () throws -> T) -> T {
     do {
         return try body()
@@ -3953,5 +4033,411 @@ extension String {
     var rsChars: LazyMapSequence<String.UnicodeScalarView, Character> {
         unicodeScalars.lazy.map { Character($0) }
     }
+}
+"#;
+
+const MUTREF: &str = r#"
+/// A `&mut T` kept in a struct (`struct Counter<'a> { count: &'a mut i32 }`): reads and
+/// writes go to the place it was taken from.
+final class RsMut<T> {
+    private let read: () -> T
+    private let write: (T) -> Void
+
+    init(get: @escaping () -> T, set: @escaping (T) -> Void) {
+        read = get
+        write = set
+    }
+
+    var value: T {
+        get { read() }
+        set { write(newValue) }
+    }
+}
+
+extension RsMut: RsDebugText {
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebug(value, pretty: pretty, style: style)
+    }
+}
+
+extension RsMut: CustomStringConvertible {
+    var description: String { String(describing: value) }
+}
+
+extension RsMut: Equatable where T: Equatable {
+    static func == (lhs: RsMut, rhs: RsMut) -> Bool { lhs.value == rhs.value }
+}
+"#;
+
+const INT128: &str = r#"
+/// `u128`: Swift's `UInt128` needs iOS 18 and macOS 15.
+struct RsUInt128: FixedWidthInteger, UnsignedInteger, Hashable, Sendable {
+    var hi: UInt64
+    var lo: UInt64
+
+    typealias Magnitude = RsUInt128
+    typealias IntegerLiteralType = StaticBigInt
+    typealias Words = [UInt]
+
+    init(hi: UInt64, lo: UInt64) {
+        self.hi = hi
+        self.lo = lo
+    }
+
+    init() { self.init(hi: 0, lo: 0) }
+    init(bitPattern v: RsInt128) { self = v.bits }
+    init(integerLiteral value: StaticBigInt) {
+        precondition(value.signum() >= 0 && value.bitWidth <= 129, "integer literal overflows u128")
+        self.init(literal: value)
+    }
+
+    /// The low 128 bits of a literal, in two's complement.
+    init(literal value: StaticBigInt) {
+        var bits = RsUInt128()
+        for i in 0..<(128 / UInt.bitWidth) {
+            bits |= RsUInt128(hi: 0, lo: UInt64(truncatingIfNeeded: value[i])) &<< RsUInt128(hi: 0, lo: UInt64(i * UInt.bitWidth))
+        }
+        self = bits
+    }
+    init(_truncatingBits bits: UInt) { self.init(hi: 0, lo: UInt64(bits)) }
+
+    static var bitWidth: Int { 128 }
+    static var max: RsUInt128 { RsUInt128(hi: .max, lo: .max) }
+    static var min: RsUInt128 { RsUInt128() }
+    static var zero: RsUInt128 { RsUInt128() }
+
+    var magnitude: RsUInt128 { self }
+    var words: [UInt] { [UInt(truncatingIfNeeded: lo), UInt(truncatingIfNeeded: hi)] }
+    var nonzeroBitCount: Int { hi.nonzeroBitCount + lo.nonzeroBitCount }
+    var leadingZeroBitCount: Int { hi == 0 ? 64 + lo.leadingZeroBitCount : hi.leadingZeroBitCount }
+    var trailingZeroBitCount: Int { lo == 0 ? 64 + hi.trailingZeroBitCount : lo.trailingZeroBitCount }
+    var byteSwapped: RsUInt128 { RsUInt128(hi: lo.byteSwapped, lo: hi.byteSwapped) }
+
+    func addingReportingOverflow(_ other: RsUInt128) -> (partialValue: RsUInt128, overflow: Bool) {
+        let (lo, carry) = lo.addingReportingOverflow(other.lo)
+        let (h1, o1) = hi.addingReportingOverflow(other.hi)
+        let (h2, o2) = h1.addingReportingOverflow(carry ? 1 : 0)
+        return (RsUInt128(hi: h2, lo: lo), o1 || o2)
+    }
+
+    func subtractingReportingOverflow(_ other: RsUInt128) -> (partialValue: RsUInt128, overflow: Bool) {
+        let (lo, borrow) = lo.subtractingReportingOverflow(other.lo)
+        let (h1, o1) = hi.subtractingReportingOverflow(other.hi)
+        let (h2, o2) = h1.subtractingReportingOverflow(borrow ? 1 : 0)
+        return (RsUInt128(hi: h2, lo: lo), o1 || o2)
+    }
+
+    func multipliedFullWidth(by other: RsUInt128) -> (high: RsUInt128, low: RsUInt128) {
+        let ll = lo.multipliedFullWidth(by: other.lo)
+        let lh = lo.multipliedFullWidth(by: other.hi)
+        let hl = hi.multipliedFullWidth(by: other.lo)
+        let hh = hi.multipliedFullWidth(by: other.hi)
+        var carry: UInt64 = 0
+        func add(_ a: UInt64, _ b: UInt64) -> UInt64 {
+            let (s, o) = a.addingReportingOverflow(b)
+            if o { carry += 1 }
+            return s
+        }
+        let r0 = ll.low
+        var r1 = add(ll.high, lh.low)
+        r1 = add(r1, hl.low)
+        let c1 = carry
+        carry = 0
+        var r2 = add(hh.low, lh.high)
+        r2 = add(r2, hl.high)
+        r2 = add(r2, c1)
+        let r3 = hh.high &+ carry
+        return (RsUInt128(hi: r3, lo: r2), RsUInt128(hi: r1, lo: r0))
+    }
+
+    func multipliedReportingOverflow(by other: RsUInt128) -> (partialValue: RsUInt128, overflow: Bool) {
+        let (high, low) = multipliedFullWidth(by: other)
+        return (low, high != .zero)
+    }
+
+    /// Long division, bit by bit.
+    static func divMod(_ a: RsUInt128, _ b: RsUInt128) -> (RsUInt128, RsUInt128) {
+        if b.hi == 0 && a.hi == 0 { return (RsUInt128(hi: 0, lo: a.lo / b.lo), RsUInt128(hi: 0, lo: a.lo % b.lo)) }
+        if a < b { return (.zero, a) }
+        var q = RsUInt128.zero
+        var r = RsUInt128.zero
+        for i in stride(from: 127 - a.leadingZeroBitCount, through: 0, by: -1) {
+            r = r &<< 1
+            if a.bit(i) { r.lo |= 1 }
+            if r >= b {
+                r = r &- b
+                q.setBit(i)
+            }
+        }
+        return (q, r)
+    }
+
+    func bit(_ i: Int) -> Bool { i < 64 ? (lo >> UInt64(i)) & 1 == 1 : (hi >> UInt64(i - 64)) & 1 == 1 }
+    mutating func setBit(_ i: Int) {
+        if i < 64 { lo |= 1 << UInt64(i) } else { hi |= 1 << UInt64(i - 64) }
+    }
+
+    func dividedReportingOverflow(by other: RsUInt128) -> (partialValue: RsUInt128, overflow: Bool) {
+        if other == .zero { return (self, true) }
+        return (RsUInt128.divMod(self, other).0, false)
+    }
+
+    func remainderReportingOverflow(dividingBy other: RsUInt128) -> (partialValue: RsUInt128, overflow: Bool) {
+        if other == .zero { return (self, true) }
+        return (RsUInt128.divMod(self, other).1, false)
+    }
+
+    func dividingFullWidth(_ dividend: (high: RsUInt128, low: RsUInt128)) -> (quotient: RsUInt128, remainder: RsUInt128) {
+        precondition(self != .zero, "Division by zero")
+        var q = RsUInt128.zero
+        var r = RsUInt128.zero
+        for i in stride(from: 255, through: 0, by: -1) {
+            let top = r.hi >> 63 == 1
+            r = r &<< 1
+            if i >= 128 ? dividend.high.bit(i - 128) : dividend.low.bit(i) { r.lo |= 1 }
+            if top || r >= self {
+                r = r &- self
+                if i < 128 { q.setBit(i) }
+            }
+        }
+        return (q, r)
+    }
+
+    static func == (a: RsUInt128, b: RsUInt128) -> Bool { a.hi == b.hi && a.lo == b.lo }
+    static func < (a: RsUInt128, b: RsUInt128) -> Bool { a.hi != b.hi ? a.hi < b.hi : a.lo < b.lo }
+
+    static func + (a: RsUInt128, b: RsUInt128) -> RsUInt128 {
+        let (r, o) = a.addingReportingOverflow(b)
+        precondition(!o, "arithmetic overflow")
+        return r
+    }
+    static func - (a: RsUInt128, b: RsUInt128) -> RsUInt128 {
+        let (r, o) = a.subtractingReportingOverflow(b)
+        precondition(!o, "arithmetic overflow")
+        return r
+    }
+    static func * (a: RsUInt128, b: RsUInt128) -> RsUInt128 {
+        let (r, o) = a.multipliedReportingOverflow(by: b)
+        precondition(!o, "arithmetic overflow")
+        return r
+    }
+    static func / (a: RsUInt128, b: RsUInt128) -> RsUInt128 {
+        precondition(b != .zero, "Division by zero")
+        return divMod(a, b).0
+    }
+    static func % (a: RsUInt128, b: RsUInt128) -> RsUInt128 {
+        precondition(b != .zero, "Division by zero in remainder operation")
+        return divMod(a, b).1
+    }
+    static func += (a: inout RsUInt128, b: RsUInt128) { a = a + b }
+    static func -= (a: inout RsUInt128, b: RsUInt128) { a = a - b }
+    static func *= (a: inout RsUInt128, b: RsUInt128) { a = a * b }
+    static func /= (a: inout RsUInt128, b: RsUInt128) { a = a / b }
+    static func %= (a: inout RsUInt128, b: RsUInt128) { a = a % b }
+
+    static prefix func ~ (a: RsUInt128) -> RsUInt128 { RsUInt128(hi: ~a.hi, lo: ~a.lo) }
+    static func &= (a: inout RsUInt128, b: RsUInt128) { a = RsUInt128(hi: a.hi & b.hi, lo: a.lo & b.lo) }
+    static func |= (a: inout RsUInt128, b: RsUInt128) { a = RsUInt128(hi: a.hi | b.hi, lo: a.lo | b.lo) }
+    static func ^= (a: inout RsUInt128, b: RsUInt128) { a = RsUInt128(hi: a.hi ^ b.hi, lo: a.lo ^ b.lo) }
+
+    static func &>>= (a: inout RsUInt128, b: RsUInt128) {
+        let s = Int(b.lo & 127)
+        if s == 0 { return }
+        if s >= 64 {
+            a = RsUInt128(hi: 0, lo: a.hi >> UInt64(s - 64))
+        } else {
+            a = RsUInt128(hi: a.hi >> UInt64(s), lo: (a.lo >> UInt64(s)) | (a.hi << UInt64(64 - s)))
+        }
+    }
+    static func &<<= (a: inout RsUInt128, b: RsUInt128) {
+        let s = Int(b.lo & 127)
+        if s == 0 { return }
+        if s >= 64 {
+            a = RsUInt128(hi: a.lo << UInt64(s - 64), lo: 0)
+        } else {
+            a = RsUInt128(hi: (a.hi << UInt64(s)) | (a.lo >> UInt64(64 - s)), lo: a.lo << UInt64(s))
+        }
+    }
+    static func &>> (a: RsUInt128, b: RsUInt128) -> RsUInt128 { var a = a; a &>>= b; return a }
+    static func &<< (a: RsUInt128, b: RsUInt128) -> RsUInt128 { var a = a; a &<<= b; return a }
+
+    var description: String {
+        if hi == 0 { return String(lo) }
+        var digits: [String] = []
+        var n = self
+        let chunk = RsUInt128(hi: 0, lo: 10_000_000_000_000_000_000)
+        while n != .zero {
+            let (q, r) = RsUInt128.divMod(n, chunk)
+            digits.append(String(r.lo))
+            n = q
+        }
+        var out = digits.removeLast()
+        for d in digits.reversed() { out += String(repeating: "0", count: 19 - d.count) + d }
+        return out
+    }
+}
+
+/// `i128`: Swift's `Int128` needs iOS 18 and macOS 15. Two's complement on 128 bits.
+struct RsInt128: FixedWidthInteger, SignedInteger, Hashable, Sendable {
+    var bits: RsUInt128
+
+    typealias Magnitude = RsUInt128
+    typealias IntegerLiteralType = StaticBigInt
+    typealias Words = [UInt]
+
+    init(bits: RsUInt128) { self.bits = bits }
+    init(bitPattern v: RsUInt128) { bits = v }
+    init() { self.init(bits: .zero) }
+    init(integerLiteral value: StaticBigInt) {
+        precondition(value.bitWidth <= 128, "integer literal overflows i128")
+        bits = RsUInt128(literal: value)
+    }
+    init(_truncatingBits b: UInt) { bits = RsUInt128(_truncatingBits: b) }
+
+    static var bitWidth: Int { 128 }
+    static var max: RsInt128 { RsInt128(bits: RsUInt128(hi: UInt64(Int64.max), lo: .max)) }
+    static var min: RsInt128 { RsInt128(bits: RsUInt128(hi: 1 << 63, lo: 0)) }
+    static var zero: RsInt128 { RsInt128() }
+
+    var isNegative: Bool { bits.hi >> 63 == 1 }
+    var magnitude: RsUInt128 { isNegative ? (~bits &+ 1) : bits }
+    var words: [UInt] { bits.words }
+    var nonzeroBitCount: Int { bits.nonzeroBitCount }
+    var leadingZeroBitCount: Int { bits.leadingZeroBitCount }
+    var trailingZeroBitCount: Int { bits.trailingZeroBitCount }
+    var byteSwapped: RsInt128 { RsInt128(bits: bits.byteSwapped) }
+
+    /// The value of sign `negative` and magnitude `m`, if it fits.
+    static func signed(_ negative: Bool, _ m: RsUInt128) -> (RsInt128, Bool) {
+        let limit = RsUInt128(hi: 1 << 63, lo: 0)
+        if negative {
+            return (RsInt128(bits: ~m &+ 1), m > limit)
+        }
+        return (RsInt128(bits: m), m >= limit)
+    }
+
+    func addingReportingOverflow(_ o: RsInt128) -> (partialValue: RsInt128, overflow: Bool) {
+        let r = RsInt128(bits: bits &+ o.bits)
+        return (r, isNegative == o.isNegative && r.isNegative != isNegative)
+    }
+
+    func subtractingReportingOverflow(_ o: RsInt128) -> (partialValue: RsInt128, overflow: Bool) {
+        let r = RsInt128(bits: bits &- o.bits)
+        return (r, isNegative != o.isNegative && r.isNegative != isNegative)
+    }
+
+    func multipliedReportingOverflow(by o: RsInt128) -> (partialValue: RsInt128, overflow: Bool) {
+        let (high, low) = magnitude.multipliedFullWidth(by: o.magnitude)
+        let (r, overflow) = RsInt128.signed(isNegative != o.isNegative, low)
+        return (r, overflow || high != .zero)
+    }
+
+    func multipliedFullWidth(by o: RsInt128) -> (high: RsInt128, low: RsUInt128) {
+        var (high, low) = magnitude.multipliedFullWidth(by: o.magnitude)
+        if isNegative != o.isNegative {
+            // Negate the 256-bit value.
+            high = ~high
+            low = ~low
+            let (l, c) = low.addingReportingOverflow(1)
+            low = l
+            if c { high = high &+ 1 }
+        }
+        return (RsInt128(bits: high), low)
+    }
+
+    func dividedReportingOverflow(by o: RsInt128) -> (partialValue: RsInt128, overflow: Bool) {
+        if o == .zero || (self == .min && o == -1) { return (self, true) }
+        let q = RsUInt128.divMod(magnitude, o.magnitude).0
+        return (RsInt128.signed(isNegative != o.isNegative, q).0, false)
+    }
+
+    func remainderReportingOverflow(dividingBy o: RsInt128) -> (partialValue: RsInt128, overflow: Bool) {
+        if o == .zero { return (self, true) }
+        if self == .min && o == -1 { return (.zero, true) }
+        let r = RsUInt128.divMod(magnitude, o.magnitude).1
+        return (RsInt128.signed(isNegative, r).0, false)
+    }
+
+    func dividingFullWidth(_ dividend: (high: RsInt128, low: RsUInt128)) -> (quotient: RsInt128, remainder: RsInt128) {
+        let negative = dividend.high.isNegative
+        var high = dividend.high.bits
+        var low = dividend.low
+        if negative {
+            high = ~high
+            low = ~low
+            let (l, c) = low.addingReportingOverflow(1)
+            low = l
+            if c { high = high &+ 1 }
+        }
+        let (q, r) = magnitude.dividingFullWidth((high, low))
+        return (RsInt128.signed(negative != isNegative, q).0, RsInt128.signed(negative, r).0)
+    }
+
+    static func == (a: RsInt128, b: RsInt128) -> Bool { a.bits == b.bits }
+    static func < (a: RsInt128, b: RsInt128) -> Bool {
+        a.isNegative != b.isNegative ? a.isNegative : a.bits < b.bits
+    }
+
+    static func + (a: RsInt128, b: RsInt128) -> RsInt128 {
+        let (r, o) = a.addingReportingOverflow(b)
+        precondition(!o, "arithmetic overflow")
+        return r
+    }
+    static func - (a: RsInt128, b: RsInt128) -> RsInt128 {
+        let (r, o) = a.subtractingReportingOverflow(b)
+        precondition(!o, "arithmetic overflow")
+        return r
+    }
+    static func * (a: RsInt128, b: RsInt128) -> RsInt128 {
+        let (r, o) = a.multipliedReportingOverflow(by: b)
+        precondition(!o, "arithmetic overflow")
+        return r
+    }
+    static func / (a: RsInt128, b: RsInt128) -> RsInt128 {
+        precondition(b != .zero, "Division by zero")
+        let (r, o) = a.dividedReportingOverflow(by: b)
+        precondition(!o, "arithmetic overflow")
+        return r
+    }
+    static func % (a: RsInt128, b: RsInt128) -> RsInt128 {
+        precondition(b != .zero, "Division by zero in remainder operation")
+        let (r, o) = a.remainderReportingOverflow(dividingBy: b)
+        precondition(!o, "arithmetic overflow")
+        return r
+    }
+    static func += (a: inout RsInt128, b: RsInt128) { a = a + b }
+    static func -= (a: inout RsInt128, b: RsInt128) { a = a - b }
+    static func *= (a: inout RsInt128, b: RsInt128) { a = a * b }
+    static func /= (a: inout RsInt128, b: RsInt128) { a = a / b }
+    static func %= (a: inout RsInt128, b: RsInt128) { a = a % b }
+
+    static prefix func ~ (a: RsInt128) -> RsInt128 { RsInt128(bits: ~a.bits) }
+    static func &= (a: inout RsInt128, b: RsInt128) { a.bits &= b.bits }
+    static func |= (a: inout RsInt128, b: RsInt128) { a.bits |= b.bits }
+    static func ^= (a: inout RsInt128, b: RsInt128) { a.bits ^= b.bits }
+
+    static func &>>= (a: inout RsInt128, b: RsInt128) {
+        let s = Int(b.bits.lo & 127)
+        let negative = a.isNegative
+        a.bits &>>= RsUInt128(hi: 0, lo: UInt64(s))
+        if negative && s > 0 {
+            a.bits |= ~(RsUInt128.max &>> RsUInt128(hi: 0, lo: UInt64(s)))
+        }
+    }
+    static func &<<= (a: inout RsInt128, b: RsInt128) {
+        a.bits &<<= RsUInt128(hi: 0, lo: b.bits.lo & 127)
+    }
+    static func &>> (a: RsInt128, b: RsInt128) -> RsInt128 { var a = a; a &>>= b; return a }
+    static func &<< (a: RsInt128, b: RsInt128) -> RsInt128 { var a = a; a &<<= b; return a }
+
+    var description: String { isNegative ? "-" + magnitude.description : magnitude.description }
+}
+
+extension RsUInt128: RsWideInteger {
+    func rsHex(uppercase: Bool) -> String { String(self, radix: 16, uppercase: uppercase) }
+}
+
+extension RsInt128: RsWideInteger {
+    func rsHex(uppercase: Bool) -> String { String(bits, radix: 16, uppercase: uppercase) }
 }
 "#;

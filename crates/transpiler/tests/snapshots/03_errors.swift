@@ -194,11 +194,17 @@ func rsDebugRecord(_ name: String, _ fields: [(String, Any)], pretty: Bool, styl
 }
 
 /// An integer in `{:?}`; in `{:x?}`, its two's complement in the width of its type.
+/// `i128` and `u128` (`RsInt128`, `RsUInt128`): integers for `{:?}`.
+protocol RsWideInteger {
+    func rsHex(uppercase: Bool) -> String
+}
+
 private func rsDebugInt(_ value: Any, _ hex: Character?, prefix: Bool) -> String {
     guard let hex else { return "\(value)" }
     let upper = hex == "X"
     let digits: String
     switch value {
+    case let v as RsWideInteger: digits = v.rsHex(uppercase: upper)
     case let v as Int: digits = String(UInt(bitPattern: v), radix: 16, uppercase: upper)
     case let v as Int8: digits = String(UInt8(bitPattern: v), radix: 16, uppercase: upper)
     case let v as Int16: digits = String(UInt16(bitPattern: v), radix: 16, uppercase: upper)
@@ -430,7 +436,7 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
     case is Bool:
         out += style.pad("\(value)", numeric: false)
         return
-    case is Int, is Int8, is Int16, is Int32, is Int64, is UInt, is UInt8, is UInt16, is UInt32, is UInt64:
+    case is Int, is Int8, is Int16, is Int32, is Int64, is UInt, is UInt8, is UInt16, is UInt32, is UInt64, is RsWideInteger:
         if style.hex != nil && pretty && style.zero, let width = style.width {
             out += "0x" + rsPadZero(rsDebugInt(value, style.hex, prefix: false), width - 2)
         } else {

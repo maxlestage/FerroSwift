@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use syn::{Attribute, Expr, Fields, FnArg, GenericParam, Item, ReturnType, Type};
 
 use crate::names;
-use crate::ty::{Ty, from_name};
+use crate::ty::{IntKind, Ty, from_name};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum FieldRole {
@@ -128,6 +128,18 @@ pub struct FnSig {
     /// `rsBitsT` parameter telling the width of the Rust integer it stands for (`i32` is
     /// Swift's `Int`), so that a parse keeps its limits.
     pub parse_generics: Vec<String>,
+}
+
+impl FnSig {
+    /// The signature with type parameters replaced (`T` → `f64`).
+    pub fn substituted(&self, map: &HashMap<String, Ty>) -> FnSig {
+        let mut sig = self.clone();
+        for p in &mut sig.params {
+            p.ty = substitute(&p.ty, map);
+        }
+        sig.ret = substitute(&sig.ret, map);
+        sig
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -400,10 +412,18 @@ impl Symbols {
                             Some(id) => names::lower_camel(&id.to_string()),
                             None => format!("_{i}"),
                         };
+                        // `count: &'a mut i32`: an `RsMut`, which reads and writes the place
+                        // it was taken from.
+                        let ty = match &f.ty {
+                            Type::Reference(r) if r.mutability.is_some() => {
+                                Ty::Named("RsMut".into(), vec![self.ty(&r.elem, None)])
+                            }
+                            t => substitute(&self.ty(t, None), &closures),
+                        };
                         FieldInfo {
                             rust,
                             swift,
-                            ty: substitute(&self.ty(&f.ty, None), &closures),
+                            ty,
                             role: field_role(&f.attrs),
                             array_len: array_length(&f.ty),
                             deque: mentions_deque(&f.ty),
@@ -485,7 +505,8 @@ impl Symbols {
                 self.trait_methods.entry(name).or_default().extend(sigs);
             }
             Item::Fn(f) => {
-                let sig = self.sig(&f.sig, None);
+                let mut sig = self.sig(&f.sig, None);
+                widen_usize(&mut sig.ret, &f.block);
                 self.note_error_type(&sig.ret);
                 self.fns.insert(f.sig.ident.to_string(), sig);
             }
@@ -658,6 +679,7 @@ impl Symbols {
         for it in &imp.items {
             if let syn::ImplItem::Fn(f) = it {
                 let mut sig = self.sig(&f.sig, Some(&self_ty));
+                widen_usize(&mut sig.ret, &f.block);
                 sig.trait_method = trait_name.is_some();
                 let name = f.sig.ident.to_string();
                 if trait_name.is_none() && !observable && sig.self_kind == SelfKind::None {
@@ -818,6 +840,16 @@ impl Symbols {
                     };
                 }
                 FnArg::Typed(p) => {
+                    // `count: &'a mut i32`, kept by what the function returns: an `RsMut`.
+                    if let Some(elem) = stored_mut_ref(&p.ty) {
+                        let ty = Ty::Named("RsMut".into(), vec![self.ty(elem, self_ty)]);
+                        params.push(ParamInfo {
+                            ty,
+                            inout: false,
+                            into: false,
+                        });
+                        continue;
+                    }
                     let ty = substitute(&self.ty(&p.ty, self_ty), &closures);
                     // A closure is shared, not passed `inout`, as the signature has it.
                     let inout = matches!(&*p.ty, Type::Reference(r) if r.mutability.is_some())
@@ -911,15 +943,18 @@ impl Symbols {
                         (Some("fmt"), "Result") => {
                             return Ty::Result(
                                 Box::new(Ty::Unit),
-                                Box::new(Ty::Dyn("Error".into())),
+                                Box::new(Ty::Dyn("Error".into(), vec![])),
                             );
                         }
                         (Some("io"), "Result") => {
                             let ok = args.first().cloned().unwrap_or(Ty::Unit);
-                            return Ty::Result(Box::new(ok), Box::new(Ty::Dyn("Error".into())));
+                            return Ty::Result(
+                                Box::new(ok),
+                                Box::new(Ty::Dyn("Error".into(), vec![])),
+                            );
                         }
                         (_, "Error") if !self.is_user_type("Error") => {
-                            return Ty::Dyn("Error".into());
+                            return Ty::Dyn("Error".into(), vec![]);
                         }
                         _ => {}
                     }
@@ -1058,10 +1093,22 @@ impl Symbols {
                 _ => {
                     let swift = crate::translate::protocol_name(&name)
                         .unwrap_or_else(|| names::upper_camel(&name));
+                    // `dyn Converter<f64>`: the arguments of a generic trait.
+                    let args: Vec<Ty> = match &seg.arguments {
+                        syn::PathArguments::AngleBracketed(a) if self.traits.contains(&name) => a
+                            .args
+                            .iter()
+                            .filter_map(|g| match g {
+                                syn::GenericArgument::Type(t) => Some(self.ty(t, self_ty)),
+                                _ => None,
+                            })
+                            .collect(),
+                        _ => vec![],
+                    };
                     return if opaque {
                         Ty::Opaque(swift)
                     } else {
-                        Ty::Dyn(swift)
+                        Ty::Dyn(swift, args)
                     };
                 }
             }
@@ -1404,5 +1451,57 @@ fn array_length(t: &Type) -> Option<usize> {
             ..
         }) => n.base10_parse().ok(),
         _ => None,
+    }
+}
+
+/// `&'a mut T` with a named lifetime: a reference the function's result keeps (`fn new(count:
+/// &'a mut i32) -> Counter<'a>`). Its pointee.
+pub fn stored_mut_ref(t: &Type) -> Option<&Type> {
+    match t {
+        Type::Reference(r)
+            if r.mutability.is_some()
+                && r.lifetime
+                    .as_ref()
+                    .is_some_and(|l| l.ident != "_" && l.ident != "static") =>
+        {
+            Some(&r.elem)
+        }
+        _ => None,
+    }
+}
+
+/// A `usize` past `i64::MAX` (`0xcbf29ce484222325`, a hash's offset basis): Swift's `Int`
+/// cannot hold it, `UInt64` is Rust's 64-bit `usize` exactly.
+pub fn wide_usize_literal(e: &syn::Expr) -> bool {
+    match e {
+        syn::Expr::Lit(l) => match &l.lit {
+            syn::Lit::Int(i) => {
+                matches!(i.suffix(), "" | "usize")
+                    && i.base10_parse::<u128>().is_ok_and(|v| v > i64::MAX as u128)
+            }
+            _ => false,
+        },
+        syn::Expr::Paren(p) => wide_usize_literal(&p.expr),
+        _ => false,
+    }
+}
+
+/// `fn hash(s: &str) -> usize` whose body holds such a literal: it returns a `UInt64`.
+fn widen_usize(ret: &mut Ty, block: &syn::Block) {
+    struct Finder(bool);
+    impl<'ast> syn::visit::Visit<'ast> for Finder {
+        fn visit_expr(&mut self, e: &'ast syn::Expr) {
+            if wide_usize_literal(e) {
+                self.0 = true;
+            }
+            syn::visit::visit_expr(self, e);
+        }
+    }
+    if *ret == Ty::Int(IntKind::Usize) {
+        let mut f = Finder(false);
+        syn::visit::Visit::visit_block(&mut f, block);
+        if f.0 {
+            *ret = Ty::Int(IntKind::U64);
+        }
     }
 }

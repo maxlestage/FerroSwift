@@ -121,9 +121,10 @@ La liste complète, et ce qui n'est pas pris en charge, se trouve dans [le guide
 
 ## Limites
 
-- Pas de sémantique d'emprunt en Swift : les valeurs sont copiées. `Rc<RefCell<T>>`, `Cell<T>` et `Arc<Mutex<T>>` deviennent une classe qui porte la valeur, partagée comme en Rust ; les verrous ne bloquent jamais. `Rc::strong_count`, `Weak` et `Rc::downgrade` sont comptés comme en Rust.
+- Pas de sémantique d'emprunt en Swift : les valeurs sont copiées, et un `&mut` gardé dans une struct lit et écrit l'emplacement d'où il vient. `Rc<RefCell<T>>`, `Cell<T>` et `Arc<Mutex<T>>` deviennent une classe qui porte la valeur, partagée comme en Rust ; les verrous ne bloquent jamais. `Rc::strong_count`, `Weak` et `Rc::downgrade` sont comptés comme en Rust.
 - `i32`, `i64` et `usize` deviennent tous l'`Int` 64 bits de Swift : `+` déborde à 2⁶³, pas à 2³¹ (le parsing, les conversions `as` et les méthodes `wrapping_*`/`checked_*` gardent les limites 32 bits).
-- Non traduits : les durées de vie (ignorées), `unsafe` et les pointeurs bruts, `macro_rules!`, les threads, les runtimes `async`, les objets-traits à méthodes génériques, les crates autres que `std` et `ferroswift`.
+- Les `macro_rules!` sont développées avant la traduction ; threads, canaux et atomiques s'exécutent comme des tâches du fichier de support, de façon déterministe (voir [limites](site/docs/fr/limitations.md)).
+- Non traduits : les durées de vie (ignorées), `unsafe` et les pointeurs bruts, les macros procédurales et les runtimes `async` d'autres crates, les crates autres que `std` et `ferroswift`.
 
 ## Contenu du dépôt
 
