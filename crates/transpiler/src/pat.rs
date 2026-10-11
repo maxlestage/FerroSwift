@@ -118,7 +118,7 @@ impl Translator<'_> {
                         return case;
                     }
                     if self.syms.consts.contains_key(&name) {
-                        return names::constant(&name);
+                        return self.const_name(&name);
                     }
                 }
                 let kw = if id.mutability.is_some() {

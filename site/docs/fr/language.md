@@ -27,6 +27,7 @@ FerroSwift traduit du Rust ordinaire — le code que vous écrivez pour le modè
 | `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<T>` | `T` |
 | `RefCell<T>`, `Cell<T>`, `Mutex<T>`, `RwLock<T>` | `RsRefCell<T>`, une classe qui porte la valeur : les clones d’un `Rc` la partagent |
 | `&T`, `&mut T` | `T` (`inout T` pour un paramètre `&mut` ; une méthode qui renvoie `&mut T` renvoie un `WritableKeyPath<Self, T>`) |
+| `&mut v[a..b]` | une copie de la partie, réécrite après l’appel ; `chunks_mut` et `split_at_mut` fonctionnent de même, leurs parties réécrites à la fin de l’itération ou après leur dernier usage |
 | `impl Trait`, `dyn Trait` | `some Proto`, `any Proto` |
 | `fn(A) -> B`, closures | `(A) -> B` |
 
@@ -57,8 +58,10 @@ Les longueurs `usize` sont des `Int` Swift : `v.len()` donne `v.count`. Le `len(
 | `let Some(x) = opt else { return };` | `guard let x = opt else { return }` |
 | `while let Some(x) = stack.pop()` | `while let x = stack.popLast()` |
 | `for (i, x) in v.iter().enumerate()` | `for (i, x) in v.enumerated()` |
-| `for i in 0..n`, `0..=n`, `(0..n).rev()` | `for i in 0..<n`, `0...n`, `(0..<n).reversed()` |
+| `for x in v.iter_mut()`, `v.iter_mut().filter(\|x\| x.alive)` | `for i in v.indices { v[i]… }`, `for i in v.indices where v[i].alive { … }` : les éléments modifiés sur place |
+| `for i in 0..n`, `0..=n`, `(0..n).rev()` | `for i in 0..<n`, `0...n`, `(0..<n).reversed()` ; une plage aux bornes calculées (`a..b`, `1..=n`) devient `a..<max(a, b)`, vide quand sa fin précède son début comme en Rust, là où la plage Swift planterait |
 | `if c { a } else { b }` comme valeur | `c ? a : b` |
+| `Ok(match e { … => return Err(…) })`, `let (a, b) = match op { … => break }` | la valeur est calculée par des instructions avant son usage (`let value: Int` puis un `switch` qui l’affecte) : un `return`, `break` ou `?` dans une branche agit sur la fonction ou la boucle |
 | `v.push(match op { '+' => a + b, … })` | `v.append({ () -> Int in switch op { … } }())` |
 | `x as f64`, `n as u8` | `Double(x)`, `UInt8(truncatingIfNeeded: n)` |
 | `matches!(x, Some(1..=5))` | un `switch` qui renvoie un `Bool` |

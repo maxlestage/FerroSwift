@@ -1,7 +1,7 @@
 import Foundation
 
 func stats(_ values: [Double]) -> (Double, Double) {
-    let total = values.reduce(0.0, +)
+    let total = values.reduce(-0.0, +)
     let mean = total / Double(values.count)
     let max = values.reduce(-Double.greatestFiniteMagnitude) { x, y in Double.maximum(x, y) }
     return (mean, max)
@@ -126,12 +126,37 @@ func rsPartialCmp<A: Comparable, B: Comparable, C: Comparable>(_ a: (A, B, C), _
     return first == .equal ? rsPartialCmp(a.2, b.2) : first
 }
 
+extension MutableCollection {
+    /// `v.fill(x)`, also on a slice (`v[..3].fill(0)`).
+    mutating func fill(_ value: Element) {
+        for i in indices { self[i] = value }
+    }
+}
+
+extension MutableCollection where Index == Int {
+    /// `v[1..3].swap(i, j)`: the indices count from the start of the slice.
+    mutating func rsSwap(_ i: Int, _ j: Int) {
+        swapAt(startIndex + i, startIndex + j)
+    }
+}
+
 extension Array {
     /// `v.get(i)`.
     func get(_ i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 
+    /// `v.get(a..b)`: the part, when within bounds.
+    func get(_ r: Range<Int>) -> [Element]? {
+        r.lowerBound >= 0 && r.upperBound <= count ? Array(self[r]) : nil
+    }
+
     mutating func retain(_ keep: (Element) throws -> Bool) rethrows {
         try removeAll { try !keep($0) }
+    }
+
+    /// `v.copy_within(a..b, dest)`: a part copied over another.
+    mutating func copyWithin(_ source: some RangeExpression<Int>, _ dest: Int) {
+        let part = Array(self[source])
+        replaceSubrange(dest..<dest + part.count, with: part)
     }
 
     /// `v.retain_mut(|x| …)`: the closure may change each element.

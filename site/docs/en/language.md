@@ -27,6 +27,7 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 | `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<T>` | `T` |
 | `RefCell<T>`, `Cell<T>`, `Mutex<T>`, `RwLock<T>` | `RsRefCell<T>`, a class holding the value: `Rc` clones share it |
 | `&T`, `&mut T` | `T` (`inout T` for a `&mut` parameter; a method returning `&mut T` returns a `WritableKeyPath<Self, T>`) |
+| `&mut v[a..b]` | a copy of the part, written back after the call; `chunks_mut` and `split_at_mut` work the same way, their parts written back when the loop iteration ends or after their last use |
 | `impl Trait`, `dyn Trait` | `some Proto`, `any Proto` |
 | `fn(A) -> B`, closures | `(A) -> B` |
 
@@ -57,9 +58,11 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 | `let Some(x) = opt else { return };` | `guard let x = opt else { return }` |
 | `while let Some(x) = stack.pop()` | `while let x = stack.popLast()` |
 | `for (i, x) in v.iter().enumerate()` | `for (i, x) in v.enumerated()` |
-| `for i in 0..n`, `0..=n`, `(0..n).rev()` | `for i in 0..<n`, `0...n`, `(0..<n).reversed()` |
+| `for x in v.iter_mut()`, `v.iter_mut().filter(\|x\| x.alive)` | `for i in v.indices { v[i]… }`, `for i in v.indices where v[i].alive { … }`: the elements changed in place |
+| `for i in 0..n`, `0..=n`, `(0..n).rev()` | `for i in 0..<n`, `0...n`, `(0..<n).reversed()`; a range with computed bounds (`a..b`, `1..=n`) is `a..<max(a, b)`, empty when its end comes first as in Rust, where Swift's range would trap |
 | `if c { a } else { b }` as a value | `c ? a : b` |
 | `v.push(match op { '+' => a + b, … })` | `v.append({ () -> Int in switch op { … } }())` |
+| `Ok(match e { … => return Err(…) })`, `let (a, b) = match op { … => break }` | the value is computed by statements before its use (`let value: Int` then a `switch` assigning it): a `return`, `break` or `?` in a branch acts on the function or the loop |
 | `x as f64`, `n as u8` | `Double(x)`, `UInt8(truncatingIfNeeded: n)` |
 | `matches!(x, Some(1..=5))` | a `switch` that returns a `Bool` |
 | `assert!(c, "…")`, `panic!("…")` | `precondition(c, "…")`, `fatalError("…")` |
