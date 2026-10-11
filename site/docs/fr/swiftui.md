@@ -1,6 +1,6 @@
 ---
 title: SwiftUI en Rust
-description: Vues, enfants, modificateurs, état et bindings, listes, navigation et point d’entrée de l’app avec le crate ferroswift.
+description: Vues, enfants, modificateurs, état et bindings, listes, navigation et point d’entrée de l’app avec le crate FerroSwift.
 order: 2
 ---
 
