@@ -614,6 +614,13 @@ impl Translator<'_> {
             if n == "self" {
                 return Ex::primary(self.self_code(), self.self_ty());
             }
+            // `N` of `const N: usize`: the value of the type standing for it.
+            if self.const_params.contains(n)
+                && self.generics.iter().any(|g| g == n)
+                && self.lookup(n).is_none()
+            {
+                return Ex::primary(format!("{n}.value"), Ty::Int(IntKind::Usize));
+            }
             if n == "None" {
                 // `None::<i32>` where nothing tells the type: `nil as Int?`.
                 let explicit = match &path.segments[0].arguments {

@@ -472,6 +472,8 @@ pub fn from_name(name: &str, args: Vec<Ty>) -> Ty {
         "Vec" | "VecDeque" | "LinkedList" => Ty::Vec(Box::new(arg(0))),
         "BinaryHeap" => Ty::Named("RsBinaryHeap".into(), vec![arg(0)]),
         "Duration" => Ty::Named("RsDuration".into(), vec![]),
+        "Stdin" | "StdinLock" => Ty::Named("RsStdin".into(), vec![]),
+        "Stdout" | "StdoutLock" | "Stderr" | "StderrLock" => Ty::Named("RsOutput".into(), vec![]),
         "IntErrorKind" => Ty::Named("RsParseIntError.Kind".into(), vec![]),
         // Ranges kept in a field or a variable: Swift's own range types.
         "RangeInclusive" => Ty::Named("ClosedRange".into(), vec![arg(0)]),

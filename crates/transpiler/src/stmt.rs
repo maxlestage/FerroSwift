@@ -200,6 +200,24 @@ impl Translator<'_> {
     fn local_item(&mut self, item: &syn::Item) -> Vec<String> {
         match item {
             syn::Item::Fn(f) => {
+                // `fn walk<T>(…)` inside a method of `Bst<T>`: Swift forbids hiding the outer
+                // `T`, the inner one is renamed.
+                let shadowed: Vec<String> = crate::symbols::type_params(&f.sig.generics)
+                    .into_iter()
+                    .filter(|g| self.generics.contains(g))
+                    .collect();
+                let mut f = f.clone();
+                if !shadowed.is_empty() {
+                    struct Rename(Vec<String>);
+                    impl syn::visit_mut::VisitMut for Rename {
+                        fn visit_ident_mut(&mut self, i: &mut syn::Ident) {
+                            if self.0.iter().any(|g| i == g) {
+                                *i = syn::Ident::new(&format!("{i}1"), i.span());
+                            }
+                        }
+                    }
+                    syn::visit_mut::VisitMut::visit_item_fn_mut(&mut Rename(shadowed), &mut f);
+                }
                 let code = self.function(&f.attrs, &f.sig, &f.block, crate::translate::Place::Free);
                 vec![code]
             }
@@ -894,6 +912,22 @@ impl Translator<'_> {
                 let rest_at = s.elems.iter().position(|p| matches!(p, Pat::Rest(_)) || matches!(p, Pat::Ident(i) if matches!(i.subpat.as_ref().map(|(_, p)| &**p), Some(Pat::Rest(_)))));
                 for (i, p) in s.elems.iter().enumerate() {
                     if Some(i) == rest_at {
+                        // `[first, rest @ ..]`: `rest` is the middle part, an array.
+                        if let Pat::Ident(id) = p {
+                            let after = n - i - 1;
+                            let range = if after == 0 {
+                                format!("{i}...")
+                            } else {
+                                format!("{i}..<{subject}.count - {after}")
+                            };
+                            let name = self.declare(&id.ident.to_string(), ty.clone());
+                            let kw = if mutable || id.mutability.is_some() {
+                                "var"
+                            } else {
+                                "let"
+                            };
+                            lines.push(format!("{kw} {name} = Array({subject}[{range}])"));
+                        }
                         continue;
                     }
                     let index = match rest_at {
@@ -1332,6 +1366,10 @@ impl Translator<'_> {
                 if ctor == "Err" {
                     let v = self.expr_with(arg, err);
                     let v = self.settle(v);
+                    // `Err("empty input".into())` into a `Box<dyn Error>`: a `String` thrown.
+                    if v.ty == Ty::Str {
+                        self.helper("StringError");
+                    }
                     return vec![format!("throw {}", v.code)];
                 }
                 if matches!(arg, Expr::Tuple(t) if t.elems.is_empty()) || ok_ty == Ty::Unit {
@@ -2482,6 +2520,9 @@ impl Translator<'_> {
                     }
                     (false, e) => {
                         let v = self.expr_with(e, err_ty);
+                        if v.ty == Ty::Str {
+                            self.helper("StringError");
+                        }
                         self.settle(v).code
                     }
                 };
