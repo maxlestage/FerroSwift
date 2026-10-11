@@ -600,11 +600,11 @@ impl Symbols {
                     };
                 }
                 FnArg::Typed(p) => {
-                    let inout = matches!(&*p.ty, Type::Reference(r) if r.mutability.is_some());
-                    params.push(ParamInfo {
-                        ty: substitute(&self.ty(&p.ty, self_ty), &closures),
-                        inout,
-                    });
+                    let ty = substitute(&self.ty(&p.ty, self_ty), &closures);
+                    // A closure is shared, not passed `inout`, as the signature has it.
+                    let inout = matches!(&*p.ty, Type::Reference(r) if r.mutability.is_some())
+                        && !matches!(ty, Ty::Fn(..) | Ty::View);
+                    params.push(ParamInfo { ty, inout });
                 }
             }
         }

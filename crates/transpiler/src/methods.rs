@@ -2424,6 +2424,10 @@ impl Translator<'_> {
                 }
                 "to_uppercase" => return prim(format!("{r}.uppercased()"), Ty::Str),
                 "to_lowercase" => return prim(format!("{r}.lowercased()"), Ty::Str),
+                "escape_default" if args.is_empty() => {
+                    self.helper("string");
+                    return prim(format!("{r}.escapeDefault()"), Ty::Str);
+                }
                 // Only the ASCII letters change: `straße` stays as it is.
                 "to_ascii_uppercase" | "to_ascii_lowercase" => {
                     self.helper("string");
@@ -2732,6 +2736,10 @@ impl Translator<'_> {
             let p = |s: &str, ty: Ty| prim(format!("{r}.{s}"), ty);
             match name {
                 "is_alphabetic" => return p("isLetter", Ty::Bool),
+                "escape_default" if args.is_empty() => {
+                    self.helper("string");
+                    return prim(format!("String({r}).escapeDefault()"), Ty::Str);
+                }
                 "is_numeric" => return p("isNumber", Ty::Bool),
                 "is_alphanumeric" => {
                     return Ex::new(
@@ -2844,11 +2852,20 @@ impl Translator<'_> {
                 "powi" => return prim(format!("pow({}, {ts}({}))", recv.code, a(0)), t),
                 "powf" | "pow" => return prim(format!("pow({}, {})", recv.code, a(0)), t),
                 "sqrt" => return prim(format!("{r}.squareRoot()"), t),
-                "cbrt" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh"
-                | "tanh" | "exp" | "exp2" | "log10" | "log2" => {
+                "cbrt" => {
+                    self.helper("cbrt");
+                    return prim(format!("rsCbrt({})", recv.code), t);
+                }
+                "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh"
+                | "exp" | "exp2" | "log10" | "log2" => {
                     return prim(format!("{name}({})", recv.code), t);
                 }
                 "ln" => return prim(format!("log({})", recv.code), t),
+                "exp_m1" => return prim(format!("expm1({})", recv.code), t),
+                "ln_1p" => return prim(format!("log1p({})", recv.code), t),
+                "round_ties_even" => return prim(format!("{r}.rounded(.toNearestOrEven)"), t),
+                "is_normal" => return prim(format!("{r}.isNormal"), Ty::Bool),
+                "is_subnormal" => return prim(format!("{r}.isSubnormal"), Ty::Bool),
                 "log" => return prim(format!("(log({}) / log({}))", recv.code, a(0)), t),
                 "atan2" => return prim(format!("atan2({}, {})", recv.code, a(0)), t),
                 "hypot" => return prim(format!("hypot({}, {})", recv.code, a(0)), t),
@@ -2883,6 +2900,13 @@ impl Translator<'_> {
                 "is_nan" => return prim(format!("{r}.isNaN"), Ty::Bool),
                 "is_finite" => return prim(format!("{r}.isFinite"), Ty::Bool),
                 "is_infinite" => return prim(format!("{r}.isInfinite"), Ty::Bool),
+                // `-0.0` and `NaN` have a sign too.
+                "is_sign_negative" if float => {
+                    return Ex::new(format!("{r}.sign == .minus"), P_CMP, Ty::Bool);
+                }
+                "is_sign_positive" if float => {
+                    return Ex::new(format!("{r}.sign == .plus"), P_CMP, Ty::Bool);
+                }
                 "is_sign_negative" | "is_negative" => {
                     return Ex::new(format!("{} < 0", wrap(&recv, P_CMP + 1)), P_CMP, Ty::Bool);
                 }
@@ -2908,8 +2932,8 @@ impl Translator<'_> {
                     );
                 }
                 // Bits of an `i32`, which Swift holds in 64: the 32-bit value.
-                "count_ones" | "leading_zeros" | "trailing_zeros" | "rotate_left"
-                | "rotate_right" => {
+                "count_ones" | "count_zeros" | "leading_zeros" | "trailing_zeros"
+                | "leading_ones" | "trailing_ones" | "rotate_left" | "rotate_right" => {
                     let narrow = if t == Ty::Int(IntKind::I32) {
                         format!("Int32(truncatingIfNeeded: {r})")
                     } else {
@@ -2918,8 +2942,15 @@ impl Translator<'_> {
                     let u32 = Ty::Int(IntKind::U32);
                     return match name {
                         "count_ones" => prim(format!("{narrow}.nonzeroBitCount"), u32),
+                        "count_zeros" => Ex::new(
+                            format!("{narrow}.bitWidth - {narrow}.nonzeroBitCount"),
+                            P_ADD,
+                            u32,
+                        ),
                         "leading_zeros" => prim(format!("{narrow}.leadingZeroBitCount"), u32),
                         "trailing_zeros" => prim(format!("{narrow}.trailingZeroBitCount"), u32),
+                        "leading_ones" => prim(format!("(~{narrow}).leadingZeroBitCount"), u32),
+                        "trailing_ones" => prim(format!("(~{narrow}).trailingZeroBitCount"), u32),
                         _ => {
                             self.helper("int");
                             let f = names::lower_camel(name);
@@ -2998,7 +3029,8 @@ impl Translator<'_> {
                 "checked_add" | "checked_sub" | "checked_mul" | "checked_div" | "checked_rem"
                 | "saturating_add" | "saturating_sub" | "saturating_mul" | "rem_euclid"
                 | "div_euclid" | "abs_diff" | "isqrt" | "checked_pow" | "overflowing_add"
-                | "overflowing_sub" | "overflowing_mul" | "div_ceil" => {
+                | "overflowing_sub" | "overflowing_mul" | "overflowing_pow" | "saturating_pow"
+                | "wrapping_pow" | "div_ceil" => {
                     self.helper("int");
                     let ret = if name.starts_with("checked") {
                         Ty::Option(Box::new(t.clone()))
@@ -3010,7 +3042,8 @@ impl Translator<'_> {
                     let narrow = t == Ty::Int(IntKind::I32)
                         && (name.starts_with("checked")
                             || name.starts_with("saturating")
-                            || name.starts_with("overflowing"));
+                            || name.starts_with("overflowing")
+                            || name == "wrapping_pow");
                     if narrow {
                         let call = format!(
                             "Int32(truncatingIfNeeded: {}).{}(Int32(truncatingIfNeeded: {}))",
@@ -3062,13 +3095,15 @@ impl Translator<'_> {
                 }
                 // `x.checked_abs()`, `x.wrapping_neg()`: within the 32-bit limits of `i32`.
                 "checked_abs" | "checked_neg" | "wrapping_neg" | "wrapping_abs"
-                | "saturating_neg" | "saturating_abs"
+                | "saturating_neg" | "saturating_abs" | "overflowing_neg" | "overflowing_abs"
                     if t.is_int() =>
                 {
                     self.helper("int");
                     let f = names::lower_camel(name);
                     let ret = if name.starts_with("checked") {
                         Ty::Option(Box::new(t.clone()))
+                    } else if name.starts_with("overflowing") {
+                        Ty::Tuple(vec![t.clone(), Ty::Bool])
                     } else {
                         t.clone()
                     };
@@ -3076,6 +3111,8 @@ impl Translator<'_> {
                         let call = format!("Int32(truncatingIfNeeded: {}).{f}()", recv.code);
                         let code = if name.starts_with("checked") {
                             format!("{call}.map {{ Int($0) }}")
+                        } else if name.starts_with("overflowing") {
+                            format!("rsWiden({call})")
                         } else {
                             format!("Int({call})")
                         };
@@ -3437,6 +3474,20 @@ impl Translator<'_> {
         }
         // Comparisons on any type.
         match name {
+            // `a.max(b)`, `x.clamp(lo, hi)` of a comparable struct or enum.
+            "max" | "min" if args.len() == 1 => {
+                return prim(
+                    format!("{}({}, {})", self.global_fn(name), recv.code, a(0)),
+                    rty.clone(),
+                );
+            }
+            "clamp" if args.len() == 2 => {
+                let (max, min) = (self.global_fn("max"), self.global_fn("min"));
+                return prim(
+                    format!("{min}({max}({}, {}), {})", recv.code, a(0), a(1)),
+                    rty.clone(),
+                );
+            }
             "cmp" | "partial_cmp" | "total_cmp" => {
                 self.helper("Ordering");
                 let f = if name == "partial_cmp" {
@@ -3452,6 +3503,14 @@ impl Translator<'_> {
                     Ty::Named("Ordering".into(), vec![])
                 };
                 return prim(format!("{f}({}, {})", recv.code, a(0)), ty);
+            }
+            // `a.chars().eq(b.chars().rev())`: two sequences, element by element.
+            "eq" | "ne" if matches!(recv.ty, Ty::Iter(_)) || matches!(args[0].ty, Ty::Iter(_)) => {
+                let code = format!("{}.elementsEqual({})", wrap(&recv, P_PRIMARY), a(0));
+                if name == "eq" {
+                    return prim(code, Ty::Bool);
+                }
+                return Ex::new(format!("!{code}"), crate::expr::P_PREFIX, Ty::Bool);
             }
             "eq" => {
                 return Ex::new(
@@ -4072,6 +4131,23 @@ impl Translator<'_> {
                 ),
                 Ty::Bool,
             ),
+            // `v.is_sorted_by(|a, b| a <= b)`: each pair of neighbours satisfies the closure.
+            "is_sorted_by" if args.len() == 1 => prim(
+                format!("zip({}, {}.dropFirst()).allSatisfy({})", recv.code, r, a(0)),
+                Ty::Bool,
+            ),
+            "is_sorted_by_key" if args.len() == 1 => {
+                let keys = self.fresh("keys");
+                self.prelude(format!(
+                    "let {keys} = {}.map({})",
+                    wrap(recv, P_PRIMARY),
+                    a(0)
+                ));
+                prim(
+                    format!("zip({keys}, {keys}.dropFirst()).allSatisfy {{ $0 <= $1 }}"),
+                    Ty::Bool,
+                )
+            }
             "group_by" | "chunk_by" => return None,
             _ => return None,
         })

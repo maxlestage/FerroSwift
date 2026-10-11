@@ -527,6 +527,26 @@ impl Translator<'_> {
                 let all_idents = t.elems.iter().all(|p| {
                     matches!(p, Pat::Ident(i) if i.subpat.is_none()) || matches!(p, Pat::Wild(_))
                 });
+                // `let (ref mut a, ref mut b) = pair`: `a` and `b` are the fields of `pair`.
+                let ref_mut = |p: &Pat| matches!(p, Pat::Ident(i) if i.by_ref.is_some() && i.mutability.is_some());
+                let place = subject
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.');
+                if all_idents && place && t.elems.iter().any(ref_mut) {
+                    let mut lines = Vec::new();
+                    for (i, p) in t.elems.iter().enumerate() {
+                        let Pat::Ident(id) = p else { continue };
+                        let elem = elems.get(i).cloned().unwrap_or(Ty::Unknown);
+                        let member = format!("{subject}.{i}");
+                        if ref_mut(p) {
+                            self.declare_alias(&id.ident.to_string(), member, elem);
+                        } else {
+                            let n = self.declare(&id.ident.to_string(), elem);
+                            lines.push(format!("let {n} = {member}"));
+                        }
+                    }
+                    return (lines, true);
+                }
                 if all_idents {
                     let any_mut = t
                         .elems
