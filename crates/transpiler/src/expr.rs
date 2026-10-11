@@ -7,7 +7,7 @@ use syn::{BinOp, Expr, Lit, Pat, UnOp};
 use crate::names;
 use crate::stmt::{Sink, has_control_flow, needs_statements};
 use crate::symbols::{FieldRole, TypeKind, VariantShape};
-use crate::translate::{FnCx, Translator, indent_lines};
+use crate::translate::{FnCx, INDENT, Translator, indent_lines};
 use crate::ty::{FloatKind, IntKind, Ty};
 
 // Swift precedence, highest first.
@@ -507,6 +507,26 @@ impl Translator<'_> {
         if let Some(ex) = self.path_as_closure(&segs, path, expected) {
             return ex;
         }
+        // `Option::<Option<i32>>::None`: the type written, when nothing else tells it.
+        if segs.len() == 2
+            && segs[0] == "Option"
+            && segs[1] == "None"
+            && !matches!(expected, Ty::Option(_))
+        {
+            let explicit = match &path.segments[0].arguments {
+                syn::PathArguments::AngleBracketed(a) => a.args.iter().find_map(|g| match g {
+                    syn::GenericArgument::Type(t) => Some(self.ty(t)),
+                    _ => None,
+                }),
+                _ => None,
+            };
+            if let Some(t) = explicit.filter(Ty::is_complete) {
+                return Ex::primary(
+                    format!("(nil as {}?)", t.swift_lossy()),
+                    Ty::Option(Box::new(t)),
+                );
+            }
+        }
         if segs.len() == 1 {
             let n = segs[0].as_str();
             if n == "self" {
@@ -859,6 +879,92 @@ impl Translator<'_> {
             syn::parse_quote!(|#(#args),*| #path(#(#args),*))
         };
         Some(self.closure(&closure, expected))
+    }
+
+    /// The variables a closure body assigns (`x = …`, `x += …`) that it does not declare
+    /// itself: the captured ones it changes.
+    fn assigned_outer_locals(
+        body: &Expr,
+        params: &syn::punctuated::Punctuated<Pat, syn::token::Comma>,
+    ) -> Vec<String> {
+        use syn::visit::Visit;
+        struct V {
+            declared: std::collections::HashSet<String>,
+            assigned: Vec<String>,
+        }
+        fn pat_names(p: &Pat, out: &mut std::collections::HashSet<String>) {
+            struct N<'a>(&'a mut std::collections::HashSet<String>);
+            impl<'ast> Visit<'ast> for N<'_> {
+                fn visit_pat_ident(&mut self, i: &'ast syn::PatIdent) {
+                    self.0.insert(i.ident.to_string());
+                    if let Some((_, sub)) = &i.subpat {
+                        self.visit_pat(sub);
+                    }
+                }
+            }
+            N(out).visit_pat(p);
+        }
+        impl<'ast> Visit<'ast> for V {
+            fn visit_local(&mut self, l: &'ast syn::Local) {
+                pat_names(&l.pat, &mut self.declared);
+                if let Some(init) = &l.init {
+                    self.visit_expr(&init.expr);
+                }
+            }
+            fn visit_expr_closure(&mut self, c: &'ast syn::ExprClosure) {
+                for p in &c.inputs {
+                    pat_names(p, &mut self.declared);
+                }
+                self.visit_expr(&c.body);
+            }
+            fn visit_expr_assign(&mut self, a: &'ast syn::ExprAssign) {
+                if let Expr::Path(p) = &*a.left {
+                    if let Some(id) = p.path.get_ident() {
+                        self.assigned.push(id.to_string());
+                    }
+                }
+                self.visit_expr(&a.right);
+            }
+            fn visit_expr_binary(&mut self, b: &'ast syn::ExprBinary) {
+                let assigning = matches!(
+                    b.op,
+                    syn::BinOp::AddAssign(_)
+                        | syn::BinOp::SubAssign(_)
+                        | syn::BinOp::MulAssign(_)
+                        | syn::BinOp::DivAssign(_)
+                        | syn::BinOp::RemAssign(_)
+                        | syn::BinOp::BitXorAssign(_)
+                        | syn::BinOp::BitAndAssign(_)
+                        | syn::BinOp::BitOrAssign(_)
+                        | syn::BinOp::ShlAssign(_)
+                        | syn::BinOp::ShrAssign(_)
+                );
+                if assigning {
+                    if let Expr::Path(p) = &*b.left {
+                        if let Some(id) = p.path.get_ident() {
+                            self.assigned.push(id.to_string());
+                        }
+                    }
+                }
+                self.visit_expr(&b.left);
+                self.visit_expr(&b.right);
+            }
+        }
+        let mut v = V {
+            declared: std::collections::HashSet::new(),
+            assigned: Vec::new(),
+        };
+        for p in params {
+            pat_names(p, &mut v.declared);
+        }
+        v.visit_expr(body);
+        let mut out: Vec<String> = Vec::new();
+        for name in v.assigned {
+            if !v.declared.contains(&name) && !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        out
     }
 
     /// `i32::MAX`, `f64::consts::PI`, `f64::INFINITY`…
@@ -2114,7 +2220,56 @@ impl Translator<'_> {
         // After the body: a `let` inside it must not reset what the `let` of this closure
         // reads.
         self.last_closure_inouts = inouts;
+        // `move || { counter += 1; counter }` with `counter: i32`: the closure owns a copy of
+        // the variable, which it changes across its calls; the variable outside stays. Swift
+        // captures by reference, so the closure is made over its own copy.
+        if c.capture.is_some() {
+            let copied: Vec<String> = Self::assigned_outer_locals(&c.body, &c.inputs)
+                .into_iter()
+                .filter_map(|rust| {
+                    let local = self.lookup(&rust)?;
+                    let ty = self.local_ty(local);
+                    self.is_copy_type(&ty).then(|| local.swift.clone())
+                })
+                .collect();
+            if !copied.is_empty() {
+                if let Some(fn_ty) = ty.swift() {
+                    let copies: Vec<String> =
+                        copied.iter().map(|n| format!("var {n} = {n}")).collect();
+                    let code = format!(
+                        "{{ () -> {fn_ty} in\n{}\n{INDENT}return {}\n}}()",
+                        indent_lines(&copies.join("\n")),
+                        code.replace('\n', &format!("\n{INDENT}"))
+                    );
+                    return Ex::primary(code, ty);
+                }
+            }
+        }
         Ex::primary(code, ty)
+    }
+
+    /// A type copied on assignment in Rust (`Copy`): numbers, booleans, characters, tuples
+    /// of them, and the structs and enums deriving `Copy`.
+    pub fn is_copy_type(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Unit => true,
+            Ty::Tuple(ts) => ts.iter().all(|t| self.is_copy_type(t)),
+            Ty::Named(n, _) => {
+                let derives_copy = |d: &[String]| d.iter().any(|d| d == "Copy");
+                self.syms
+                    .structs
+                    .values()
+                    .find(|s| &s.swift == n)
+                    .is_some_and(|s| derives_copy(&s.derives))
+                    || self
+                        .syms
+                        .enums
+                        .values()
+                        .find(|e| &e.swift == n)
+                        .is_some_and(|e| derives_copy(&e.derives))
+            }
+            _ => false,
+        }
     }
 
     /// A closure parameter: a name, `(a, b)`, or `_`.
@@ -2244,6 +2399,20 @@ impl Translator<'_> {
         let b = self.settle(b);
         self.implicit_member = saved_implicit;
         ty.merge(&b.ty);
+        // `cond ? mul : add` of two functions: Swift 6 wants their type written.
+        let (a, b) = match (&ty, ty.swift()) {
+            (Ty::Fn(..), Some(fn_ty)) => {
+                let named = |e: Ex| {
+                    if is_simple_code(&e.code) {
+                        Ex::primary(format!("({} as {fn_ty})", e.code), e.ty)
+                    } else {
+                        e
+                    }
+                };
+                (named(a), named(b))
+            }
+            _ => (a, b),
+        };
         Some(Ex::new(
             format!(
                 "{} ? {} : {}",

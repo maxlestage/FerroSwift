@@ -139,6 +139,10 @@ func rsFixed<F: BinaryFloatingPoint>(_ x: F, _ decimals: Int) -> String {
 "#;
 
 const LESS_ANY: &str = r#"
+private func rsLessOpened<T: Comparable>(_ x: T, _ y: Any) -> Bool? {
+    (y as? T).map { x < $0 }
+}
+
 /// `a < b` as Rust orders values of any type: numbers and texts by value, `false < true`,
 /// tuples and arrays element by element, `None` before `Some`.
 func rsLessAny(_ a: Any, _ b: Any) -> Bool {
@@ -161,6 +165,8 @@ func rsLessAny(_ a: Any, _ b: Any) -> Bool {
     if let r = attempt(UInt16.self) { return r }
     if let r = attempt(Float.self) { return r }
     if let x = a as? Bool, let y = b as? Bool { return !x && y }
+    // A type of the program ordered by its derived `Ord` (an enum, a struct).
+    if let x = a as? any Comparable, let r = rsLessOpened(x, b) { return r }
     let ma = Mirror(reflecting: a), mb = Mirror(reflecting: b)
     if ma.displayStyle == .optional || mb.displayStyle == .optional {
         switch (ma.children.first?.value, mb.children.first?.value) {
@@ -280,6 +286,10 @@ private func rsSorted(_ values: [Any]) -> [Any] {
     if let s = attempt(Int16.self) { return s }
     if let s = attempt(UInt16.self) { return s }
     if let s = attempt(Float.self) { return s }
+    // Keys of a type of the program ordered by its derived `Ord` (an enum, a struct).
+    if !values.isEmpty && values.allSatisfy({ $0 is any Comparable }) {
+        return values.sorted { rsLessAny($0, $1) }
+    }
     return values
 }
 

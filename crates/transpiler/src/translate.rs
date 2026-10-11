@@ -923,7 +923,15 @@ impl<'a> Translator<'a> {
             .cloned()
             .expect("collected struct");
         let swift = info.swift.clone();
+        // `struct Button<F: Fn()>`: `F` is the closure type itself, not a parameter.
+        self.closure_generics = self
+            .syms
+            .closure_generics(&s.generics, None)
+            .into_iter()
+            .filter(|(_, t)| matches!(t, Ty::Fn(..)))
+            .collect();
         let mut generics = self.generic_params(&s.generics);
+        self.closure_generics.clear();
         // `map: HashMap<K, V>`: Swift wants `K: Hashable` on the struct itself.
         let mut keyed = Vec::new();
         for f in &info.fields {
@@ -1522,7 +1530,10 @@ impl<'a> Translator<'a> {
         let derives = derives(&e.attrs);
         let mut conformances = self.derive_conformances(&derives, e.span());
         let all_unit = e.variants.iter().all(|v| matches!(v.fields, Fields::Unit));
-        let has_discriminant = e.variants.iter().any(|v| v.discriminant.is_some());
+        // An enum without payloads is `Int`-backed: `Suit::Hearts as u8` is its rank, as in
+        // Rust, whether the discriminants are written or not.
+        let has_discriminant = e.variants.iter().any(|v| v.discriminant.is_some())
+            || (all_unit && !e.variants.is_empty() && info.generics.is_empty());
         if has_discriminant {
             conformances.insert(0, "Int".into());
         }
@@ -1964,7 +1975,15 @@ impl<'a> Translator<'a> {
                 }
             }
             Some("PartialEq") => {
-                conformance = Some("Equatable".into());
+                // `impl PartialEq<f64> for Matrix`: an `==` with that type, no conformance.
+                let other: Option<String> = impl_trait_args(imp).first().map(|t| {
+                    let ty = self.ty(t);
+                    self.swift_ty(&ty, t.span())
+                });
+                let other = other.filter(|o| *o != swift && o != "Self");
+                if other.is_none() {
+                    conformance = Some("Equatable".into());
+                }
                 for it in &imp.items {
                     if let ImplItem::Fn(f) = it {
                         members.push(self.function(
@@ -1976,7 +1995,8 @@ impl<'a> Translator<'a> {
                             },
                         ));
                         if f.sig.ident == "eq" {
-                            members.push(format!("static func == (lhs: {swift}, rhs: {swift}) -> Bool {{\n{INDENT}lhs.eq(rhs)\n}}"));
+                            let rhs = other.clone().unwrap_or_else(|| swift.clone());
+                            members.push(format!("static func == (lhs: {swift}, rhs: {rhs}) -> Bool {{\n{INDENT}lhs.eq(rhs)\n}}"));
                         }
                     }
                 }
@@ -2360,12 +2380,19 @@ impl<'a> Translator<'a> {
         } else {
             Sink::Return
         };
-        let body = self.block_lines(&f.block, sink);
+        let mut body = self.block_lines(&f.block, sink);
         self.fns.pop();
         if let Some(i) = self.imp.as_mut() {
             i.self_rename = None;
         }
         self.pop_scope();
+        // `fn mul(mut self, k: f64)`: the left side changed is a copy.
+        let mut_self = f.sig.inputs.first().is_some_and(
+            |a| matches!(a, FnArg::Receiver(r) if r.reference.is_none() && r.mutability.is_some()),
+        );
+        if mut_self {
+            body.insert(0, "var lhs = lhs".into());
+        }
         let body = indent_lines(&self.resolve_slots(&body.join("\n")));
         let rhs = params.first().cloned().unwrap_or_default();
         let rhs = rhs.replacen("_ ", "", 1);
@@ -2607,12 +2634,28 @@ impl<'a> Translator<'a> {
             return String::new();
         }
         self.push_scope();
+        // `fn new(action: F) -> Self { Button { action } }`: a closure stored escapes.
+        self.escaping_params = f
+            .sig
+            .inputs
+            .iter()
+            .filter_map(|a| match a {
+                FnArg::Typed(p) => match &*p.pat {
+                    Pat::Ident(id) if used_as_value(&f.block, &id.ident.to_string()) => {
+                        Some(id.ident.to_string())
+                    }
+                    _ => None,
+                },
+                FnArg::Receiver(_) => None,
+            })
+            .collect();
         let mut s = self.signature(
             &f.sig,
             Place::Method {
                 mutating_allowed: false,
             },
         );
+        self.escaping_params.clear();
         let (failable, throws) = match &s.cx.ret {
             Ty::Option(_) => (true, None),
             Ty::Result(_, e) => (false, Some((**e).clone())),
@@ -2963,7 +3006,8 @@ pub fn protocol_name(name: &str) -> Option<String> {
             // As a bound only: an `impl FromStr` is a `fromStr` function, called directly.
             "FromStr" => "LosslessStringConvertible",
             "View" => "View",
-            "Add" => "AdditiveArithmetic",
+            "Add" | "Sub" => "AdditiveArithmetic",
+            "Mul" => "Numeric",
             _ => return None,
         }
         .to_string(),

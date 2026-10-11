@@ -54,6 +54,9 @@ pub struct StructInfo {
     /// `struct Node { next: Option<Box<Node>> }`: a Swift value type cannot contain itself,
     /// so the struct becomes a class.
     pub recursive: bool,
+    /// The positions, among the declared type parameters, of those standing for a closure
+    /// (`struct Button<F: Fn()>`): erased, the closure type being written in their place.
+    pub erased: Vec<usize>,
 }
 
 impl StructInfo {
@@ -340,7 +343,23 @@ impl Symbols {
         match item {
             Item::Struct(st) => {
                 let derives = derives(&st.attrs);
-                let generics = type_params(&st.generics);
+                // `struct Button<F: Fn()>`: `F` is the closure type itself, not a parameter.
+                let closures: HashMap<String, Ty> = self
+                    .closure_generics(&st.generics, None)
+                    .into_iter()
+                    .filter(|(_, t)| matches!(t, Ty::Fn(..)))
+                    .collect();
+                let declared = type_params(&st.generics);
+                let erased: Vec<usize> = declared
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| closures.contains_key(*g))
+                    .map(|(i, _)| i)
+                    .collect();
+                let generics: Vec<String> = declared
+                    .into_iter()
+                    .filter(|g| !closures.contains_key(g))
+                    .collect();
                 let mut kind = TypeKind::Plain;
                 if derives.iter().any(|d| d == "View") {
                     kind = TypeKind::View;
@@ -367,7 +386,7 @@ impl Symbols {
                         FieldInfo {
                             rust,
                             swift,
-                            ty: self.ty(&f.ty, None),
+                            ty: substitute(&self.ty(&f.ty, None), &closures),
                             role: field_role(&f.attrs),
                             array_len: array_length(&f.ty),
                         }
@@ -385,6 +404,7 @@ impl Symbols {
                         derives,
                         kind,
                         recursive,
+                        erased,
                     },
                 );
             }
@@ -886,6 +906,16 @@ impl Symbols {
                     || self.structs.contains_key(&name)
                     || self.enums.contains_key(&name)
                 {
+                    // `Button<F>` with `F` a closure parameter: the type has no such argument.
+                    let args = match self.structs.get(&name) {
+                        Some(info) if !info.erased.is_empty() => args
+                            .into_iter()
+                            .enumerate()
+                            .filter(|(i, _)| !info.erased.contains(i))
+                            .map(|(_, t)| t)
+                            .collect(),
+                        _ => args,
+                    };
                     return Ty::Named(names::type_name(&name), args);
                 }
                 if name == "Element" && first.as_deref() != Some("std") && self.ui {
