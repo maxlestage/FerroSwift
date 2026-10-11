@@ -74,7 +74,6 @@ pub struct DocsText {
     pub on_this_page: &'static str,
     pub prev: &'static str,
     pub next: &'static str,
-    pub edit: &'static str,
     pub copy: &'static str,
 }
 
@@ -246,8 +245,8 @@ static FR: Dict = Dict {
         commands: [
             Item {
                 title: "Installez la CLI",
-                text: "Depuis le dépôt GitHub, avec cargo.",
-                code: "cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli",
+                text: "Depuis crates.io, avec cargo.",
+                code: "cargo install ferroswift-cli",
             },
             Item {
                 title: "Créez une app",
@@ -288,7 +287,6 @@ static FR: Dict = Dict {
         on_this_page: "Sur cette page",
         prev: "Précédent",
         next: "Suivant",
-        edit: "Modifier cette page sur GitHub",
         copy: "Copier",
     },
     not_found: NotFound {
@@ -454,8 +452,8 @@ static EN: Dict = Dict {
         commands: [
             Item {
                 title: "Install the CLI",
-                text: "From the GitHub repository, with cargo.",
-                code: "cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli",
+                text: "From crates.io, with cargo.",
+                code: "cargo install ferroswift-cli",
             },
             Item {
                 title: "Create an app",
@@ -496,7 +494,6 @@ static EN: Dict = Dict {
         on_this_page: "On this page",
         prev: "Previous",
         next: "Next",
-        edit: "Edit this page on GitHub",
         copy: "Copy",
     },
     not_found: NotFound {

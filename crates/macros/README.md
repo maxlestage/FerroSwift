@@ -12,4 +12,4 @@ ferroswift = "0.1"
 
 Proprietary software: © 2026 Maxime Nathan Lestage, all rights reserved. Free to use as a
 dependency of your own programs, commercial ones included; see
-[LICENSE](https://github.com/maxlestage/FerroSwift/blob/master/LICENSE).
+[LICENSE](https://maxlestage.github.io/FerroSwift/LICENSE.txt).

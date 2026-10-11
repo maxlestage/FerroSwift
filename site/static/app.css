@@ -1541,6 +1541,8 @@ a:hover > .arrow {
   .docs-side nav {
     position: sticky;
     top: calc(var(--header) + 32px);
+    max-height: calc(100vh - var(--header) - 48px);
+    overflow-y: auto;
   }
 
   .docs-menu {
@@ -2339,6 +2341,7 @@ a:hover > .arrow {
 
 .credits-name {
   display: flex;
+  margin: 0;
   flex-wrap: wrap;
   justify-content: center;
   gap: 0 0.26em;

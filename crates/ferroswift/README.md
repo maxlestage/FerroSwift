@@ -1,6 +1,6 @@
 # ferroswift
 
-Write SwiftUI apps in Rust. This crate is the Rust side of [FerroSwift](https://github.com/maxlestage/FerroSwift): views, state and modifiers that type-check with `cargo check`, then become Swift with `ferroswift build`.
+Write SwiftUI apps in Rust. This crate is the Rust side of [FerroSwift](https://maxlestage.github.io/FerroSwift/): views, state and modifiers that type-check with `cargo check`, then become Swift with `ferroswift build`.
 
 ```rust
 use ferroswift::prelude::*;

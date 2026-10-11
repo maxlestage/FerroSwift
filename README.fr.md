@@ -45,7 +45,7 @@ struct Counter: View {
 
 Les vues s'écrivent avec des fonctions Rust ordinaires (`vstack()`, `text()`, `button()`…) du crate [`ferroswift`](crates/ferroswift) : `cargo check` et rust-analyzer les connaissent, et chacune documente le code SwiftUI qu'elle devient. Tout le reste est du Rust normal — structs, enums, traits, `match`, `Option`, `Result`, itérateurs — traduit en Swift tel que vous l'écririez à la main.
 
-📚 **Site web, documentation et bac à sable en direct** (le transpileur compilé en WebAssembly, dans votre navigateur) : [`site/`](site), écrit avec [active](https://github.com/maxlestage/Active). Lancez-le avec `cargo run -p ferroswift-site`.
+📚 **Site web, documentation et bac à sable en direct** (le transpileur compilé en WebAssembly, dans votre navigateur) : [`site/`](site), écrit avec [active](https://maxlestage.github.io/Active/). Lancez-le avec `cargo run -p ferroswift-site`.
 
 ## Pourquoi
 
@@ -58,7 +58,7 @@ Les vues s'écrivent avec des fonctions Rust ordinaires (`vstack()`, `text()`, `
 ## Installation
 
 ```sh
-cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli
+cargo install ferroswift-cli
 ```
 
 ## Démarrage rapide
@@ -165,5 +165,5 @@ les droits à l'auteur, comme l'indique la licence.
 
 ## Crédits
 
-Conçu et développé par [Maxime Nathan Lestage](https://github.com/maxlestage),
+Conçu et développé par Maxime Nathan Lestage,
 au sein d'une même famille de projets Rust : [Active](https://maxlestage.github.io/Active/), [Vitesse](https://maxlestage.github.io/Vitesse/), [Securite](https://maxlestage.github.io/Securite/), [Memoire](https://maxlestage.github.io/Memoire/), [Paquets](https://maxlestage.github.io/Paquets/) et [FerroSwift](https://maxlestage.github.io/FerroSwift/).
