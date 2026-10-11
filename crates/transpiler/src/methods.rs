@@ -493,6 +493,39 @@ impl Translator<'_> {
         };
         match (owner, last) {
             ("String", "new" | "with_capacity") => Some(Ex::primary("\"\"", Ty::Str)),
+            // `String::from_iter(chars)`, `Vec::from_iter(it)`, `HashSet::from_iter(it)`.
+            ("String", "from_iter") if args.len() == 1 => {
+                let v = arg(self, 0, &Ty::Iter(Box::new(Ty::Char)));
+                Some(Ex::primary(format!("String({})", v.code), Ty::Str))
+            }
+            ("Vec" | "VecDeque", "from_iter") if args.len() == 1 => {
+                let v = arg(self, 0, &Ty::Iter(Box::new(expected.item())));
+                Some(Ex::primary(
+                    format!("Array({})", v.code),
+                    Ty::Vec(Box::new(v.ty.item())),
+                ))
+            }
+            ("HashSet" | "BTreeSet", "from_iter") if args.len() == 1 => {
+                let v = arg(self, 0, &Ty::Iter(Box::new(expected.item())));
+                let elem = v.ty.item();
+                Some(Ex::primary(
+                    format!("{}({})", crate::ty::set_type_name(&elem), v.code),
+                    Ty::Set(Box::new(elem), owner == "BTreeSet"),
+                ))
+            }
+            // `f64::from_bits(u)`.
+            ("f64" | "f32", "from_bits") if args.len() == 1 => {
+                let (swift, bits) = if owner == "f32" {
+                    ("Float", IntKind::U32)
+                } else {
+                    ("Double", IntKind::U64)
+                };
+                let v = arg(self, 0, &Ty::Int(bits));
+                Some(Ex::primary(
+                    format!("{swift}(bitPattern: {})", v.code),
+                    crate::ty::from_name(owner, vec![]),
+                ))
+            }
             ("String", "from" | "from_str") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Str);
                 if v.ty == Ty::Char {
@@ -1434,8 +1467,8 @@ impl Translator<'_> {
                     "map" | "filter" | "filter_map" | "flat_map" | "any" | "all" | "find"
                     | "position" | "for_each" | "take_while" | "skip_while" | "max_by_key"
                     | "min_by_key" | "sort_by_key" | "sort_by_cached_key" | "retain" | "inspect"
-                    | "find_map" | "partition" | "is_some_and" | "and_then" | "map_or"
-                    | "map_or_else",
+                    | "find_map" | "map_while" | "partition" | "is_some_and" | "and_then"
+                    | "map_or" | "map_or_else",
                     _,
                     _,
                 ) => {
@@ -2259,6 +2292,9 @@ impl Translator<'_> {
                         Ty::Vec(Box::new(Ty::Int(IntKind::U8))),
                     );
                 }
+                "is_ascii" => {
+                    return prim(format!("{r}.utf8.allSatisfy {{ $0 < 128 }}"), Ty::Bool);
+                }
                 "to_uppercase" => return prim(format!("{r}.uppercased()"), Ty::Str),
                 "to_lowercase" => return prim(format!("{r}.lowercased()"), Ty::Str),
                 // Only the ASCII letters change: `straße` stays as it is.
@@ -2689,6 +2725,18 @@ impl Translator<'_> {
                 "log" => return prim(format!("(log({}) / log({}))", recv.code, a(0)), t),
                 "atan2" => return prim(format!("atan2({}, {})", recv.code, a(0)), t),
                 "hypot" => return prim(format!("hypot({}, {})", recv.code, a(0)), t),
+                // `x.to_bits()`: the bits of the IEEE representation.
+                "to_bits" if float => {
+                    let bits = if t == Ty::Float(FloatKind::F32) {
+                        IntKind::U32
+                    } else {
+                        IntKind::U64
+                    };
+                    return prim(format!("{r}.bitPattern"), Ty::Int(bits));
+                }
+                "copysign" if float => {
+                    return prim(format!("copysign({}, {})", recv.code, a(0)), t);
+                }
                 "floor" => return prim(format!("{r}.rounded(.down)"), t),
                 "ceil" => return prim(format!("{r}.rounded(.up)"), t),
                 "round" => return prim(format!("{r}.rounded()"), t),
@@ -2905,8 +2953,9 @@ impl Translator<'_> {
                 }
                 "total_cmp" => {
                     self.helper("Ordering");
+                    let f = if t.is_float() { "rsTotalCmp" } else { "rsCmp" };
                     return prim(
-                        format!("rsCmp({}, {})", recv.code, a(0)),
+                        format!("{f}({}, {})", recv.code, a(0)),
                         Ty::Named("Ordering".into(), vec![]),
                     );
                 }
@@ -3211,6 +3260,8 @@ impl Translator<'_> {
                 self.helper("Ordering");
                 let f = if name == "partial_cmp" {
                     "rsPartialCmp"
+                } else if name == "total_cmp" && recv.ty.is_float() {
+                    "rsTotalCmp"
                 } else {
                     "rsCmp"
                 };
@@ -3488,12 +3539,22 @@ impl Translator<'_> {
                     "chunks"
                 };
                 let code = if name == "chunks_exact" {
-                    // Only the full chunks; `remainder()` gives the rest.
-                    format!("{r}.chunks({}).filter {{ $0.count == {} }}", a(0), a(0))
+                    // The full chunks; `remainder()` gives the rest.
+                    format!("{r}.chunksExact({})", a(0))
                 } else {
                     format!("{r}.{f}({})", a(0))
                 };
                 prim(code, iter(Ty::Vec(Box::new(item))))
+            }
+            // `chunks.remainder()` of a `chunks_exact(n)` kept in a variable.
+            "remainder" if args.is_empty() => prim(format!("{r}.remainder"), item.clone()),
+            "map_while" if args.len() == 1 => {
+                self.helper("vec");
+                let ret = match args.first().map(|e| &e.ty) {
+                    Some(Ty::Fn(_, r)) => r.item(),
+                    _ => Ty::Unknown,
+                };
+                prim(format!("{r}.mapWhile({})", a(0)), iter(ret))
             }
             "concat" => {
                 if item == Ty::Str {
@@ -3635,6 +3696,10 @@ impl Translator<'_> {
                 )
             }
             "fuse" => recv.clone(),
+            "inspect" if args.len() == 1 => {
+                self.helper("vec");
+                prim(format!("{r}.inspect({})", a(0)), iter(item))
+            }
             "inspect" => recv.clone(),
             "sum" | "product" => {
                 let mut t = turbofish

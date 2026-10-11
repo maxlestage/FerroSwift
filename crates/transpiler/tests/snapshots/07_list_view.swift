@@ -1,13 +1,14 @@
 import SwiftUI
 
-struct Task: Equatable, Identifiable {
+struct TaskType: Equatable, Identifiable, RsDebugNamed {
+    var rsDebugName: String { "Task" }
     var id: UInt32
     var title: String
     var done: Bool
 }
 
 struct TaskList: View {
-    @State var tasks: [Task] = []
+    @State var tasks: [TaskType] = []
     @State var draft = ""
 
     var body: some View {
@@ -17,7 +18,7 @@ struct TaskList: View {
                     TextField("New task", text: $draft)
                     Button("Add") {
                         let id = UInt32(truncatingIfNeeded: tasks.count) + 1
-                        tasks.append(Task(id: id, title: draft, done: false))
+                        tasks.append(TaskType(id: id, title: draft, done: false))
                         draft.removeAll()
                     }
                 }
@@ -33,3 +34,11 @@ struct TaskList: View {
         }
     }
 }
+
+// MARK: - FerroSwift support
+
+/// Support types with their own `{:?}` text.
+protocol RsDebugCustom { var rsDebugText: String { get } }
+/// Support types printed by `{:?}` under Rust's name (`RefCell { value: 1 }`).
+protocol RsDebugNamed { var rsDebugName: String { get } }
+

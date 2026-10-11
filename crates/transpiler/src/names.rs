@@ -99,6 +99,63 @@ pub fn constant(name: &str) -> String {
     }
 }
 
+/// Swift's own type and protocol names: a type of the crate with one of these names is
+/// renamed (`enum Error` → `ErrorType`), as it would hide Swift's.
+const RESERVED_TYPES: &[&str] = &[
+    "Error",
+    "Result",
+    "Option",
+    "Optional",
+    "String",
+    "Character",
+    "Int",
+    "Double",
+    "Float",
+    "Bool",
+    "Array",
+    "Dictionary",
+    "Set",
+    "Any",
+    "Never",
+    "Void",
+    "Type",
+    "Self",
+    "Sequence",
+    "Collection",
+    "Equatable",
+    "Hashable",
+    "Comparable",
+    "Codable",
+    "Encodable",
+    "Decodable",
+    "Identifiable",
+    "Data",
+    "Date",
+    "URL",
+    "Range",
+    "Slice",
+    "Substring",
+    "Mirror",
+    "Hasher",
+    "Task",
+    "Thread",
+    "Timer",
+    "Decimal",
+    "Ordering",
+    "Protocol",
+];
+
+/// The Swift name of a type of the crate: `my_type` → `MyType`, and `Error` → `ErrorType`
+/// when the name is Swift's own.
+pub fn type_name(name: &str) -> String {
+    let converted = upper_camel(name);
+    if RESERVED_TYPES.contains(&converted.as_str()) {
+        format!("{converted}Type")
+    } else {
+        converted
+    }
+}
+
 /// `my_type` or `MyType` → `MyType`.
 pub fn upper_camel(name: &str) -> String {
     let raw = name.strip_prefix("r#").unwrap_or(name);
