@@ -99,6 +99,14 @@ func rsPartialCmp<T: Comparable>(_ a: T, _ b: T) -> Ordering? {
     a < b ? .less : a == b ? .equal : b < a ? .greater : nil
 }
 
+/// `a.total_cmp(&b)`: IEEE total order (`-NaN < -inf < … < -0 < 0 < … < inf < NaN`).
+func rsTotalCmp<T: BinaryFloatingPoint>(_ a: T, _ b: T) -> Ordering {
+    if a.isTotallyOrdered(belowOrEqualTo: b) {
+        return b.isTotallyOrdered(belowOrEqualTo: a) ? .equal : .less
+    }
+    return .greater
+}
+
 /// `(a, b).cmp(&(c, d))`: tuples compare element by element.
 func rsCmp<A: Comparable, B: Comparable>(_ a: (A, B), _ b: (A, B)) -> Ordering {
     rsCmp(a.0, b.0).then(rsCmp(a.1, b.1))
@@ -209,6 +217,12 @@ extension Array {
         stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
     }
 
+    /// `v.chunks_exact(n)`: the full chunks, and `remainder()` for what is left.
+    func chunksExact(_ size: Int) -> RsChunksExact<Element> {
+        let full = count - count % size
+        return RsChunksExact(chunks: Array(self[..<full]).chunks(size), remainder: Array(self[full...]))
+    }
+
     /// `v.rchunks(n)`: the chunks from the end.
     func rchunks(_ size: Int) -> [[Element]] {
         var out: [[Element]] = []
@@ -239,6 +253,33 @@ extension Array {
 
     mutating func sortByKey<K: Comparable>(_ key: (Element) throws -> K) rethrows {
         try sort { try key($0) < key($1) }
+    }
+}
+
+struct RsChunksExact<Element>: Sequence {
+    let chunks: [[Element]]
+    let remainder: [Element]
+
+    func makeIterator() -> IndexingIterator<[[Element]]> { chunks.makeIterator() }
+}
+
+extension Sequence {
+    /// `iter.inspect(|x| …)`: the closure runs as each element is pulled.
+    func inspect(_ f: @escaping (Element) -> Void) -> LazyMapSequence<Self, Element> {
+        lazy.map { x in
+            f(x)
+            return x
+        }
+    }
+
+    /// `iter.map_while(|x| …)`: the values until the closure gives `None`.
+    func mapWhile<T>(_ f: (Element) throws -> T?) rethrows -> [T] {
+        var out: [T] = []
+        for x in self {
+            guard let y = try f(x) else { break }
+            out.append(y)
+        }
+        return out
     }
 }
 
