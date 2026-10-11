@@ -64,6 +64,8 @@
 }
 
 html {
+  /* Never a horizontal scroll, on phones too: nothing may stick out of the screen. */
+  overflow-x: clip;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   scroll-padding-top: calc(var(--header) + 16px);
