@@ -26,7 +26,7 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 | `BinaryHeap<T>` | `RsBinaryHeap<T>`, a max-heap of the support file laid out like Rust's; a tuple in it, or in a `Reverse`, is stored as `RsOrd2` and given back as a tuple |
 | `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<T>` | `T` |
 | `RefCell<T>`, `Cell<T>`, `Mutex<T>`, `RwLock<T>` | `RsRefCell<T>`, a class holding the value: `Rc` clones share it |
-| `&T`, `&mut T` | `T` (`inout T` for a `&mut` parameter) |
+| `&T`, `&mut T` | `T` (`inout T` for a `&mut` parameter; a method returning `&mut T` returns a `WritableKeyPath<Self, T>`) |
 | `impl Trait`, `dyn Trait` | `some Proto`, `any Proto` |
 | `fn(A) -> B`, closures | `(A) -> B` |
 

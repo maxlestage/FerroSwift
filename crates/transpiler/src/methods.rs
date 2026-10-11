@@ -659,7 +659,8 @@ impl Translator<'_> {
             ("mem", "swap") if args.len() == 2 => {
                 let a = self.place(strip_ref(&args[0]));
                 let b = self.place(strip_ref(&args[1]));
-                Some(Ex::primary(format!("swap(&{a}, &{b})"), Ty::Unit))
+                let f = self.global_fn("swap");
+                Some(Ex::primary(format!("{f}(&{a}, &{b})"), Ty::Unit))
             }
             ("mem", "take") if args.len() == 1 => {
                 self.helper("mem");
@@ -754,6 +755,26 @@ impl Translator<'_> {
                         Box::new(Ty::Named("RsTryFromIntError".into(), vec![])),
                     ),
                 ))
+            }
+            // `u32::from_be_bytes(bytes)`: the bytes in the width of the Rust type.
+            (o, "from_be_bytes" | "from_le_bytes" | "from_ne_bytes")
+                if args.len() == 1 && IntKind::parse(o).is_some() =>
+            {
+                self.helper("int");
+                let k = IntKind::parse(o).expect("integer kind");
+                let t = crate::ty::from_name(o, vec![]);
+                let bytes = arg(self, 0, &Ty::Vec(Box::new(Ty::Int(IntKind::U8))));
+                let label = if last == "from_le_bytes" {
+                    "rsLeBytes"
+                } else {
+                    "rsBeBytes"
+                };
+                let code = if k == IntKind::I32 {
+                    format!("Int(Int32({label}: {}))", bytes.code)
+                } else {
+                    format!("{}({label}: {})", t.swift_lossy(), bytes.code)
+                };
+                Some(Ex::primary(code, t))
             }
             (o, "from_str_radix") if args.len() == 2 && IntKind::parse(o).is_some() => {
                 self.helper("parse");
@@ -1061,6 +1082,15 @@ impl Translator<'_> {
             let (codes, arg_tys) = self.call_args_typed(&m.args, Some(&sig.params));
             if sig.property {
                 return Ex::primary(callee, sig.ret.clone());
+            }
+            // `self.get(name)`, `bank.open("ann", 1)`: a key path into the receiver.
+            if sig.key_path {
+                let root = if crate::expr::is_self(&m.receiver) {
+                    self.self_code()
+                } else {
+                    wrap(&recv, P_PRIMARY)
+                };
+                return self.key_path_call(format!("{callee}({})", codes.join(", ")), &sig, &root);
             }
             let mut ex = self.sig_result(format!("{callee}({})", codes.join(", ")), &sig);
             if sig.returns_self_mut {
@@ -2880,7 +2910,31 @@ impl Translator<'_> {
                         Ty::Named("Ordering".into(), vec![]),
                     );
                 }
-                "to_le_bytes" | "to_be_bytes" | "swap_bytes" => {}
+                // `x.to_be_bytes()`, `x.swap_bytes()`, `x.reverse_bits()`: in the width of the
+                // Rust type (`i32` is held in a 64-bit `Int`).
+                "to_le_bytes" | "to_be_bytes" | "to_ne_bytes" | "swap_bytes" | "reverse_bits" => {
+                    self.helper("int");
+                    let Ty::Int(k) = t else { return prim(r, t) };
+                    let narrow = if k == IntKind::I32 {
+                        format!("Int32(truncatingIfNeeded: {})", recv.code)
+                    } else {
+                        r.clone()
+                    };
+                    let (call, ret) = match name {
+                        "to_le_bytes" => ("toLeBytes()", Ty::Vec(Box::new(Ty::Int(IntKind::U8)))),
+                        "to_be_bytes" => ("toBeBytes()", Ty::Vec(Box::new(Ty::Int(IntKind::U8)))),
+                        "to_ne_bytes" => ("toNeBytes()", Ty::Vec(Box::new(Ty::Int(IntKind::U8)))),
+                        "swap_bytes" => ("byteSwapped", t.clone()),
+                        _ => ("reverseBits()", t.clone()),
+                    };
+                    let code = if k == IntKind::I32 && matches!(name, "swap_bytes" | "reverse_bits")
+                    {
+                        format!("Int({narrow}.{call})")
+                    } else {
+                        format!("{narrow}.{call}")
+                    };
+                    return prim(code, ret);
+                }
                 _ => {}
             }
         }

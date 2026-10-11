@@ -107,6 +107,9 @@ pub struct FnSig {
     pub property: bool,
     /// `fn add(&mut self, …) -> &mut Self`: a builder method, chained as statements.
     pub returns_self_mut: bool,
+    /// `fn get(&mut self, …) -> &mut T` (or `Option`/`Result` of it): returns a
+    /// `WritableKeyPath` to the value.
+    pub key_path: bool,
     /// The type parameters, in order (`fn largest<T: PartialOrd>(…)`).
     pub generics: Vec<String>,
 }
@@ -589,6 +592,10 @@ impl Symbols {
             }
             syn::ReturnType::Default => false,
         };
+        let key_path = match &sig.output {
+            syn::ReturnType::Type(_, t) => has_mut_reference(t) && !returns_self_mut,
+            syn::ReturnType::Default => false,
+        };
         FnSig {
             params,
             ret,
@@ -596,6 +603,7 @@ impl Symbols {
             is_init: false,
             property: false,
             returns_self_mut,
+            key_path,
             generics: type_params(&sig.generics),
         }
     }
@@ -777,6 +785,19 @@ pub fn type_name(t: &Type) -> Option<String> {
         Type::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
         Type::Reference(r) => type_name(&r.elem),
         _ => None,
+    }
+}
+
+/// `&mut T`, `Option<&mut T>`, `Result<&mut T, E>` as a return type.
+pub fn has_mut_reference(t: &Type) -> bool {
+    match t {
+        Type::Reference(r) => r.mutability.is_some(),
+        Type::Path(p) => p.path.segments.last().is_some_and(|seg| {
+            matches!(seg.ident.to_string().as_str(), "Option" | "Result")
+                && matches!(&seg.arguments, syn::PathArguments::AngleBracketed(a)
+                    if matches!(a.args.first(), Some(syn::GenericArgument::Type(inner)) if has_mut_reference(inner)))
+        }),
+        _ => false,
     }
 }
 
