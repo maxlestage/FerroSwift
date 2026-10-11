@@ -37,7 +37,34 @@ impl Translator<'_> {
     }
 
     pub fn stmts(&mut self, stmts: &[Stmt], sink: Sink, open: usize, close: usize) -> Vec<String> {
+        self.drop_frames.push(None);
         let mut out = Vec::new();
+        // `fn consume(g: Guard)`, `for g in guards`: dropped at the end of the body.
+        for (rust, swift) in std::mem::take(&mut self.pending_drops) {
+            let lines = self.register_drop(&rust, &swift, stmts);
+            out.extend(lines);
+        }
+        let mut out = self.stmts_inner(stmts, sink, open, close, out);
+        if let Some(Some(mark)) = self.drop_frames.pop() {
+            out.splice(
+                0..0,
+                [
+                    format!("let {mark} = RsDrops.stack.count"),
+                    format!("defer {{ rsDropScope({mark}) }}"),
+                ],
+            );
+        }
+        out
+    }
+
+    fn stmts_inner(
+        &mut self,
+        stmts: &[Stmt],
+        sink: Sink,
+        open: usize,
+        close: usize,
+        mut out: Vec<String>,
+    ) -> Vec<String> {
         let mut prev = open;
         let mut writebacks: Vec<(usize, String)> = Vec::new();
         for (i, s) in stmts.iter().enumerate() {
@@ -79,7 +106,20 @@ impl Translator<'_> {
                 }
             }
             let mut lines = match s {
-                Stmt::Local(l) => self.with_prelude(|t| t.local(l)),
+                Stmt::Local(l) => {
+                    let mut lines = self.with_prelude(|t| t.local(l));
+                    // `let g = Guard::new();`: dropped when the block ends, unless moved.
+                    if let Some(rust) = bound_name(&l.pat) {
+                        if let Some(local) = self.lookup(&rust).cloned() {
+                            let ty = self.local_ty(&local);
+                            if self.needs_drop(&ty) && !local.alias {
+                                let reg = self.register_drop(&rust, &local.swift, &stmts[i + 1..]);
+                                lines.extend(reg);
+                            }
+                        }
+                    }
+                    lines
+                }
                 Stmt::Item(item) => self.local_item(item),
                 Stmt::Expr(e, None) if last => self.with_prelude(|t| t.tail(e, &sink)),
                 Stmt::Expr(e, _) => self.with_prelude(|t| t.expr_stmt(e)),
@@ -270,6 +310,10 @@ impl Translator<'_> {
                 } else {
                     v
                 };
+                // `let _ = make_guard();`: a value bound to nothing is dropped at once.
+                if !crate::expr::is_place(value_expr) && self.needs_drop(&v.ty) {
+                    return vec![format!("rsDropValue({})", v.code)];
+                }
                 vec![format!("_ = {}", v.code)]
             }
             // `let (mut count, mut first) = (0, None);`: one `let` per element, so that each
@@ -905,6 +949,9 @@ impl Translator<'_> {
             if let Some(lines) = self.link_assign(a) {
                 return lines;
             }
+            if let Some(lines) = self.drop_assign(a) {
+                return lines;
+            }
         }
         // `opt.get_or_insert_with(f);` on its own: only the insertion, written as a prelude.
         if let Expr::MethodCall(m) = e {
@@ -997,6 +1044,25 @@ impl Translator<'_> {
                 }
                 if v.code.is_empty() {
                     return vec![];
+                }
+                // `make_guard("temp");`, `v.pop();`: the value returned is dropped at once.
+                let owned = match e {
+                    Expr::Call(_) => true,
+                    Expr::MethodCall(m) => matches!(
+                        m.method.to_string().as_str(),
+                        "pop"
+                            | "remove"
+                            | "swap_remove"
+                            | "take"
+                            | "replace"
+                            | "insert"
+                            | "pop_front"
+                            | "pop_back"
+                    ),
+                    _ => false,
+                };
+                if owned && self.needs_drop(&v.ty) {
+                    return vec![format!("rsDropValue({})", v.code)];
                 }
                 let discard = matches!(e, Expr::Call(_) | Expr::MethodCall(_))
                     && !matches!(v.ty, Ty::Unit | Ty::Never | Ty::Unknown | Ty::View)
@@ -1382,6 +1448,11 @@ impl Translator<'_> {
         let mut out = String::new();
         self.push_scope();
         let cond = self.condition(&i.cond);
+        // `if let Some(j) = next_job()`: `j` is dropped when the branch ends.
+        if let Expr::Let(l) = &*i.cond {
+            let owned = self.owned_bindings(&l.pat, &l.expr);
+            self.pending_drops.extend(owned);
+        }
         let then = self.block_lines(&i.then_branch, sink.clone());
         self.pop_scope();
         out.push_str(&format!(
@@ -1480,12 +1551,15 @@ impl Translator<'_> {
                 }
             }
             let mut body = pats.lets.clone();
+            // `Some(j) => …` on a temporary: `j` is dropped when the arm ends.
+            let owned = self.owned_bindings(&arm.pat, &m.expr);
             // An arm is a scope already: its block needs no `do { }`.
-            match &*arm.body {
-                Expr::Block(b) if b.label.is_none() => {
+            match (&*arm.body, self.body_with_drops(&arm.body, owned, sink)) {
+                (_, Some(lines)) => body.extend(lines),
+                (Expr::Block(b), None) if b.label.is_none() => {
                     body.extend(self.block_lines(&b.block, sink.clone()))
                 }
-                other => body.extend(self.with_prelude(|t| t.tail(other, sink))),
+                (other, None) => body.extend(self.with_prelude(|t| t.tail(other, sink))),
             }
             if let Some(wb) = &write_back {
                 // A `return` in the arm (or the arm's value returned) would skip a store at
@@ -1897,6 +1971,13 @@ impl Translator<'_> {
                 if let Pat::Ident(id) = &*f.pat {
                     let depth = crate::expr::chain_ref_depth(&f.expr);
                     self.mark_references(&id.ident.to_string(), depth);
+                    // `for g in guards`: each item is dropped at the end of its iteration.
+                    if depth == 0 && self.needs_drop(&iter.item) {
+                        let rust = id.ident.to_string();
+                        if let Some(local) = self.lookup(&rust).cloned() {
+                            self.pending_drops.push((rust, local.swift));
+                        }
+                    }
                 }
                 format!("for {pat} in {}", iter.code)
             }
@@ -1990,6 +2071,11 @@ impl Translator<'_> {
             .split_last()
             .map(|(c, p)| (c.clone(), p.to_vec()))
             .unwrap_or_default();
+        // `while let Some(job) = queue.pop()`: each `job` is dropped when its turn ends.
+        if let Expr::Let(l) = &*w.cond {
+            let owned = self.owned_bindings(&l.pat, &l.expr);
+            self.pending_drops.extend(owned);
+        }
         let body = self.block_lines(&w.body, Sink::Discard);
         self.pop_scope();
         self.loops.pop();
@@ -2865,5 +2951,14 @@ fn unsuffixed_ints(e: &Expr) -> bool {
             }
         }
         _ => false,
+    }
+}
+
+/// `let g = …`, `let mut g: Guard = …`: the name bound.
+fn bound_name(p: &Pat) -> Option<String> {
+    match p {
+        Pat::Ident(i) if i.subpat.is_none() => Some(i.ident.to_string()),
+        Pat::Type(t) => bound_name(&t.pat),
+        _ => None,
     }
 }

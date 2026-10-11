@@ -232,7 +232,15 @@ impl Translator<'_> {
                     _ => self.path_expr(&p.path, expected, e.span()),
                 }
             }
-            Expr::Path(p) => self.path_expr(&p.path, expected, e.span()),
+            Expr::Path(p) => {
+                let v = self.path_expr(&p.path, expected, e.span());
+                // `consume(g)` with `g` to drop: moved out, its scope no longer drops it.
+                let start = e.span().start();
+                match self.move_sites.get(&(start.line, start.column)) {
+                    Some(flag) => Ex::primary(format!("rsMoved(&{flag}, {})", v.code), v.ty),
+                    None => v,
+                }
+            }
             Expr::Binary(b) => self.binary(b, expected),
             Expr::Unary(u) => self.unary(u, expected),
             Expr::Paren(p) => {
@@ -2262,6 +2270,7 @@ impl Translator<'_> {
         let mut tys = Vec::new();
         let mut prologue = Vec::new();
         let mut inouts = Vec::new();
+        let mut drop_params: Vec<(String, String)> = Vec::new();
         // `|f: fn(i32) -> i32| move |x| f(x)`: a closure given to a closure that returns a
         // closure is captured by it, so it escapes.
         let returns_closure = body_is_closure(&c.body)
@@ -2292,6 +2301,15 @@ impl Translator<'_> {
                         .unwrap_or(0),
                 };
                 self.mark_references(&id.ident.to_string(), depth);
+                // `opt.map(|n| n.id)`: `n` is dropped when the closure ends.
+                if depth == 0
+                    && self
+                        .consuming_closures
+                        .contains(&(start.line, start.column))
+                    && self.needs_drop(&ty)
+                {
+                    drop_params.push((id.ident.to_string(), name.clone()));
+                }
             }
             // `|out: &mut Vec<Token>|`: an `inout` parameter of the closure.
             let inout = hinted_inout
@@ -2354,6 +2372,7 @@ impl Translator<'_> {
         let body_expr = &*c.body;
         let mut body_ty = Ty::Unknown;
         let single_expr: Option<&Expr> = match body_expr {
+            _ if !drop_params.is_empty() => None,
             Expr::Block(b) if b.block.stmts.len() == 1 && throws.is_none() => {
                 match &b.block.stmts[0] {
                     syn::Stmt::Expr(e, None) if !needs_statements(e) && !has_control_flow(e) => {
@@ -2389,8 +2408,17 @@ impl Translator<'_> {
                     Sink::Return
                 };
                 let mut l = prologue.clone();
+                self.pending_drops.extend(drop_params.iter().cloned());
                 match body_expr {
                     Expr::Block(b) => l.extend(self.block_lines(&b.block, sink)),
+                    // A parameter to drop: the body becomes a block, whose end drops it.
+                    e if !drop_params.is_empty() => {
+                        let block = syn::Block {
+                            brace_token: Default::default(),
+                            stmts: vec![syn::Stmt::Expr(e.clone(), None)],
+                        };
+                        l.extend(self.block_lines(&block, sink));
+                    }
                     e => {
                         let lines = self.with_prelude(|t| t.tail(e, &sink));
                         l.extend(lines);

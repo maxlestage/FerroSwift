@@ -173,6 +173,8 @@ pub struct Symbols {
     pub user_type_names: HashSet<String>,
     /// Types that implement `Display` (their `description`).
     pub display: HashSet<String>,
+    /// The types with an `impl Drop` (Swift names).
+    pub drop_types: HashSet<String>,
     /// Types whose `Display` asks its formatter for the spec (`f.pad(…)`, `f.precision()`,
     /// `self.0.fmt(f)`): written with a formatter, so that the width applies to them, unlike
     /// `write!`-based impls.
@@ -533,6 +535,9 @@ impl Symbols {
             .as_ref()
             .and_then(|(_, path, _)| path.segments.last())
             .map(|s| s.ident.to_string());
+        if trait_name.as_deref() == Some("Drop") {
+            self.drop_types.insert(names::type_name(&type_name));
+        }
         match trait_name.as_deref() {
             Some("View") => {
                 self.ui = true;
@@ -1284,19 +1289,24 @@ pub fn phantom_params(sig: &syn::Signature, closures: &HashMap<String, Ty>) -> V
 
 /// Whether the file counts references or holds weak ones.
 fn counts_references(file: &syn::File) -> bool {
-    fn scan(ts: proc_macro2::TokenStream) -> bool {
-        ts.into_iter().any(|t| match t {
-            proc_macro2::TokenTree::Ident(i) => {
-                matches!(
-                    i.to_string().as_str(),
-                    "strong_count" | "weak_count" | "downgrade" | "Weak"
-                )
+    fn scan(ts: proc_macro2::TokenStream, seen: &mut HashSet<String>) {
+        for t in ts {
+            match t {
+                proc_macro2::TokenTree::Ident(i) => {
+                    seen.insert(i.to_string());
+                }
+                proc_macro2::TokenTree::Group(g) => scan(g.stream(), seen),
+                _ => {}
             }
-            proc_macro2::TokenTree::Group(g) => scan(g.stream()),
-            _ => false,
-        })
+        }
     }
-    scan(quote::ToTokens::to_token_stream(file))
+    let mut seen = HashSet::new();
+    scan(quote::ToTokens::to_token_stream(file), &mut seen);
+    ["strong_count", "weak_count", "downgrade", "Weak"]
+        .iter()
+        .any(|n| seen.contains(*n))
+        // An `Rc` of a value with `impl Drop`: dropped with its last handle, not per copy.
+        || seen.contains("Drop") && (seen.contains("Rc") || seen.contains("Arc"))
 }
 
 /// Whether a written type is a `VecDeque` (behind references).

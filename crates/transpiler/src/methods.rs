@@ -741,6 +741,10 @@ impl Translator<'_> {
                         Ty::Unit,
                     ));
                 }
+                // `drop(guard)`: its `impl Drop` runs now.
+                if self.needs_drop(&v.ty) {
+                    return Some(Ex::primary(format!("rsDropValue({})", v.code), Ty::Unit));
+                }
                 Some(Ex::primary("", Ty::Unit))
             }
             "swap" | "take" | "replace" => {
@@ -1481,6 +1485,33 @@ impl Translator<'_> {
     // ----- Method calls -----
 
     pub fn method_call(&mut self, m: &ExprMethodCall, expected: &Ty) -> Ex {
+        // `pick().map(|n| n.id)`: the closure owns its parameter, dropped when it ends.
+        if !self.syms.drop_types.is_empty()
+            && matches!(
+                m.method.to_string().as_str(),
+                "map"
+                    | "and_then"
+                    | "is_some_and"
+                    | "is_ok_and"
+                    | "for_each"
+                    | "filter_map"
+                    | "flat_map"
+                    | "find_map"
+                    | "unwrap_or_else"
+            )
+            && crate::expr::chain_ref_depth(&m.receiver) == 0
+            && !matches!(&*m.receiver, Expr::MethodCall(r) if matches!(
+                r.method.to_string().as_str(),
+                "as_ref" | "as_mut" | "as_deref" | "iter_mut" | "get" | "get_mut" | "first"
+                    | "last" | "values" | "keys" | "values_mut" | "peek" | "first_mut"
+                    | "last_mut"
+            ))
+        {
+            if let Some(Expr::Closure(c)) = m.args.first() {
+                let start = c.or1_token.span.start();
+                self.consuming_closures.insert((start.line, start.column));
+            }
+        }
         // `v.iter().map(|m| *m)`: the parameter of the closure is a reference.
         let items = crate::expr::chain_ref_depth(&m.receiver);
         if items > 0 {
@@ -4799,6 +4830,10 @@ impl Translator<'_> {
                     format!("{}({})", names::lower_camel(name), codes.join(", "))
                 };
                 prim(format!("{r}.{call}"), ret)
+            }
+            // `v.clear()` of values to drop: dropped first, in order.
+            "clear" if self.needs_drop(&recv.ty) => {
+                prim(format!("rsDropValue({r}); {r}.removeAll()"), Ty::Unit)
             }
             "clear" => prim(format!("{r}.removeAll()"), Ty::Unit),
             "contains" => prim(format!("{r}.contains({})", a(0)), Ty::Bool),

@@ -45,8 +45,9 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("option_cmp", &[], OPTION_CMP),
     ("array_cmp", &[], ARRAY_CMP),
     ("link", &[], LINK),
-    ("rc", &["debug"], RC),
+    ("rc", &["debug", "panic"], RC),
     ("mutref", &["debug"], MUTREF),
+    ("drop", &["panic"], DROP),
     ("int128", &["debug"], INT128),
     ("panic", &["debug", "debug_custom"], PANIC),
     ("thread", &["debug", "duration", "panic"], THREAD),
@@ -2782,6 +2783,8 @@ func rsPanic(_ message: String, _ location: String) -> Never {
         text += "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
     }
     FileHandle.standardError.write(Data(text.utf8))
+    // Unwinding: the values of the scopes left are dropped, innermost first.
+    rsDropScope(thread?.dropMark ?? 0)
     // A spawned thread: only the thread ends, and its `join` returns an error.
     if let thread {
         thread.panicked = true
@@ -2797,6 +2800,8 @@ final class RsPanicContext: @unchecked Sendable {
     let name: String
     var panicked = false
     let done = DispatchSemaphore(value: 0)
+    /// The values to drop when the thread panics: those above this mark.
+    let dropMark = RsDrops.stack.count
     init(name: String) { self.name = name }
 
     /// Runs `body` on a thread of its own and waits for it: a panic ends that thread only.
@@ -2831,6 +2836,25 @@ func rsCatchUnwind<T>(_ body: @escaping () -> T) -> Result<T, RsJoinError> {
     context.run(RsThreadBody { result = body() })
     if context.panicked { return .failure(RsJoinError()) }
     return .success(result!)
+}
+
+/// The values of the scopes being run whose type has an `impl Drop`, innermost last: a scope
+/// drops its own when it ends, a panic all of them.
+enum RsDrops {
+    nonisolated(unsafe) static var stack: [() -> Void] = []
+    /// Drops a value whose last `Rc` handle goes (set when values are dropped at all).
+    nonisolated(unsafe) static var dropValue: ((Any) -> Void)? = nil
+}
+
+/// A handle sharing a value (`Rc`, `Weak`): dropping it releases it.
+protocol RsReleasable: AnyObject {
+    func release()
+}
+
+func rsDropScope(_ mark: Int) {
+    while RsDrops.stack.count > mark {
+        RsDrops.stack.removeLast()()
+    }
 }
 
 enum RsPanics {
@@ -2990,7 +3014,7 @@ final class RsRcBox<T>: @unchecked Sendable {
 
 /// `Rc<T>` in a crate counting references: each clone is a handle, released with it (at
 /// the end of its scope, or by `drop`), as Rust drops it.
-final class RsRc<T>: @unchecked Sendable {
+final class RsRc<T>: @unchecked Sendable, RsReleasable {
     let box: RsRcBox<T>
     private var released = false
 
@@ -3011,7 +3035,10 @@ final class RsRc<T>: @unchecked Sendable {
         if released { return }
         released = true
         box.strong -= 1
-        if box.strong == 0 { box.value = nil }
+        if box.strong == 0, let value = box.value {
+            box.value = nil
+            RsDrops.dropValue?(value)
+        }
     }
 
     var value: T {
@@ -3026,7 +3053,7 @@ final class RsRc<T>: @unchecked Sendable {
 }
 
 /// `Weak<T>`.
-final class RsWeak<T>: @unchecked Sendable, RsDebugCustom {
+final class RsWeak<T>: @unchecked Sendable, RsDebugCustom, RsReleasable {
     let box: RsRcBox<T>?
     private var released = false
 
@@ -4439,5 +4466,53 @@ extension RsUInt128: RsWideInteger {
 
 extension RsInt128: RsWideInteger {
     func rsHex(uppercase: Bool) -> String { String(bits, radix: 16, uppercase: uppercase) }
+}
+"#;
+
+const DROP: &str = r#"
+/// `impl Drop for T`.
+protocol RsDrop {
+    mutating func drop()
+}
+
+/// Drops a value as Rust does: its own `drop`, then its fields and items, in order.
+func rsDropValue<T>(_ value: T) {
+    rsDropAny(value)
+}
+
+private func rsDropAny(_ value: Any) {
+    if let handle = value as? RsReleasable {
+        handle.release()
+        return
+    }
+    let mirror = Mirror(reflecting: value)
+    switch mirror.displayStyle {
+    case .optional:
+        for child in mirror.children { rsDropAny(child.value) }
+        return
+    case .class where String(describing: type(of: value)).hasPrefix("Rs"):
+        // `Rc`, `RefCell`, `Weak`, a kept `&mut`: shared, not owned by the value dropped.
+        return
+    default:
+        break
+    }
+    if var droppable = value as? any RsDrop {
+        droppable.drop()
+    }
+    for child in mirror.children { rsDropAny(child.value) }
+}
+
+/// Drops the value when the scope being run ends (or panics).
+func rsOnDrop(_ drop: @escaping () -> Void) {
+    if RsDrops.dropValue == nil {
+        RsDrops.dropValue = { rsDropAny($0) }
+    }
+    RsDrops.stack.append(drop)
+}
+
+/// `consume(g)`: the value moves, the scope it leaves no longer drops it.
+func rsMoved<T>(_ alive: inout Bool, _ value: T) -> T {
+    alive = false
+    return value
 }
 "#;
