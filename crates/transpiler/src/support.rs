@@ -360,6 +360,11 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
         list("(", ")", [(nil, element)])
         return
     }
+    // `(a, b)` held comparable, in a heap or a `Reverse`.
+    if rsTypeName(value) == "RsOrd2" || rsTypeName(value) == "RsOrd3" {
+        list("(", ")", mirror.children.map { (nil, $0.value) })
+        return
+    }
     switch value {
     case let s as String:
         out += "\""
