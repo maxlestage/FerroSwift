@@ -32,18 +32,23 @@ fn ui_constructors_with_wrong_arguments_are_errors() {
 }
 
 #[test]
-fn shared_mutability_is_a_var_and_a_warning() {
+fn shared_mutability_is_a_cell_class() {
     let out = transpile(
-        "use std::{cell::RefCell, rc::Rc};\nfn main() {\n    let shared = Rc::new(RefCell::new(0));\n    *shared.borrow_mut() += 1;\n}",
+        "use std::{cell::RefCell, rc::Rc};\nfn main() {\n    let shared = Rc::new(RefCell::new(0));\n    let other = Rc::clone(&shared);\n    *shared.borrow_mut() += 1;\n    println!(\"{}\", other.borrow());\n}",
     );
-    assert!(out.swift.contains("var shared = 0"), "{}", out.swift);
     assert!(
-        out.diagnostics
-            .iter()
-            .any(|d| !d.is_error() && d.message.contains("RefCell")),
-        "{:?}",
-        out.diagnostics
+        out.swift.contains("let shared = RsRefCell(0)"),
+        "{}",
+        out.swift
     );
+    assert!(out.swift.contains("let other = shared"), "{}", out.swift);
+    assert!(out.swift.contains("shared.value += 1"), "{}", out.swift);
+    assert!(
+        out.swift.contains("final class RsRefCell<T>"),
+        "{}",
+        out.swift
+    );
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
 }
 
 #[test]

@@ -25,6 +25,7 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 | `(A,)` | `RsTuple1<A>`, a struct of the support file (Swift has no tuple of one element) |
 | `BinaryHeap<T>` | `RsBinaryHeap<T>`, a max-heap of the support file laid out like Rust's; a tuple in it, or in a `Reverse`, is stored as `RsOrd2` and given back as a tuple |
 | `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<T>` | `T` |
+| `RefCell<T>`, `Cell<T>`, `Mutex<T>`, `RwLock<T>` | `RsRefCell<T>`, a class holding the value: `Rc` clones share it |
 | `&T`, `&mut T` | `T` (`inout T` for a `&mut` parameter) |
 | `impl Trait`, `dyn Trait` | `some Proto`, `any Proto` |
 | `fn(A) -> B`, closures | `(A) -> B` |
@@ -65,7 +66,7 @@ Closures become Swift closures (`|x| x * 2` → `{ x in x * 2 }`), and iterator 
 
 ## Errors
 
-A function returning `Result<T, E>` becomes a function that `throws(E)`; `?` becomes `try`, `Err(e)` a `throw`, and a `match` on a `Result` catches the error:
+A function returning `Result<T, E>` becomes a function that `throws(E)`; `?` becomes `try`, `Err(e)` a `throw`, and a `match` on a `Result` catches the error. An error that is a `String`, a number, a `bool` or a `char` is thrown as that value (the support file makes the type an `Error`):
 
 ```rust
 fn check(name: &str) -> Result<&str, LoginError> {
@@ -93,7 +94,7 @@ Error enums conform to `Error`. Typed `throws` needs Swift 6 (Xcode 16).
 
 ## Strings and formatting
 
-`format!`, `println!`, `eprintln!` and `write!` become string interpolation. Values print exactly as in Rust thanks to small functions of the support file: `{}` of `1.0` is `1`, `{:.2}` rounds the same way, `{:?}` writes `Some(Point { x: 1.0, y: 2.5 })`, and widths, alignment and padding (`{:>8}`, `{:05}`) are kept — in `{:>7?}` they reach the numbers inside the value, as with Rust's derived `Debug`. Common string methods have their Swift equivalent (`trim` → `trimmingCharacters(in:)`, `split` → `components(separatedBy:)`, `to_uppercase` → `uppercased()`, `starts_with` → `hasPrefix`…). `s.chars()` iterates Unicode scalars, as Rust does (`s.rsChars`): `chars().count()`, `rev()` and `nth()` agree with Rust on combining marks and emoji sequences, which Swift's own iteration groups into one character.
+`format!`, `println!`, `eprintln!` and `write!` become string interpolation. Values print exactly as in Rust thanks to small functions of the support file: `{}` of `1.0` is `1`, `{:.2}` rounds the same way, `{:?}` writes `Some(Point { x: 1.0, y: 2.5 })`, and widths, alignment and padding (`{:>8}`, `{:05}`) are kept — in `{:>7?}` they reach the numbers inside the value, as with Rust's derived `Debug`. Common string methods have their Swift equivalent (`trim` → `trimmingCharacters(in:)`, `split` → `components(separatedBy:)`, `to_uppercase` → `uppercased()`, `starts_with` → `hasPrefix`…). `s.chars()` iterates Unicode scalars, as Rust does (`s.rsChars`): `chars().count()`, `rev()` and `nth()` agree with Rust on combining marks and emoji sequences, which Swift's own iteration groups into one character. The pattern of `starts_with`, `split`, `find`, `trim_matches`… can be a text, a character, a closure or an array of characters; `s.get(a..b)` is `None` off a character boundary; `to_ascii_uppercase` changes only the ASCII letters, as in Rust.
 
 ## Comments
 

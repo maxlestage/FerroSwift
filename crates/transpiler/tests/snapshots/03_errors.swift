@@ -34,6 +34,8 @@ func firstCharUpper(_ s: String) -> Character? {
 
 /// Support types with their own `{:?}` text.
 protocol RsDebugCustom { var rsDebugText: String { get } }
+/// Support types printed by `{:?}` under Rust's name (`RefCell { value: 1 }`).
+protocol RsDebugNamed { var rsDebugName: String { get } }
 
 /// The limits of a Rust integer of `bits` bits held in a wider Swift type (`i32` in `Int`).
 func rsIntBounds<T: FixedWidthInteger>(_: T.Type, _ bits: Int) -> (T, T) {

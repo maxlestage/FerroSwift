@@ -602,19 +602,53 @@ impl Translator<'_> {
                     Ty::Map(Box::new(k), Box::new(val), owner == "BTreeMap"),
                 ))
             }
+            // A cell is a class holding the value: the clones of an `Rc` share it.
             ("RefCell" | "Cell" | "Mutex" | "RwLock", "new") if args.len() == 1 => {
-                self.warn(
-                    args.span(),
-                    format!(
-                        "{owner} is translated as its value: Swift copies it, so a change made \
-                         through one clone is not seen by the others; use an \
-                         `#[derive(Observable)]` model (a class) for shared state"
-                    ),
-                );
-                Some(arg(self, 0, expected))
+                self.helper("refcell");
+                let inner_expected = match expected {
+                    Ty::Named(n, a) if n == "RsRefCell" => {
+                        a.first().cloned().unwrap_or(Ty::Unknown)
+                    }
+                    _ => Ty::Unknown,
+                };
+                let v = arg(self, 0, &inner_expected);
+                let kind = if owner == "RefCell" {
+                    String::new()
+                } else {
+                    format!(", kind: \"{owner}\"")
+                };
+                // `RefCell::new(Vec::new())`: an empty literal says nothing of the type.
+                let generic = match v.ty.swift() {
+                    Some(t) if matches!(v.code.as_str(), "[]" | "[:]" | "nil") => format!("<{t}>"),
+                    _ => String::new(),
+                };
+                Some(Ex::primary(
+                    format!("RsRefCell{generic}({}{kind})", v.code),
+                    Ty::Named("RsRefCell".into(), vec![v.ty]),
+                ))
             }
             ("Box" | "Rc" | "Arc" | "Cow", "new" | "from") if args.len() == 1 => {
                 Some(arg(self, 0, expected))
+            }
+            // `Rc::clone(&x)`: the same cell, or a copy of a plain value.
+            ("Rc" | "Arc", "clone") if args.len() == 1 => Some(arg(self, 0, expected)),
+            ("Rc" | "Arc", "ptr_eq") if args.len() == 2 => {
+                let a = arg(self, 0, &Ty::Unknown);
+                let b = arg(self, 1, &a.ty);
+                let shared = matches!(&a.ty, Ty::Named(n, _) if n == "RsRefCell")
+                    || self.is_recursive_class(&a.ty);
+                if !shared {
+                    self.warn(
+                        args.span(),
+                        "`Rc::ptr_eq` compares the values here: Swift copies them",
+                    );
+                }
+                let op = if shared { "===" } else { "==" };
+                Some(Ex::new(
+                    format!("{} {op} {}", a.code, b.code),
+                    P_CMP,
+                    Ty::Bool,
+                ))
             }
             ("cmp", "max" | "min") | ("std", "max" | "min") if args.len() == 2 => {
                 let a = arg(self, 0, expected);
@@ -861,6 +895,19 @@ impl Translator<'_> {
                     return Ex::primary(place, ty);
                 }
             }
+            // `m.lock().unwrap()`, `c.try_borrow_mut().unwrap()`: the value of the cell.
+            if let Expr::MethodCall(inner) = &*m.receiver {
+                if inner.args.is_empty() && is_cell_access(&inner.method.to_string()) {
+                    if let Ty::Named(n, targs) = self.place_ty(&inner.receiver) {
+                        if n == "RsRefCell" {
+                            let value = targs.first().cloned().unwrap_or(Ty::Unknown);
+                            let cell = self.expr(&inner.receiver);
+                            let cell = self.settle(cell);
+                            return Ex::primary(format!("{}.value", wrap(&cell, P_PRIMARY)), value);
+                        }
+                    }
+                }
+            }
             // `write!(out, …).unwrap()`: writing to a `String` cannot fail.
             if let Expr::Macro(mac) = &*m.receiver {
                 if matches!(
@@ -1030,7 +1077,13 @@ impl Translator<'_> {
         // `v[..3].fill(0)`, `v[1..].sort()`: the slice itself is changed, not a copy of it.
         if matches!(
             name.as_str(),
-            "fill" | "sort" | "sort_unstable" | "reverse" | "swap"
+            "fill"
+                | "sort"
+                | "sort_unstable"
+                | "reverse"
+                | "swap"
+                | "copy_from_slice"
+                | "clone_from_slice"
         ) && matches!(&*m.receiver, Expr::Index(i) if matches!(*i.index, Expr::Range(_)))
         {
             if let Some(inner) = recv
@@ -1360,6 +1413,9 @@ impl Translator<'_> {
                 // `fold(BTreeMap::new(), …)` with the result's type known: the same type.
                 ("fold", 0, _) => call_expected.clone(),
                 ("unwrap_or" | "or", 0, Ty::Option(t)) => (**t).clone(),
+                ("set" | "replace", 0, Ty::Named(n, a)) if n == "RsRefCell" => {
+                    a.first().cloned().unwrap_or(Ty::Unknown)
+                }
                 ("unwrap_or_else" | "or_else", 0, Ty::Option(t)) => Ty::Fn(vec![], t.clone()),
                 ("unwrap_or", 0, Ty::Result(t, _)) => (**t).clone(),
                 (
@@ -1650,6 +1706,43 @@ impl Translator<'_> {
         span: proc_macro2::Span,
     ) -> Ex {
         let args: Vec<Ex> = args.into_iter().map(|a| self.settle(a)).collect();
+        // `s.starts_with(['a', 'b'])`, `s.split([',', ';'])`: an array of characters is a
+        // predicate, like a closure.
+        let args: Vec<Ex> = if recv.ty == Ty::Str
+            && matches!(
+                name,
+                "contains"
+                    | "starts_with"
+                    | "ends_with"
+                    | "find"
+                    | "rfind"
+                    | "split"
+                    | "rsplit"
+                    | "trim_start_matches"
+                    | "trim_end_matches"
+                    | "trim_matches"
+                    | "matches"
+                    | "match_indices"
+                    | "split_terminator"
+                    | "strip_prefix"
+                    | "strip_suffix"
+            ) {
+            args.into_iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    if i == 0 && matches!(&e.ty, Ty::Vec(t) | Ty::Set(t, _) if **t == Ty::Char) {
+                        Ex::primary(
+                            format!("{{ (c: Character) in {}.contains(c) }}", e.code),
+                            Ty::Fn(vec![Ty::Char], Box::new(Ty::Bool)),
+                        )
+                    } else {
+                        e
+                    }
+                })
+                .collect()
+        } else {
+            args
+        };
         // A type of the crate implementing `Iterator` is a sequence.
         let recv = match &recv.ty {
             Ty::Named(n, _) => match self.syms.iterators.get(n) {
@@ -1928,12 +2021,9 @@ impl Translator<'_> {
                     );
                 }
                 "map_err" => {
-                    let err = fn_ret(0);
-                    self.note_types(&err);
-                    return prim(
-                        format!("{r}.mapError({})", a(0)),
-                        Ty::Result(Box::new(ok), Box::new(err)),
-                    );
+                    let ty = Ty::Result(Box::new(ok), Box::new(fn_ret(0)));
+                    self.note_types(&ty);
+                    return prim(format!("{r}.mapError({})", a(0)), ty);
                 }
                 "and_then" => {
                     let ret = match fn_ret(0) {
@@ -1967,6 +2057,51 @@ impl Translator<'_> {
                     return Ex::new(format!("{r}.err().map({}) ?? false", a(0)), P_NIL, Ty::Bool);
                 }
                 _ => {}
+            }
+        }
+        // Cells (`RefCell`, `Cell`, `Mutex`…) are `RsRefCell`, a class holding the `value`.
+        if let Ty::Named(n, targs) = &rty {
+            if n == "RsRefCell" {
+                self.helper("refcell");
+                let inner = targs.first().cloned().unwrap_or(Ty::Unknown);
+                let value = format!("{r}.value");
+                match name {
+                    "borrow" | "borrow_mut" | "get" | "get_mut" | "into_inner"
+                        if args.is_empty() =>
+                    {
+                        return prim(value, inner);
+                    }
+                    n if is_cell_access(n) && args.is_empty() => return prim(value, inner),
+                    "set" if args.len() == 1 => {
+                        return Ex::new(
+                            format!("{value} = {}", a(0)),
+                            crate::expr::P_ASSIGN,
+                            Ty::Unit,
+                        );
+                    }
+                    "replace" if args.len() == 1 => {
+                        return prim(format!("{r}.replace({})", a(0)), inner);
+                    }
+                    "take" if args.is_empty() => {
+                        let d = inner
+                            .default_value()
+                            .unwrap_or_else(|| "fatalError()".into());
+                        return prim(format!("{r}.replace({d})"), inner);
+                    }
+                    "swap" if args.len() == 1 => {
+                        return prim(format!("swap(&{value}, &{}.value)", a(0)), Ty::Unit);
+                    }
+                    "update" if args.len() == 1 => {
+                        return Ex::new(
+                            format!("{value} = ({})({value})", a(0)),
+                            crate::expr::P_ASSIGN,
+                            Ty::Unit,
+                        );
+                    }
+                    // `rc.clone()`: the same cell.
+                    "clone" if args.is_empty() => return recv,
+                    _ => {}
+                }
             }
         }
         // Universal conversions.
@@ -2066,11 +2201,12 @@ impl Translator<'_> {
                         Ty::Vec(Box::new(Ty::Int(IntKind::U8))),
                     );
                 }
-                "to_uppercase" | "to_ascii_uppercase" => {
-                    return prim(format!("{r}.uppercased()"), Ty::Str);
-                }
-                "to_lowercase" | "to_ascii_lowercase" => {
-                    return prim(format!("{r}.lowercased()"), Ty::Str);
+                "to_uppercase" => return prim(format!("{r}.uppercased()"), Ty::Str),
+                "to_lowercase" => return prim(format!("{r}.lowercased()"), Ty::Str),
+                // Only the ASCII letters change: `straße` stays as it is.
+                "to_ascii_uppercase" | "to_ascii_lowercase" => {
+                    self.helper("string");
+                    return prim(format!("{r}.{}()", names::lower_camel(name)), Ty::Str);
                 }
                 "trim" => {
                     return prim(
@@ -2111,11 +2247,49 @@ impl Translator<'_> {
                         Ty::Iter(Box::new(Ty::Str)),
                     );
                 }
+                "rsplit" if matches!(ty_a(0), Ty::Fn(..)) => {
+                    return prim(
+                        format!(
+                            "Array({r}.split(omittingEmptySubsequences: false, whereSeparator: {}).map(String.init).reversed())",
+                            a(0)
+                        ),
+                        Ty::Iter(Box::new(Ty::Str)),
+                    );
+                }
                 "rsplit" => {
                     return prim(
                         format!("{r}.components(separatedBy: {}).reversed()", str_arg(0)),
                         Ty::Iter(Box::new(Ty::Str)),
                     );
+                }
+                "match_indices" => {
+                    self.helper("string");
+                    let arg = if matches!(ty_a(0), Ty::Fn(..)) {
+                        format!("where: {}", a(0))
+                    } else {
+                        str_arg(0)
+                    };
+                    return prim(
+                        format!("{r}.matchIndices({arg})"),
+                        Ty::Iter(Box::new(Ty::Tuple(vec![Ty::Int(IntKind::Usize), Ty::Str]))),
+                    );
+                }
+                // `s.retain(|c| …)`, `s.drain(..n)`, `s.split_off(n)`: the text changed in place.
+                "retain" if args.len() == 1 => {
+                    self.helper("string");
+                    return prim(format!("{r}.retain({})", a(0)), Ty::Unit);
+                }
+                "drain" => {
+                    self.helper("string");
+                    return prim(format!("{r}.drain({})", a(0)), Ty::Str);
+                }
+                "split_off" if args.len() == 1 => {
+                    self.helper("string");
+                    return prim(format!("{r}.splitOff({})", a(0)), Ty::Str);
+                }
+                "make_ascii_uppercase" | "make_ascii_lowercase" => {
+                    self.helper("string");
+                    return prim(format!("{r}.{}()", names::lower_camel(name)), Ty::Unit);
                 }
                 "split_terminator" => {
                     self.helper("string");
@@ -2165,6 +2339,14 @@ impl Translator<'_> {
                 "starts_with" => return prim(format!("{r}.hasPrefix({})", str_arg(0)), Ty::Bool),
                 "ends_with" => return prim(format!("{r}.hasSuffix({})", str_arg(0)), Ty::Bool),
                 "contains" => return prim(format!("{r}.contains({})", a(0)), Ty::Bool),
+                // `s.get(a..b)`: `None` when a bound is not a character boundary.
+                "get" if args.len() == 1 && matches!(ty_a(0), Ty::Range(_)) => {
+                    self.helper("string");
+                    return prim(
+                        format!("{r}.rsGet({})", a(0)),
+                        Ty::Option(Box::new(Ty::Str)),
+                    );
+                }
                 "find" | "rfind" => {
                     self.helper("string");
                     let f = if name == "find" { "find" } else { "rfind" };
@@ -2294,6 +2476,13 @@ impl Translator<'_> {
                 "truncate" => {
                     self.helper("string");
                     return prim(format!("{r}.truncate({})", a(0)), Ty::Unit);
+                }
+                "matches" if matches!(ty_a(0), Ty::Fn(..)) => {
+                    self.helper("chars");
+                    return prim(
+                        format!("{r}.rsChars.filter({}).map {{ String($0) }}", a(0)),
+                        Ty::Iter(Box::new(Ty::Str)),
+                    );
                 }
                 "matches" => {
                     return prim(
@@ -3231,14 +3420,14 @@ impl Translator<'_> {
                 Ty::Unit,
             ),
             "binary_search" => {
-                self.helper("vec");
+                self.helper("binary_search");
                 prim(
                     format!("{r}.binarySearch({})", a(0)),
                     Ty::Result(Box::new(usize_ty.clone()), Box::new(usize_ty)),
                 )
             }
             "binary_search_by" | "binary_search_by_key" => {
-                self.helper("vec");
+                self.helper("binary_search");
                 let call = if name == "binary_search_by" {
                     format!("{r}.binarySearchBy({})", a(0))
                 } else {
@@ -3296,6 +3485,24 @@ impl Translator<'_> {
                 }
                 self.helper("vec");
                 prim(format!("{r}.stepBy({})", a(0)), iter(item))
+            }
+            "copy_from_slice" | "clone_from_slice" => {
+                self.helper("vec");
+                prim(format!("{r}.copyFromSlice({})", a(0)), Ty::Unit)
+            }
+            "rchunks" => {
+                self.helper("vec");
+                prim(
+                    format!("{r}.rchunks({})", a(0)),
+                    iter(Ty::Vec(Box::new(item.clone()))),
+                )
+            }
+            "partition_point" => {
+                self.helper("vec");
+                prim(
+                    format!("{r}.partitionPoint({})", a(0)),
+                    Ty::Int(IntKind::Usize),
+                )
             }
             "chain" => {
                 let other = a(0);
@@ -3821,4 +4028,20 @@ impl Translator<'_> {
             _ => Vec::new(),
         }
     }
+}
+
+/// `lock()`, `read()`, `try_borrow_mut()`…: an access to a cell's value that Rust wraps in
+/// a `Result` or an `Option`, unwrapped right after.
+fn is_cell_access(name: &str) -> bool {
+    matches!(
+        name,
+        "lock"
+            | "read"
+            | "write"
+            | "try_lock"
+            | "try_read"
+            | "try_write"
+            | "try_borrow"
+            | "try_borrow_mut"
+    )
 }

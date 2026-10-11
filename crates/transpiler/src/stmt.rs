@@ -209,8 +209,6 @@ impl Translator<'_> {
         declared: Option<Ty>,
         value: &Expr,
     ) -> Vec<String> {
-        // `RefCell::new(…)` is mutated through a shared reference: a `var` in Swift.
-        let mutable = mutable || interior_mutable(value);
         let kw = if mutable { "var" } else { "let" };
         let declared_ty = declared.clone().unwrap_or(Ty::Unknown);
         if needs_statements(value) {
@@ -264,6 +262,13 @@ impl Translator<'_> {
                 );
             }
             return out;
+        }
+        // `let mut n = cell.borrow_mut();`: `n` stands for `cell.value`.
+        if let Expr::MethodCall(m) = value {
+            if let Some((place, ty)) = self.cell_place(m) {
+                self.declare_alias(rust, place, ty);
+                return vec![];
+            }
         }
         // `let v = map.entry(k).or_insert(0);`: `v` stands for `map[k, default: 0]`.
         if let Expr::MethodCall(m) = value {
@@ -405,7 +410,7 @@ impl Translator<'_> {
         let kw = if mutable { "var" } else { "let" };
         Some(vec![format!(
             "guard {kw} {name} = {} else {{ {exit} }}",
-            v.code
+            crate::expr::condition_value(v.code)
         )])
     }
 
@@ -1872,6 +1877,47 @@ impl Translator<'_> {
 
     /// The place of `v.last_mut().unwrap()` and friends: the element itself, which must
     /// exist. Nothing is translated when the receiver is not one of the mutable accessors.
+    /// `cell.borrow_mut()`, `m.lock().unwrap()` on a simple place: the value of the cell,
+    /// `cell.value`, with its type.
+    pub fn cell_place(&mut self, m: &syn::ExprMethodCall) -> Option<(String, Ty)> {
+        let method = m.method.to_string();
+        let cell: &Expr = match method.as_str() {
+            "borrow" | "borrow_mut" | "get_mut" if m.args.is_empty() => &m.receiver,
+            "unwrap" | "expect" => match &*m.receiver {
+                Expr::MethodCall(inner)
+                    if inner.args.is_empty()
+                        && matches!(
+                            inner.method.to_string().as_str(),
+                            "lock"
+                                | "read"
+                                | "write"
+                                | "try_lock"
+                                | "try_read"
+                                | "try_write"
+                                | "try_borrow"
+                                | "try_borrow_mut"
+                        ) =>
+                {
+                    &inner.receiver
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if !simple_place(cell) {
+            return None;
+        }
+        let Ty::Named(n, args) = self.place_ty(cell) else {
+            return None;
+        };
+        if n != "RsRefCell" {
+            return None;
+        }
+        let inner = args.first().cloned().unwrap_or(Ty::Unknown);
+        let place = self.place(cell);
+        Some((format!("{place}.value"), inner))
+    }
+
     pub fn mutable_place_forced(&mut self, m: &syn::ExprMethodCall) -> Option<(String, Ty)> {
         if !matches!(
             m.method.to_string().as_str(),
@@ -1963,7 +2009,7 @@ impl Translator<'_> {
                         {
                             let item = v.ty.item();
                             let n = self.declare(&id.ident.to_string(), item);
-                            return format!("{kw} {n} = {}", v.code);
+                            return format!("{kw} {n} = {}", crate::expr::condition_value(v.code));
                         }
                         if ctor == "Ok" && v.throws.is_some() {
                             let ok = v
@@ -1972,7 +2018,10 @@ impl Translator<'_> {
                                 .map(|t| t.0.clone())
                                 .unwrap_or(Ty::Unknown);
                             let n = self.declare(&id.ident.to_string(), ok);
-                            return format!("{kw} {n} = try? {}", v.code);
+                            return format!(
+                                "{kw} {n} = try? {}",
+                                crate::expr::condition_value(v.code)
+                            );
                         }
                     }
                 }
@@ -2151,21 +2200,17 @@ fn user_call_returns_value(t: &Translator<'_>, e: &Expr) -> bool {
     }
 }
 
-/// `RefCell::new(x)`, `Rc::new(Cell::new(x))`, `Arc::new(Mutex::new(x))`…
-pub fn interior_mutable(e: &Expr) -> bool {
-    let Expr::Call(c) = e else { return false };
-    let Expr::Path(p) = &*c.func else {
-        return false;
-    };
-    let segs: Vec<String> = p
-        .path
-        .segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect();
-    match segs.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        [.., "RefCell" | "Cell" | "Mutex" | "RwLock", "new"] => true,
-        [.., "Rc" | "Arc" | "Box", "new"] => c.args.first().is_some_and(interior_mutable),
+/// A place that can be written again without a side effect: a variable, a field, `*x`.
+pub fn simple_place(e: &Expr) -> bool {
+    match e {
+        Expr::Path(_) => true,
+        Expr::Field(f) => simple_place(&f.base),
+        Expr::Paren(p) => simple_place(&p.expr),
+        Expr::Reference(r) => simple_place(&r.expr),
+        Expr::Unary(u) if matches!(u.op, syn::UnOp::Deref(_)) => simple_place(&u.expr),
+        Expr::Index(i) => {
+            simple_place(&i.expr) && matches!(&*i.index, Expr::Lit(_) | Expr::Path(_))
+        }
         _ => false,
     }
 }

@@ -190,12 +190,51 @@ extension Array {
         stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
     }
 
+    /// `v.rchunks(n)`: the chunks from the end.
+    func rchunks(_ size: Int) -> [[Element]] {
+        var out: [[Element]] = []
+        var end = count
+        while end > 0 {
+            let start = Swift.max(0, end - size)
+            out.append(Array(self[start..<end]))
+            end = start
+        }
+        return out
+    }
+
+    /// `v.partition_point(|x| …)`: the first index whose element fails the predicate, by
+    /// binary search.
+    func partitionPoint(_ belongsToFirst: (Element) throws -> Bool) rethrows -> Int {
+        var lo = 0
+        var hi = count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if try belongsToFirst(self[mid]) { lo = mid + 1 } else { hi = mid }
+        }
+        return lo
+    }
+
     mutating func sortBy(_ compare: (Element, Element) throws -> Ordering) rethrows {
         try sort { try compare($0, $1) == .less }
     }
 
     mutating func sortByKey<K: Comparable>(_ key: (Element) throws -> K) rethrows {
         try sort { try key($0) < key($1) }
+    }
+}
+
+extension MutableCollection {
+    /// `v[..n].copy_from_slice(&src)`.
+    mutating func copyFromSlice(_ source: [Element]) {
+        precondition(
+            source.count == count,
+            "source slice length (\(source.count)) does not match destination slice length (\(count))"
+        )
+        var i = startIndex
+        for x in source {
+            self[i] = x
+            formIndex(after: &i)
+        }
     }
 }
 
@@ -322,42 +361,4 @@ extension Array where Element: Equatable {
     }
 }
 
-extension Array where Element: Comparable {
-    /// `v.binary_search(&x)`: `.success(index)` or `.failure(insertion point)`.
-    func binarySearch(_ x: Element) -> Result<Int, RsNotFound> {
-        var lo = 0, hi = count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            if self[mid] == x { return .success(mid) }
-            if self[mid] < x { lo = mid + 1 } else { hi = mid }
-        }
-        return .failure(RsNotFound(index: lo))
-    }
-}
-
-extension Array {
-    /// `v.binary_search_by(|x| x.cmp(&target))`.
-    func binarySearchBy(_ compare: (Element) -> Ordering) -> Result<Int, RsNotFound> {
-        var lo = 0, hi = count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            switch compare(self[mid]) {
-            case .equal: return .success(mid)
-            case .less: lo = mid + 1
-            case .greater: hi = mid
-            }
-        }
-        return .failure(RsNotFound(index: lo))
-    }
-
-    /// `v.binary_search_by_key(&k, |x| x.key)`.
-    func binarySearchByKey<K: Comparable>(_ key: K, _ of: (Element) -> K) -> Result<Int, RsNotFound> {
-        binarySearchBy { x in
-            let k = of(x)
-            return k == key ? .equal : (k < key ? .less : .greater)
-        }
-    }
-}
-
-struct RsNotFound: Error { let index: Int }
 

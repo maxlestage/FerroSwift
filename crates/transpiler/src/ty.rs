@@ -395,6 +395,9 @@ impl Ty {
                 let parts: Option<Vec<String>> = ts.iter().map(Ty::default_value).collect();
                 format!("({})", parts?.join(", "))
             }
+            Ty::Named(n, args) if n == "RsRefCell" => {
+                format!("RsRefCell({})", args.first()?.default_value()?)
+            }
             Ty::Named(n, _) => format!("{n}()"),
             _ => return None,
         })
@@ -456,8 +459,10 @@ pub fn from_name(name: &str, args: Vec<Ty>) -> Ty {
             Box::new(arg(0)),
             Box::new(if args.len() > 1 { arg(1) } else { Ty::Unknown }),
         ),
-        // Smart pointers and cells disappear: Swift values are copied, classes shared.
-        "Box" | "Rc" | "Arc" | "Cow" | "RefCell" | "Cell" | "Mutex" | "RwLock" => arg(0),
+        // Smart pointers disappear: Swift values are copied, classes shared.
+        "Box" | "Rc" | "Arc" | "Cow" => arg(0),
+        // A cell is a class holding the value: the clones of an `Rc` share it.
+        "RefCell" | "Cell" | "Mutex" | "RwLock" => Ty::Named("RsRefCell".into(), vec![arg(0)]),
         // The errors of the standard library have support types of the same shape.
         "ParseIntError" | "ParseFloatError" | "ParseBoolError" | "ParseCharError"
         | "CharTryFromError" | "TryFromIntError" | "FromUtf8Error" | "Utf8Error" => {
