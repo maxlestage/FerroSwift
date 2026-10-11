@@ -131,6 +131,10 @@ pub struct Symbols {
     pub methods: HashMap<String, HashMap<String, FnSig>>,
     pub consts: HashMap<String, Ty>,
     pub aliases: HashMap<String, Ty>,
+    /// The type parameters of the generic aliases (`type Result<T> = …`).
+    pub alias_params: HashMap<String, Vec<String>>,
+    /// The structs and enums of the crate, by Rust name, known before anything else.
+    pub user_type_names: HashSet<String>,
     /// Types that implement `Display` (their `description`).
     pub display: HashSet<String>,
     /// Display impls that forward the formatter (`f.pad(…)`, `self.0.fmt(f)`): the width
@@ -194,12 +198,26 @@ impl Symbols {
     /// Collects the declarations of every file.
     pub fn collect(files: &[&syn::File]) -> Symbols {
         let mut s = Symbols::default();
-        // Aliases first: the other declarations may use them.
+        // The names of the types first: an alias may mention them.
+        for file in files {
+            s.walk(&file.items, &mut |s, item| match item {
+                Item::Struct(st) => {
+                    s.user_type_names.insert(st.ident.to_string());
+                }
+                Item::Enum(en) => {
+                    s.user_type_names.insert(en.ident.to_string());
+                }
+                _ => {}
+            });
+        }
+        // Then the aliases: the other declarations may use them.
         for file in files {
             s.walk(&file.items, &mut |s, item| {
                 if let Item::Type(t) = item {
                     let ty = s.ty(&t.ty, None);
                     s.aliases.insert(t.ident.to_string(), ty);
+                    s.alias_params
+                        .insert(t.ident.to_string(), type_params(&t.generics));
                 }
             });
         }
@@ -307,7 +325,7 @@ impl Symbols {
                         }
                     })
                     .collect();
-                let swift = names::upper_camel(&st.ident.to_string());
+                let swift = names::type_name(&st.ident.to_string());
                 let recursive = fields.iter().any(|f| directly_contains(&f.ty, &swift));
                 self.structs.insert(
                     st.ident.to_string(),
@@ -354,7 +372,7 @@ impl Symbols {
                 self.enums.insert(
                     en.ident.to_string(),
                     EnumInfo {
-                        swift: names::upper_camel(&en.ident.to_string()),
+                        swift: names::type_name(&en.ident.to_string()),
                         variants,
                         generics: type_params(&en.generics),
                         derives: derives(&en.attrs),
@@ -660,11 +678,23 @@ impl Symbols {
                         _ => {}
                     }
                 }
-                if let Some(alias) = self.aliases.get(&name) {
-                    return alias.clone();
+                // A user alias, generic or not (`type Result<T> = …`); never for a `std` path.
+                if !matches!(first.as_deref(), Some("std" | "core" | "alloc")) {
+                    if let Some(alias) = self.aliases.get(&name) {
+                        let params = self.alias_params.get(&name).cloned().unwrap_or_default();
+                        if params.is_empty() {
+                            return alias.clone();
+                        }
+                        let map: HashMap<String, Ty> =
+                            params.into_iter().zip(args.iter().cloned()).collect();
+                        return substitute(alias, &map);
+                    }
                 }
-                if self.structs.contains_key(&name) || self.enums.contains_key(&name) {
-                    return Ty::Named(names::upper_camel(&name), args);
+                if self.user_type_names.contains(&name)
+                    || self.structs.contains_key(&name)
+                    || self.enums.contains_key(&name)
+                {
+                    return Ty::Named(names::type_name(&name), args);
                 }
                 if name == "Element" && first.as_deref() != Some("std") && self.ui {
                     return Ty::View;
@@ -693,7 +723,9 @@ impl Symbols {
     }
 
     pub fn is_user_type(&self, name: &str) -> bool {
-        self.structs.contains_key(name) || self.enums.contains_key(name)
+        self.user_type_names.contains(name)
+            || self.structs.contains_key(name)
+            || self.enums.contains_key(name)
     }
 
     /// `impl Trait` / `dyn Trait`.

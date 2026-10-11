@@ -41,6 +41,7 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 - **`impl Iterator for Type`** makes the type a `Sequence`: `for x in Counter { … }`, `.filter`, `.sum()` work on it. Its adapters are lazy, like `(1..)`'s, so an endless iterator ends with `take(5)`; `let mut it = …` keeps an iterator that `next()`, `peek()` and `nth()` advance.
 - **Traits** become `protocol`s; default methods go into a protocol extension, associated types into `associatedtype`. `impl Trait for Type` adds the conformance.
 - **Operator traits** (`Add`, `Sub`, `Mul`, `Neg`…) become operator functions, `impl Index` a `subscript` (with a `set` when `IndexMut` is implemented too); `impl Display` becomes `CustomStringConvertible`.
+- **Names** follow Swift's conventions (`my_field` → `myField`, `MAX_SIZE` → `maxSize`); a type named like one of Swift's own (`enum Error`, `struct Task`) gets a `Type` suffix (`ErrorType`), and `type Result<T> = std::result::Result<T, Error>` becomes a generic `typealias`.
 - **Conversions:** `impl From<A> for B` becomes an `init`; `impl FromStr for B` and `impl TryFrom<A> for B` become the static functions `fromStr` and `tryFrom`, which `s.parse::<B>()`, `B::from_str(s)`, `B::try_from(x)` and `x.try_into()` call.
 - **Generics** keep their bounds: `fn largest<T: Describe>(items: &[T])` → `func largest<T: Describe>(_ items: [T])`. `where` clauses are kept.
 - **Functions** take unlabeled parameters (`_ name: Type`), so calls look like Rust's.
