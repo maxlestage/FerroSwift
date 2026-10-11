@@ -646,7 +646,9 @@ impl<'a> Translator<'a> {
         let value = self.expr_with(expr, &t);
         let value = self.settle(value);
         self.pop_scope();
-        let annot = if natural_type_matches(&value.ty, &t) {
+        // `[Kind::Regular, Kind::Vip]` → `[.regular, .vip]`: the cases need the type written.
+        let leading_dots = value.code.starts_with('.') || value.code.contains("[.");
+        let annot = if natural_type_matches(&value.ty, &t) && !leading_dots {
             String::new()
         } else {
             format!(": {}", self.swift_ty(&t, ty.span()))
