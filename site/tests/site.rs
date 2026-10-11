@@ -334,3 +334,110 @@ fn routes_round_trip() {
         );
     }
 }
+
+#[test]
+fn the_site_is_an_installable_app_that_works_offline() {
+    let site = site();
+    // A manifest per language, the French one at the root too.
+    for (path, lang) in [
+        ("/manifest.webmanifest", "fr"),
+        ("/fr/manifest.webmanifest", "fr"),
+        ("/en/manifest.webmanifest", "en"),
+    ] {
+        let response = site.respond(path);
+        assert_eq!(response.status, 200, "{path}");
+        assert_eq!(response.content_type, "application/manifest+json", "{path}");
+        let json = String::from_utf8(response.body).unwrap();
+        assert!(
+            json.starts_with(r#"{"name":"FerroSwift","short_name":"FerroSwift""#),
+            "{path}"
+        );
+        assert!(
+            json.contains(&format!(r#""start_url":"/{lang}/""#)),
+            "{path}"
+        );
+        assert!(json.contains(&format!(r#""lang":"{lang}""#)), "{path}");
+        assert!(
+            json.contains(r#""id":"/""#) && json.contains(r#""scope":"/""#),
+            "{path}"
+        );
+        assert!(json.contains(r#""display":"standalone""#), "{path}");
+        assert!(json.contains(r##""theme_color":"#0d0b0a""##), "{path}");
+        assert!(json.contains(r#""src":"/static/icon-512.png""#), "{path}");
+        assert!(json.contains(r#""purpose":"maskable""#), "{path}");
+    }
+    // The icons are real PNG files.
+    for icon in [
+        "/static/icon-192.png",
+        "/static/icon-512.png",
+        "/static/icon-maskable-512.png",
+        "/static/apple-touch-icon.png",
+    ] {
+        let response = site.respond(icon);
+        assert_eq!(response.status, 200, "{icon}");
+        assert_eq!(response.content_type, "image/png", "{icon}");
+        assert!(response.body.starts_with(b"\x89PNG"), "{icon}");
+    }
+    // Every page is installable and registers the service worker.
+    for (path, lang) in [
+        ("/fr/", "fr"),
+        ("/en/docs/cli/", "en"),
+        ("/en/playground/", "en"),
+    ] {
+        let html = body(&site, path);
+        assert!(
+            html.contains(&format!(
+                r#"<link rel="manifest" href="/{lang}/manifest.webmanifest"/>"#
+            )),
+            "{path}"
+        );
+        assert!(
+            html.contains(r##"<meta name="theme-color" content="#0d0b0a"/>"##),
+            "{path}"
+        );
+        assert!(
+            html.contains(r#"navigator.serviceWorker.register("/sw.js")"#),
+            "{path}"
+        );
+        assert!(
+            html.contains(
+                r#"<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png"/>"#
+            ),
+            "{path}"
+        );
+    }
+    // The service worker caches every page, the offline page, the stylesheet, the icons
+    // and the fonts when it installs.
+    let response = site.respond("/sw.js");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.content_type, "text/javascript; charset=utf-8");
+    let js = String::from_utf8(response.body).unwrap();
+    for url in [
+        "\"/fr/\"",
+        "\"/en/\"",
+        "\"/fr/docs/\"",
+        "\"/en/docs/cli/\"",
+        "\"/en/playground/\"",
+        "\"/offline/\"",
+        "\"/static/app.css?v=",
+        "\"/favicon.svg\"",
+        "\"/static/icon-512.png\"",
+        "\"/static/fonts/geist-latin-wght-normal.woff2\"",
+    ] {
+        assert!(js.contains(url), "{url} is not precached");
+    }
+    assert!(js.contains(r#"const OFFLINE = "/offline/";"#));
+    assert!(js.contains(&format!(
+        "const CACHE = \"ferroswift-site-{}\";",
+        site.version()
+    )));
+    // The offline page, in both languages, leads to what is cached.
+    let html = body(&site, "/offline/");
+    assert!(html.contains("Vous êtes hors ligne") && html.contains("You are offline"));
+    assert!(html.contains(r#"<meta name="robots" content="noindex,follow"/>"#));
+    assert!(html.contains(r#"href="/fr/""#) && html.contains(r#"href="/en/docs/""#));
+    assert!(html.contains(r#"href="/en/playground/""#));
+    let redirect = site.respond("/offline");
+    assert_eq!(redirect.status, 301);
+    assert_eq!(redirect.location.as_deref(), Some("/offline/"));
+}

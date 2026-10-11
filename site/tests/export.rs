@@ -51,6 +51,7 @@ fn exports_every_page_behind_the_base_path() {
         "fr/docs/limitations/index.html",
         "fr/404/index.html",
         "en/404/index.html",
+        "offline/index.html",
         "index.html",
         "404.html",
     ];
@@ -106,6 +107,25 @@ fn exports_every_page_behind_the_base_path() {
     assert!(not_found.contains("navigator.languages") && not_found.contains(r#""404/""#));
     assert!(not_found.contains(r#"href="/FerroSwift/en/404/""#));
     assert!(read(&dir, "en/404/index.html").contains("Page not found"));
+    // The PWA, behind the base path.
+    let manifest = read(&dir, "en/manifest.webmanifest");
+    assert!(
+        manifest.contains(r#""start_url":"/FerroSwift/en/""#),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains(r#""scope":"/FerroSwift/""#)
+            && manifest.contains(r#""id":"/FerroSwift/""#)
+    );
+    assert!(manifest.contains(r#""src":"/FerroSwift/static/icon-512.png""#));
+    assert!(read(&dir, "manifest.webmanifest").contains(r#""start_url":"/FerroSwift/fr/""#));
+    let worker = read(&dir, "sw.js");
+    assert!(
+        worker.contains(r#""/FerroSwift/fr/docs/cli/""#)
+            && worker.contains(r#""/FerroSwift/offline/""#)
+    );
+    assert!(!worker.contains("\"/fr/\""), "a page outside the base path");
+    assert!(worker.contains(r#"const OFFLINE = "/FerroSwift/offline/";"#));
     let sitemap = read(&dir, "sitemap.xml");
     assert!(
         sitemap.contains("<loc>https://maxlestage.github.io/FerroSwift/fr/docs/swiftui/</loc>")

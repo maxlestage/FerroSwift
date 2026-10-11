@@ -11,6 +11,7 @@ pub struct Dict {
     pub playground: PlaygroundPage,
     pub docs: DocsText,
     pub not_found: NotFound,
+    pub offline: Offline,
     pub footer: Footer,
 }
 
@@ -81,6 +82,12 @@ pub struct NotFound {
     pub title: &'static str,
     pub text: &'static str,
     pub back: &'static str,
+}
+
+/// The page the service worker shows without network, when a page is not cached.
+pub struct Offline {
+    pub title: &'static str,
+    pub text: &'static str,
 }
 
 pub struct Footer {
@@ -294,6 +301,10 @@ static FR: Dict = Dict {
         text: "Cette page n’existe pas, ou plus. Le playground et la documentation, eux, sont toujours là.",
         back: "Retour à l’accueil",
     },
+    offline: Offline {
+        title: "Vous êtes hors ligne",
+        text: "Cette page n’est pas encore enregistrée sur cet appareil. L’accueil, le playground et la documentation, eux, restent disponibles sans réseau.",
+    },
     footer: Footer {
         tagline: "Écrivez du Rust. Livrez du SwiftUI.",
         start: "Commencez avec",
@@ -500,6 +511,10 @@ static EN: Dict = Dict {
         title: "Page not found",
         text: "This page does not exist, or no longer does. The playground and the docs are still here.",
         back: "Back to the home page",
+    },
+    offline: Offline {
+        title: "You are offline",
+        text: "This page is not saved on this device yet. The home page, the playground and the docs stay available without network.",
     },
     footer: Footer {
         tagline: "Write Rust. Ship SwiftUI.",
