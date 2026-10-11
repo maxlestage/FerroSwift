@@ -4,10 +4,13 @@ description = "The ferroswift command: translate a Rust crate into Swift and Swi
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
 repository.workspace = true
+authors.workspace = true
 homepage.workspace = true
 readme = "README.md"
+keywords = ["swift", "swiftui", "ios", "cli", "transpiler"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "ferroswift"

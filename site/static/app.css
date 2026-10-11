@@ -1993,9 +1993,99 @@ a:hover > .arrow {
 
 /* ----- Footer ----- */
 
+/* The signature footer: the call to action and the install command, the link columns, the
+   sister projects, the author's signature, the giant wordmark and the legal line. */
 .foot {
+  position: relative;
+  isolation: isolate;
   border-top: 1px solid var(--line);
   background: linear-gradient(180deg, transparent, rgba(206, 65, 43, 0.06));
+  overflow: clip;
+}
+
+/* A warm glow rising from the bottom, behind the signature and the wordmark. */
+.foot::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  bottom: -30vw;
+  width: 140vw;
+  height: 70vw;
+  transform: translateX(-50%);
+  background: radial-gradient(closest-side, rgba(255, 138, 92, 0.14), transparent 72%);
+  pointer-events: none;
+}
+
+.foot-cta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px 40px;
+  padding-top: 56px;
+  padding-bottom: 48px;
+}
+
+.foot-cta-link {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 0.25em;
+  color: var(--text);
+  font-size: clamp(28px, 4.6vw, 60px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.05;
+  text-decoration: none;
+}
+
+.foot-cta-link em {
+  font-style: normal;
+  background: var(--grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.foot-cta-link .arrow {
+  width: 0.8em;
+  height: 0.8em;
+  margin-left: 0.15em;
+  transition: transform 0.5s var(--ease), color 0.3s;
+}
+
+.foot-cta-link:hover .arrow {
+  transform: translateX(8px) rotate(-45deg);
+  color: var(--accent);
+}
+
+/* The install command, styled as a terminal pill; one click selects the whole line. */
+.foot-install {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 22px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font: 500 14px/1 var(--mono);
+  white-space: nowrap;
+  -webkit-user-select: all;
+  user-select: all;
+  cursor: text;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.foot-install::before {
+  content: "$";
+  color: var(--accent);
+}
+
+.foot-install:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(255, 138, 92, 0.14);
 }
 
 .foot-grid {
@@ -2003,7 +2093,9 @@ a:hover > .arrow {
   grid-template-columns: minmax(0, 1fr);
   gap: 36px;
   padding-top: 56px;
-  padding-bottom: 40px;
+  padding-bottom: 48px;
+  background: linear-gradient(var(--line), var(--line)) no-repeat var(--gutter) 0 /
+    calc(100% - 2 * var(--gutter)) 1px;
 }
 
 @media (min-width: 640px) {
@@ -2023,7 +2115,38 @@ a:hover > .arrow {
   color: var(--muted);
 }
 
-.foot-col h2 {
+/* Version, "100 % Rust", crates.io: small pills under the tagline. */
+.foot-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.foot-badges li {
+  padding: 5px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  color: var(--muted);
+  font: 500 11px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.foot-badges li.hot {
+  border-color: rgba(255, 138, 92, 0.5);
+  color: var(--accent);
+}
+
+.foot-badges a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.foot-col h2,
+.foot-eco-head h2 {
   margin: 0 0 12px;
   color: var(--faint);
   font: 600 12px/1 var(--mono);
@@ -2042,6 +2165,7 @@ a:hover > .arrow {
 .foot-col a {
   color: var(--muted);
   text-decoration: none;
+  transition: color 0.2s;
 }
 
 .foot-col a:hover,
@@ -2049,11 +2173,274 @@ a:hover > .arrow {
   color: var(--text);
 }
 
+/* The sister projects: a hairline grid of tiles, the current one marked. */
+.foot-eco {
+  padding-bottom: 48px;
+}
+
+.foot-eco-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 32px;
+  margin-bottom: 20px;
+}
+
+.foot-eco-head h2 {
+  margin: 0;
+}
+
+.foot-eco-head p {
+  margin: 0;
+  max-width: 44em;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.eco-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--line);
+  overflow: clip;
+}
+
+@media (min-width: 640px) {
+  .eco-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 980px) {
+  .eco-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.eco {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 14px;
+  align-items: start;
+  height: 100%;
+  padding: 22px 24px;
+  background: var(--bg-2);
+  color: var(--muted);
+  font-size: 14px;
+  text-decoration: none;
+  transition: background 0.3s, color 0.3s;
+}
+
+.eco-name {
+  grid-column: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+
+.eco-text {
+  grid-column: 1;
+  line-height: 1.5;
+}
+
+.eco .arrow {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: start;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  opacity: 0;
+  transform: translate(-6px, 6px);
+  transition: opacity 0.3s, transform 0.4s var(--ease), color 0.3s;
+}
+
+.eco:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.eco:hover .arrow {
+  opacity: 1;
+  transform: rotate(-45deg);
+  color: var(--accent);
+}
+
+.eco.current {
+  background:
+    radial-gradient(120% 140% at 0% 0%, rgba(255, 138, 92, 0.18), transparent 60%),
+    var(--bg-2);
+}
+
+.eco.current .arrow {
+  display: none;
+}
+
+.eco-here {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid rgba(255, 138, 92, 0.5);
+  border-radius: 999px;
+  color: var(--accent);
+  font: 500 10px/1.4 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.eco-here::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: ping 2.4s ease-out infinite;
+}
+
+@keyframes ping {
+  from {
+    box-shadow: 0 0 0 0 rgba(255, 138, 92, 0.6);
+  }
+  to {
+    box-shadow: 0 0 0 7px rgba(255, 138, 92, 0);
+  }
+}
+
+/* The signature: who designed and built this. */
+.foot-credits {
+  display: grid;
+  justify-items: center;
+  padding-top: 64px;
+  padding-bottom: 8px;
+  background: linear-gradient(var(--line), var(--line)) no-repeat var(--gutter) 0 /
+    calc(100% - 2 * var(--gutter)) 1px;
+  text-align: center;
+}
+
+.credits-by {
+  margin: 0 0 18px;
+  color: var(--faint);
+  font: 500 11px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.credits-name {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0 0.26em;
+  font-size: clamp(34px, 6.4vw, 92px);
+  font-weight: 700;
+  letter-spacing: -0.05em;
+  line-height: 1.05;
+  text-decoration: none;
+  background: linear-gradient(
+    100deg,
+    var(--text) 0%,
+    var(--text) 34%,
+    var(--rust) 44%,
+    var(--swift) 50%,
+    var(--ember) 56%,
+    var(--text) 66%,
+    var(--text) 100%
+  );
+  background-size: 300% 100%;
+  background-position: 50% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* A shine crosses the name as it scrolls into view. */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .credits-name {
+      animation: name-shine linear both;
+      animation-timeline: view();
+      animation-range: entry 20% cover 55%;
+    }
+  }
+}
+
+@keyframes name-shine {
+  from {
+    background-position: 100% 0;
+  }
+}
+
+.credits-name span {
+  display: inline-block;
+  transition: transform 0.5s var(--ease);
+  transition-delay: calc(var(--i) * 60ms);
+}
+
+.credits-name:hover span {
+  transform: translateY(-4px);
+}
+
+.credits-note {
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 17px;
+}
+
+/* The project name, as big as the screen: outlined, filled with the ember gradient on hover. */
+.wordmark {
+  display: flex;
+  justify-content: center;
+  margin: 16px -8px 0;
+  font-size: clamp(64px, 18vw, 300px);
+  font-weight: 700;
+  line-height: 0.8;
+  letter-spacing: -0.06em;
+  user-select: none;
+  overflow: clip;
+  background: linear-gradient(
+    180deg,
+    var(--text) 0%,
+    var(--text) 22%,
+    rgba(245, 237, 231, 0.06) 50%,
+    #ce412b 52%,
+    #f05138 76%,
+    #ff9152 100%
+  );
+  background-size: 100% 200%;
+  background-position: 0 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  transition: background-position 1s var(--ease);
+}
+
+.wordmark:hover {
+  background-position: 0 100%;
+}
+
+.wordmark span {
+  display: inline-block;
+  -webkit-text-stroke: 1px rgba(245, 237, 231, 0.12);
+}
+
 .foot-bottom {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
+  align-items: center;
   gap: 10px 24px;
+  margin-top: 24px;
   padding-top: 20px;
   padding-bottom: 28px;
   background: linear-gradient(var(--line), var(--line)) no-repeat var(--gutter) 0 /
@@ -2065,10 +2452,11 @@ a:hover > .arrow {
 .foot-bottom a {
   color: var(--muted);
   text-decoration: none;
+  transition: color 0.2s;
 }
 
 .foot-bottom a:hover {
-  color: var(--text);
+  color: var(--accent);
 }
 
 .foot-bottom .made {

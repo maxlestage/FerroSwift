@@ -6,6 +6,9 @@ mod element;
 mod style;
 mod views;
 
+/// The version of this crate, e.g. `"0.1.0"` (the FerroSwift crates share it).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub use element::{Element, Modifiers};
 pub use ferroswift_macros::{Observable, View, preview};
 pub use style::*;
