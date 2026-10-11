@@ -89,5 +89,5 @@ fn main() {
     println!("{} {} {} {}", 5.0f64 % 3.0, -5.0f64 % 3.0, 5.5f64 % -2.0, (5.5f64).rem_euclid(-2.0));
     println!("{} {} {}", (2.5f64).round(), (-2.5f64).round(), (3.5f64).round());
     println!("{} {} {}", (2.5f64).trunc(), (-2.7f64).floor(), (-2.2f64).ceil());
-    println!("{} {} {} {}", f64::EPSILON, f64::MIN, i128::MAX, u128::MAX);
+    println!("{} {} {} {}", f64::EPSILON, f64::MIN, i64::MAX, u64::MAX);
 }

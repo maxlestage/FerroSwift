@@ -42,6 +42,8 @@ Macros of the standard library are translated: `println!`, `eprintln!`, `format!
 - **Hash maps and sets** are iterated in an unspecified order in both languages, but not the same one. A `BTreeMap` is iterated in key order.
 - **`Deref` and `Cow`:** `*x` on a value whose type has an `impl Deref` gives the target (also when `x` is a reference to such a value: write `x.clone()` for the value itself). A `Cow` is its value: whether it was borrowed or owned is not kept, so `match` on `Cow::Borrowed` and `Cow::Owned` is reported. A trait with type parameters cannot be used as a `dyn Converter<f64>` value: its associated type has no Swift existential.
 - **`VecDeque`** is an `Array`: `dq.remove(i)` gives the element, as `Vec::remove` does, where Rust's `VecDeque::remove` gives an `Option`.
+- **A struct generic over an iterator type** (`struct Pairs<I: Iterator<Item = u8>> { inner: I }`) is not translated yet: keep the iterator in a `Vec` instead.
+- **`i128` and `u128`** become `Int128` and `UInt128`, which Apple's platforms provide from iOS 18 and macOS 15 on.
 - **Generic parsing:** `s.parse::<T>()` in a generic function given `i32` (`report::<i32>(…)`) reads a 64-bit integer, as `T` is Swift's `Int` there; only a parse with a known target keeps the 32-bit limits.
 - **Strings** are indexed by bytes in Rust and by characters in Swift: slicing (`&s[0..3]`) goes through a support helper that counts bytes, like Rust.
 
