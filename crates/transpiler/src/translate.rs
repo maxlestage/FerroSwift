@@ -87,6 +87,8 @@ pub struct Translator<'a> {
     pub generics: Vec<String>,
     /// Generic parameters of the current function bounded by `Fn(…)`: their closure type.
     pub closure_generics: std::collections::HashMap<String, Ty>,
+    /// Generic parameters bounded by `Into<f64>`: `.into()` on them is `.rsDouble`.
+    pub into_double_params: std::collections::HashSet<String>,
     /// Labels of the loops being translated, innermost last.
     pub loops: Vec<Option<String>>,
     /// `switch` statements between the innermost loop and the code being translated: a
@@ -148,6 +150,7 @@ impl<'a> Translator<'a> {
             used_ui: false,
             generics: Vec::new(),
             closure_generics: std::collections::HashMap::new(),
+            into_double_params: std::collections::HashSet::new(),
             loops: Vec::new(),
             switch_depth: 0,
             used_labels: std::collections::HashSet::new(),
@@ -726,6 +729,9 @@ impl<'a> Translator<'a> {
                     if self.closure_generics.contains_key(&t.ident.to_string()) => {}
                 GenericParam::Type(t) => {
                     let bounds = self.bounds(&t.bounds);
+                    if bounds.iter().any(|b| b == "RsIntoDouble") {
+                        self.into_double_params.insert(t.ident.to_string());
+                    }
                     if bounds.is_empty() {
                         parts.push(t.ident.to_string());
                     } else {
@@ -791,6 +797,31 @@ impl<'a> Translator<'a> {
                 if name == "Debug" {
                     continue;
                 }
+                // `T: Default` → a support protocol with `init()`; `T: Into<f64>` → one
+                // with `rsDouble`.
+                if name == "Default" {
+                    self.helper("default");
+                    if !out.contains(&"RsDefault".to_string()) {
+                        out.push("RsDefault".into());
+                    }
+                    continue;
+                }
+                if name == "Into" {
+                    let target = match &seg.arguments {
+                        syn::PathArguments::AngleBracketed(a) => a.args.first().map(|g| match g {
+                            syn::GenericArgument::Type(t) => self.ty(t),
+                            _ => Ty::Unknown,
+                        }),
+                        _ => None,
+                    };
+                    if matches!(target, Some(Ty::Float(_))) {
+                        self.helper("into_double");
+                        if !out.contains(&"RsIntoDouble".to_string()) {
+                            out.push("RsIntoDouble".into());
+                        }
+                    }
+                    continue;
+                }
                 if let Some(p) = protocol_name(&name) {
                     if !out.contains(&p) {
                         out.push(p);
@@ -818,7 +849,10 @@ impl<'a> Translator<'a> {
         let where_clause = self.where_clause(&s.generics);
         self.generics = info.generics.clone();
         let derives = derives(&s.attrs);
-        let derive_default = derives.iter().any(|d| d == "Default");
+        // A generic struct cannot default its fields (`var first: T = T()`): it gets an
+        // `init()` under `where T: RsDefault` instead.
+        let generic_default = derives.iter().any(|d| d == "Default") && !info.generics.is_empty();
+        let derive_default = derives.iter().any(|d| d == "Default") && !generic_default;
         let mut conformances = self.derive_conformances(&derives, s.span());
         if info.fields.iter().any(|f| f.rust == "id") && info.kind != TypeKind::App {
             conformances.push("Identifiable".into());
@@ -1148,6 +1182,31 @@ impl<'a> Translator<'a> {
             &conditional,
             less.as_deref(),
         ));
+        if generic_default {
+            self.helper("default");
+            let wc: Vec<String> = info
+                .generics
+                .iter()
+                .map(|g| format!("{g}: RsDefault"))
+                .collect();
+            let args: Vec<String> = info
+                .fields
+                .iter()
+                .map(|f| {
+                    format!(
+                        "{}: {}",
+                        f.swift,
+                        f.ty.default_value()
+                            .unwrap_or_else(|| "fatalError()".into())
+                    )
+                })
+                .collect();
+            out.push_str(&format!(
+                "\n\nextension {swift}: RsDefault where {} {{\n{INDENT}init() {{\n{INDENT}{INDENT}self.init({})\n{INDENT}}}\n}}",
+                wc.join(", "),
+                args.join(", ")
+            ));
+        }
         out
     }
 
@@ -2300,6 +2359,7 @@ impl<'a> Translator<'a> {
     /// Translates a signature, declaring its parameters in the current scope.
     pub fn signature(&mut self, sig: &syn::Signature, place: Place) -> Signature {
         let name = sig.ident.to_string();
+        self.into_double_params.clear();
         let self_ty = self.imp.as_ref().map(|i| i.self_ty.clone());
         self.closure_generics = self.syms.closure_generics(&sig.generics, self_ty.as_ref());
         let generics = self.generic_params(&sig.generics);
