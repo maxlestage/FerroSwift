@@ -38,7 +38,7 @@ Macros of the standard library are translated: `println!`, `eprintln!`, `format!
 ## Behaviour differences
 
 - **Integer overflow** stops a Swift program in every build; Rust panics in debug builds and wraps in release builds. `i32` is Swift's 64-bit `Int`, so `+` overflows at 2⁶³ rather than 2³¹; `wrapping_add`, `checked_add`, `saturating_add`, `overflowing_add`, `rotate_left`, `count_ones`, `s.parse::<i32>()`, `i32::try_from` and `x as i32` keep the 32-bit limits. `as` conversions keep Rust's meaning: `n as u8` truncates, a float cast to an integer saturates and `NaN` gives 0. `usize` is `Int` too: `usize::MAX` is 2⁶³ − 1.
-- **Display and width:** as in Rust, `{:>10}` is ignored by a `Display` impl written with `write!` (one using `f.pad(…)`, `f.pad_integral(…)`, `self.0.fmt(f)` or the formatter's queries honors it); `{:?}` applies a width to the numbers and booleans inside a value, not to its strings. Widths and precisions count characters, where Rust counts `char`s: a combining mark is one more for Rust.
+- **Display and width:** as in Rust, `{:>10}` is ignored by a `Display` impl written with `write!` (one using `f.pad(…)`, `f.pad_integral(…)`, `self.0.fmt(f)` or the formatter's queries honors it); `{:?}` applies a width to the numbers and booleans inside a value, not to its strings. Widths and precisions count scalars, as Rust counts `char`s.
 - **Hash maps and sets** are iterated in an unspecified order in both languages, but not the same one. A `BTreeMap` is iterated in key order.
 - **Strings** are indexed by bytes in Rust and by characters in Swift: slicing (`&s[0..3]`) goes through a support helper that counts bytes, like Rust.
 

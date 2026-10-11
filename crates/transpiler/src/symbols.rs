@@ -123,6 +123,8 @@ pub struct ParamInfo {
     pub ty: Ty,
     /// `&mut T`: an `inout` parameter.
     pub inout: bool,
+    /// `impl Into<T>` (or `V: Into<T>`): the argument is converted into `T` at the call.
+    pub into: bool,
 }
 
 #[derive(Default, Debug)]
@@ -134,6 +136,9 @@ pub struct Symbols {
     /// Methods and associated functions by type (Rust name) then method name.
     pub methods: HashMap<String, HashMap<String, FnSig>>,
     pub consts: HashMap<String, Ty>,
+    /// Types with an `impl IntoIterator` (Rust and Swift names): sequences, whose
+    /// `into_iter()` and `iter()` are themselves.
+    pub into_iterators: HashSet<String>,
     /// The Swift names of the constants that would clash with a function or method when
     /// written in lower camel case (`UNIT` next to `Square::unit()`): they keep their name.
     pub const_names: HashMap<String, String>,
@@ -150,6 +155,8 @@ pub struct Symbols {
     pub fmt_queries: HashSet<String>,
     /// Types whose `Debug` uses its formatter (`f.debug_struct(…)`, `f.alternate()`).
     pub debug_queries: HashSet<String>,
+    /// Types with an `impl fmt::Binary` (`LowerHex`, `UpperHex`, `Octal`): (type, trait).
+    pub radix_fmt: HashSet<(String, String)>,
     /// Types used as the error of a `Result`: they conform to `Error`.
     pub errors: HashSet<String>,
     /// Types with a `From<…>` implementation, by target.
@@ -164,6 +171,10 @@ pub struct Symbols {
     pub imports: HashMap<String, Vec<String>>,
     /// Types implementing `Iterator`, with their `Item` type (by Rust and by Swift name).
     pub iterators: HashMap<String, Ty>,
+    /// The methods each trait declares, by trait name: the signature a `dyn Trait` call uses.
+    pub trait_methods: HashMap<String, HashMap<String, FnSig>>,
+    /// The type parameters of the traits (`trait Converter<T>`), by trait name.
+    pub trait_generics: HashMap<String, Vec<String>>,
     /// `fn index_mut` of the `IndexMut` impls, by Rust type name: the setter of the subscript.
     pub index_mut: HashMap<String, syn::ImplItemFn>,
 }
@@ -411,7 +422,23 @@ impl Symbols {
                 );
             }
             Item::Trait(t) => {
-                self.traits.insert(t.ident.to_string());
+                let name = t.ident.to_string();
+                self.traits.insert(name.clone());
+                self.trait_generics
+                    .insert(name.clone(), type_params(&t.generics));
+                let sigs: Vec<(String, FnSig)> = t
+                    .items
+                    .iter()
+                    .filter_map(|it| match it {
+                        syn::TraitItem::Fn(f) => {
+                            let mut sig = self.sig(&f.sig, None);
+                            sig.trait_method = true;
+                            Some((f.sig.ident.to_string(), sig))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                self.trait_methods.entry(name).or_default().extend(sigs);
             }
             Item::Fn(f) => {
                 let sig = self.sig(&f.sig, None);
@@ -467,7 +494,8 @@ impl Symbols {
                     self.debug_queries.insert(type_name.clone());
                 }
             }
-            Some("Iterator") => {
+            // `impl IntoIterator for Deck`: a `Sequence` of its items, like an iterator.
+            Some("Iterator") | Some("IntoIterator") => {
                 let item = imp
                     .items
                     .iter()
@@ -478,13 +506,42 @@ impl Symbols {
                         _ => None,
                     })
                     .unwrap_or(Ty::Unknown);
+                // `impl IntoIterator for &Deck` yields references: the same items.
+                let item = match item {
+                    Ty::Named(ref n, _) if n == "Self" => self_ty.clone(),
+                    t => t,
+                };
                 self.iterators.insert(type_name.clone(), item.clone());
                 if let Ty::Named(swift, _) = &self_ty {
                     self.iterators.insert(swift.clone(), item);
+                    if trait_name.as_deref() == Some("IntoIterator") {
+                        self.into_iterators.insert(swift.clone());
+                    }
+                }
+                if trait_name.as_deref() == Some("IntoIterator") {
+                    self.into_iterators.insert(type_name.clone());
                 }
             }
             Some("Error") => {
                 self.errors.insert(type_name.clone());
+            }
+            // `impl Clone for Item` written by hand: the copy Swift makes, as when derived.
+            Some("Clone") | Some("Copy") => {
+                if let Some(st) = self.structs.get_mut(&type_name) {
+                    if !st.derives.iter().any(|d| d == "Clone") {
+                        st.derives.push("Clone".into());
+                    }
+                }
+                if let Some(en) = self.enums.get_mut(&type_name) {
+                    if !en.derives.iter().any(|d| d == "Clone") {
+                        en.derives.push("Clone".into());
+                    }
+                }
+                return;
+            }
+            Some("Binary") | Some("LowerHex") | Some("UpperHex") | Some("Octal") => {
+                let t = trait_name.clone().unwrap_or_default();
+                self.radix_fmt.insert((type_name.clone(), t));
             }
             Some("IndexMut") => {
                 for it in &imp.items {
@@ -501,7 +558,9 @@ impl Symbols {
                         path.segments.last().map(|s| &s.arguments)
                     {
                         if let Some(syn::GenericArgument::Type(t)) = args.args.first() {
-                            let from = self.ty(t, Some(&self_ty));
+                            // `impl<T: Into<Value>> From<Vec<T>>`: a source of `Vec<Value>`.
+                            let bounded = self.closure_generics(&imp.generics, Some(&self_ty));
+                            let from = substitute(&self.ty(t, Some(&self_ty)), &bounded);
                             self.from_impls
                                 .entry(type_name.clone())
                                 .or_default()
@@ -585,16 +644,25 @@ impl Symbols {
     /// Generic parameters bounded by a closure trait (`F: Fn(i32) -> i32`), with the closure
     /// type that replaces them.
     pub fn closure_generics(&self, g: &syn::Generics, self_ty: Option<&Ty>) -> HashMap<String, Ty> {
-        // `F: Fn(i32) -> i32` and `I: Iterator<Item = u32>`: the parameter stands for the
-        // closure or the sequence itself.
-        let replaced = |t: Ty| match t {
-            Ty::Fn(..) | Ty::Iter(_) => Some(t),
-            _ => None,
+        // `F: Fn(i32) -> i32`, `I: Iterator<Item = u32>` and `V: Into<Value>`: the parameter
+        // stands for the closure, the sequence or the target itself.
+        let replaced = |s: &Self,
+                        bounds: &syn::punctuated::Punctuated<
+            syn::TypeParamBound,
+            syn::token::Plus,
+        >| {
+            if let Some(target) = s.target_of_into(bounds, self_ty) {
+                return Some(target);
+            }
+            match s.bounds_ty(bounds, self_ty, true) {
+                t @ (Ty::Fn(..) | Ty::Iter(_)) => Some(t),
+                _ => None,
+            }
         };
         let mut out = HashMap::new();
         for p in &g.params {
             if let GenericParam::Type(t) = p {
-                if let Some(ty) = replaced(self.bounds_ty(&t.bounds, self_ty, true)) {
+                if let Some(ty) = replaced(self, &t.bounds) {
                     out.insert(t.ident.to_string(), ty);
                 }
             }
@@ -604,7 +672,7 @@ impl Symbols {
                 if let syn::WherePredicate::Type(pt) = pred {
                     if let Type::Path(tp) = &pt.bounded_ty {
                         if let Some(id) = tp.path.get_ident() {
-                            if let Some(ty) = replaced(self.bounds_ty(&pt.bounds, self_ty, true)) {
+                            if let Some(ty) = replaced(self, &pt.bounds) {
                                 out.insert(id.to_string(), ty);
                             }
                         }
@@ -613,6 +681,62 @@ impl Symbols {
             }
         }
         out
+    }
+
+    /// The `T` of an `Into<T>` bound, when the parameter can stand for `T` itself: a type
+    /// of the crate (converted with its `From` at the call) or a `String`. `Into<f64>` keeps
+    /// its own protocol (`RsIntoDouble`).
+    fn target_of_into(
+        &self,
+        bounds: &syn::punctuated::Punctuated<syn::TypeParamBound, syn::token::Plus>,
+        self_ty: Option<&Ty>,
+    ) -> Option<Ty> {
+        bounds.iter().find_map(|b| {
+            let syn::TypeParamBound::Trait(t) = b else {
+                return None;
+            };
+            let seg = t.path.segments.last()?;
+            if seg.ident != "Into" {
+                return None;
+            }
+            let syn::PathArguments::AngleBracketed(a) = &seg.arguments else {
+                return None;
+            };
+            match a.args.first()? {
+                syn::GenericArgument::Type(t) => {
+                    let target = self.ty(t, self_ty);
+                    matches!(target, Ty::Named(..) | Ty::Str).then_some(target)
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// Whether a parameter is declared `impl Into<T>`, or of a type parameter bounded by
+    /// `Into<T>`.
+    fn has_into_param(&self, t: &Type, g: &syn::Generics, self_ty: Option<&Ty>) -> bool {
+        match t {
+            Type::ImplTrait(i) => self.target_of_into(&i.bounds, self_ty).is_some(),
+            Type::Path(tp) => {
+                let Some(id) = tp.path.get_ident() else {
+                    return false;
+                };
+                let inline = g.params.iter().any(|p| {
+                    matches!(p, GenericParam::Type(t) if t.ident == *id && self.target_of_into(&t.bounds, self_ty).is_some())
+                });
+                let in_where = g.where_clause.as_ref().is_some_and(|w| {
+                    w.predicates.iter().any(|pred| match pred {
+                        syn::WherePredicate::Type(pt) => {
+                            matches!(&pt.bounded_ty, Type::Path(b) if b.path.is_ident(id))
+                                && self.target_of_into(&pt.bounds, self_ty).is_some()
+                        }
+                        _ => false,
+                    })
+                });
+                inline || in_where
+            }
+            _ => false,
+        }
     }
 
     /// The signature of a function or method.
@@ -634,7 +758,8 @@ impl Symbols {
                     // A closure is shared, not passed `inout`, as the signature has it.
                     let inout = matches!(&*p.ty, Type::Reference(r) if r.mutability.is_some())
                         && !matches!(ty, Ty::Fn(..) | Ty::View);
-                    params.push(ParamInfo { ty, inout });
+                    let into = self.has_into_param(&p.ty, &sig.generics, self_ty);
+                    params.push(ParamInfo { ty, inout, into });
                 }
             }
         }

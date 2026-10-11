@@ -170,6 +170,24 @@ impl Translator<'_> {
                 let name = self.declare(&c.ident.to_string(), ty);
                 vec![format!("let {name} = {}", v.code)]
             }
+            // `static EMPTY: Cell = Cell::Empty;` in a function: a local too.
+            syn::Item::Static(c) => {
+                let ty = self.ty(&c.ty);
+                let v = self.expr_with(&c.expr, &ty);
+                let v = self.settle(v);
+                let name = self.declare(&c.ident.to_string(), ty.clone());
+                let annot = if v.code.starts_with('.') {
+                    format!(": {}", ty.swift_lossy())
+                } else {
+                    String::new()
+                };
+                let kw = if matches!(c.mutability, syn::StaticMutability::Mut(_)) {
+                    "var"
+                } else {
+                    "let"
+                };
+                vec![format!("{kw} {name}{annot} = {}", v.code)]
+            }
             other => {
                 let s = self.unsupported(other.span(), "an item declared inside a function");
                 vec![s]
@@ -220,6 +238,30 @@ impl Translator<'_> {
                 };
                 vec![format!("_ = {}", v.code)]
             }
+            // `let (mut count, mut first) = (0, None);`: one `let` per element, so that each
+            // gets its own type (`first` from a later use).
+            Pat::Tuple(t)
+                if declared.is_none()
+                    && matches!(value_expr, Expr::Tuple(v) if v.elems.len() == t.elems.len())
+                    && t.elems
+                        .iter()
+                        .all(|p| matches!(p, Pat::Ident(i) if i.subpat.is_none())) =>
+            {
+                let Expr::Tuple(values) = value_expr else {
+                    unreachable!()
+                };
+                let mut lines = Vec::new();
+                for (p, v) in t.elems.iter().zip(&values.elems) {
+                    let Pat::Ident(id) = p else { continue };
+                    lines.extend(self.let_ident(
+                        &id.ident.to_string(),
+                        id.mutability.is_some(),
+                        None,
+                        v,
+                    ));
+                }
+                lines
+            }
             _ => {
                 let v = self.expr_with(value_expr, &declared_ty);
                 let v = self.settle(v);
@@ -255,8 +297,16 @@ impl Translator<'_> {
         // `let data = self.data…`: the field must keep its `self.`.
         let swift_name = names::lower_camel(rust);
         self.pending_locals.push(swift_name);
+        self.last_closure_inouts.clear();
         let lines = self.let_ident_inner(rust, mutable, declared, value);
         self.pending_locals.pop();
+        // `let flush = |word: &mut String, …| …`: calls pass those arguments `inout`.
+        if matches!(value, Expr::Closure(_)) && self.last_closure_inouts.iter().any(|b| *b) {
+            if let Some(local) = self.lookup(rust) {
+                let flags = self.last_closure_inouts.clone();
+                self.closure_inouts.insert(local.swift.clone(), flags);
+            }
+        }
         lines
     }
 
@@ -787,6 +837,21 @@ impl Translator<'_> {
         if let Some(lines) = self.option_map_stmt(e) {
             return lines;
         }
+        // `opt.get_or_insert_with(f);` on its own: only the insertion, written as a prelude.
+        if let Expr::MethodCall(m) = e {
+            if matches!(
+                m.method.to_string().as_str(),
+                "get_or_insert" | "get_or_insert_with"
+            ) && m.args.len() == 1
+                && matches!(self.place_ty(&m.receiver), Ty::Option(_))
+            {
+                let v = self.expr(e);
+                if v.code.ends_with('!') {
+                    return vec![];
+                }
+                return vec![v.code];
+            }
+        }
         // `bank.open("ann", 1);`: the key path returned is not needed.
         if let Expr::MethodCall(m) = e {
             if let Some((call, _, sig)) = self.raw_key_path_call(m) {
@@ -1224,12 +1289,18 @@ impl Translator<'_> {
             // its changed fields and stored back. Not into a `self` taken by value: the
             // changes are the new value's own.
             let consumed_self = subject_code == "self" && !self.self_mutable;
-            let write_back =
-                if crate::expr::is_place(&m.expr) && arm.guard.is_none() && !consumed_self {
-                    self.variant_write_back(&arm.pat, &arm.body, &subject_ty, &subject_code)
-                } else {
-                    None
-                };
+            // `match map.get_mut(k)`: the subject is the place in the map.
+            let lookup = matches!(&*m.expr, Expr::MethodCall(c)
+                if matches!(c.method.to_string().as_str(), "get_mut" | "as_mut" | "last_mut" | "first_mut")
+                    && simple_place(&c.receiver));
+            let write_back = if (crate::expr::is_place(&m.expr) || lookup)
+                && arm.guard.is_none()
+                && !consumed_self
+            {
+                self.variant_write_back(&arm.pat, &arm.body, &subject_ty, &subject_code)
+            } else {
+                None
+            };
             let pats = match &write_back {
                 Some(wb) => crate::pat::CasePats {
                     code: wb.0.clone(),
@@ -1241,7 +1312,21 @@ impl Translator<'_> {
             if let Some((_, g)) = &arm.guard {
                 let g = self.expr_with(g, &Ty::Bool);
                 let g = self.settle(g);
-                guards.push(g.code);
+                if pats.binding_cases.is_empty() {
+                    guards.push(g.code);
+                } else {
+                    // The guard uses bindings Swift's pattern cannot take: bound first.
+                    let chain: Vec<String> = pats
+                        .binding_cases
+                        .iter()
+                        .map(|(code, subject)| format!("case {code} = {subject}"))
+                        .collect();
+                    guards.push(format!(
+                        "{{ guard {} else {{ return false }}; return {} }}()",
+                        chain.join(", "),
+                        g.code
+                    ));
+                }
             }
             let mut body = pats.lets.clone();
             // An arm is a scope already: its block needs no `do { }`.
@@ -1252,7 +1337,13 @@ impl Translator<'_> {
                 other => body.extend(self.with_prelude(|t| t.tail(other, sink))),
             }
             if let Some(wb) = &write_back {
-                body.push(wb.1.clone());
+                // A `return` in the arm (or the arm's value returned) would skip a store at
+                // its end: `defer` stores first.
+                if has_control_flow(&arm.body) || *sink == Sink::Return {
+                    body.insert(0, format!("defer {{ {} }}", wb.1));
+                } else {
+                    body.push(wb.1.clone());
+                }
             }
             self.pop_scope();
             let body = join_or_break(body, sink, self.in_view_builder());
@@ -1357,6 +1448,14 @@ impl Translator<'_> {
         if mutated.is_empty() {
             return None;
         }
+        // `Some(Value::Int(n)) => *n += 1` on `map.get_mut(k)`: the variant inside the option.
+        if let (Pat::TupleStruct(ts), Ty::Option(inner)) = (pat, subject_ty) {
+            if ts.path.is_ident("Some") && ts.elems.len() == 1 {
+                let (code, back) =
+                    self.variant_write_back(&ts.elems[0], body, inner, &format!("{subject}!"))?;
+                return Some((format!(".some({code})"), back));
+            }
+        }
         let (segs, fields_of): (Vec<String>, FieldPatterns) = match pat {
             Pat::Struct(s) => {
                 let segs: Vec<String> = s
@@ -1448,12 +1547,6 @@ impl Translator<'_> {
         }
         if !rust_names.iter().flatten().any(|n| mutated.contains(n)) {
             return None;
-        }
-        if has_control_flow(body) {
-            self.warn(
-                pat.span(),
-                "the changed fields of this variant are stored back at the end of the arm: a `return` or `break` before that loses them",
-            );
         }
         let mut parts = Vec::new();
         let mut args = Vec::new();

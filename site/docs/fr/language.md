@@ -27,6 +27,7 @@ FerroSwift traduit du Rust ordinaire — le code que vous écrivez pour le modè
 | `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<T>` | `T` |
 | `RefCell<T>`, `Cell<T>`, `Mutex<T>`, `RwLock<T>` | `RsRefCell<T>`, une classe qui porte la valeur : les clones d’un `Rc` la partagent |
 | `&T`, `&mut T` | `T` (`inout T` pour un paramètre `&mut` ; une méthode qui renvoie `&mut T` renvoie un `WritableKeyPath<Self, T>`) |
+| `std::time::Duration` | `RsDuration` du fichier de support : secondes et nanosecondes, avec les constructeurs, accesseurs, opérateurs et le `{:?}` de Rust (`1.5s`, `250ms`) |
 | `&mut v[a..b]` | une copie de la partie, réécrite après l’appel ; `chunks_mut` et `split_at_mut` fonctionnent de même, leurs parties réécrites à la fin de l’itération ou après leur dernier usage |
 | `impl Trait`, `dyn Trait` | `some Proto`, `any Proto` |
 | `fn(A) -> B`, closures | `(A) -> B` |
@@ -41,13 +42,13 @@ Les longueurs `usize` sont des `Int` Swift : `v.len()` donne `v.count`. Le `len(
 - Les blocs **`impl`** deviennent des `extension`. `fn new(…) -> Self` devient un `init`, les méthodes `&mut self` des `mutating func`, les `const` associées des `static let`. Une méthode qui renvoie `&mut Self` (un builder) est appelée comme une instruction : `a.b().c()` devient `a.b()` puis `a.c()`. Une méthode qui porte le nom d’un champ (`fn count(&self)` à côté de `count`) devient une propriété calculée, le champ étant stocké sous `_count`.
 - **`impl Iterator for Type`** fait du type une `Sequence` : `for x in Counter { … }`, `.filter`, `.sum()` fonctionnent dessus. Ses adaptateurs sont paresseux, comme ceux de `(1..)`, donc un itérateur sans fin s’arrête avec `take(5)` ; `let mut it = …` garde un itérateur que `next()`, `peek()` et `nth()` font avancer.
 - Les **traits** deviennent des `protocol` ; les méthodes par défaut vont dans une extension du protocole, les types associés dans des `associatedtype`. `impl Trait for Type` ajoute la conformité.
-- Les **traits d’opérateurs** (`Add`, `Sub`, `Mul`, `Neg`…) deviennent des fonctions d’opérateur, `impl Index` un `subscript` (avec un `set` quand `IndexMut` est implémenté aussi) ; `impl Display` devient `CustomStringConvertible`. Un `fmt` qui interroge son formateur (`f.pad(…)`, `f.precision()`, `f.alternate()`, `self.0.fmt(f)`) ou qui compose un `Debug` avec `f.debug_struct(…)` et les autres constructeurs est écrit avec un petit `RsFormatter` du fichier de support, pour que `{:>8.2}` et `{:#?}` lui parviennent comme en Rust.
+- Les **traits d’opérateurs** (`Add`, `Sub`, `Mul`, `Neg`, `BitOr`, `Shl`, les formes `…Assign`…) deviennent des fonctions d’opérateur, `impl fmt::Binary` (`LowerHex`, `UpperHex`, `Octal`) le texte qu’écrit `{:b}` (`{:x}`, `{:X}`, `{:o}`), `impl Index` un `subscript` (avec un `set` quand `IndexMut` est implémenté aussi) ; `impl Display` devient `CustomStringConvertible` ; `impl IntoIterator` fait du type une `Sequence`, `impl FromIterator` son `fromIter` (appelé par `collect`), `impl Hash` son `hash(into:)`, `impl Extend` et `impl AsRef<str>` de simples fonctions. Un argument donné à un paramètre `impl Into<T>` est converti à l’appel comme `From` le fait (`Value(1)`, `Value([1, 2].map { Value($0) })` pour un `impl From<Vec<T>>`). Un `fmt` qui interroge son formateur (`f.pad(…)`, `f.precision()`, `f.alternate()`, `self.0.fmt(f)`) ou qui compose un `Debug` avec `f.debug_struct(…)` et les autres constructeurs est écrit avec un petit `RsFormatter` du fichier de support, pour que `{:>8.2}` et `{:#?}` lui parviennent comme en Rust.
 - Les **bornes génériques** deviennent des contraintes de protocole (`T: Display` → `T: CustomStringConvertible`, `T: PartialOrd` → `T: Comparable`) ; `T: Default` et `T: Into<f64>` passent par deux petits protocoles du fichier de support (`RsDefault`, `RsIntoDouble`), que les types standard adoptent, et une structure générique qui dérive `Default` reçoit son `init()` sous `where T: RsDefault`.
 - Les **noms** suivent les conventions de Swift (`my_field` → `myField`, `MAX_SIZE` → `maxSize`) ; un type nommé comme l’un de ceux de Swift (`enum Error`, `struct Task`) reçoit le suffixe `Type` (`ErrorType`), et `type Result<T> = std::result::Result<T, Error>` devient un `typealias` générique.
 - **Conversions :** `impl From<A> for B` devient un `init` ; `impl FromStr for B` et `impl TryFrom<A> for B` deviennent les fonctions statiques `fromStr` et `tryFrom`, qu’appellent `s.parse::<B>()`, `B::from_str(s)`, `B::try_from(x)` et `x.try_into()`.
 - Les **génériques** gardent leurs bornes : `fn largest<T: Describe>(items: &[T])` → `func largest<T: Describe>(_ items: [T])`. Les clauses `where` sont conservées.
 - Les **fonctions** prennent des paramètres sans étiquette (`_ name: Type`), pour que les appels ressemblent à ceux de Rust.
-- `const` et `static` deviennent des `let` globaux, les alias `type` des `typealias`, les blocs `mod` sont mis à plat.
+- `const` et `static` deviennent des `let` globaux (des constantes locales quand ils sont déclarés dans une fonction), les alias `type` des `typealias`, les blocs `mod` sont mis à plat.
 
 ## Expressions et contrôle de flux
 
@@ -61,6 +62,8 @@ Les longueurs `usize` sont des `Int` Swift : `v.len()` donne `v.count`. Le `len(
 | `for x in v.iter_mut()`, `v.iter_mut().filter(\|x\| x.alive)` | `for i in v.indices { v[i]… }`, `for i in v.indices where v[i].alive { … }` : les éléments modifiés sur place |
 | `for i in 0..n`, `0..=n`, `(0..n).rev()` | `for i in 0..<n`, `0...n`, `(0..<n).reversed()` ; une plage aux bornes calculées (`a..b`, `1..=n`) devient `a..<max(a, b)`, vide quand sa fin précède son début comme en Rust, là où la plage Swift planterait |
 | `if c { a } else { b }` comme valeur | `c ? a : b` |
+| `[Token::Word(cmd), rest @ ..] if cmd == "set"` | `case _ where tokens.count >= 1 && { if case .word(_) = tokens[0] … }()`, les liaisons prises au début du bras (`guard case .word(let cmd) = tokens[0]`), la garde évaluée une fois celles-ci liées |
+| `let f = \|out: &mut Vec<T>\| …; f(&mut v)` | `{ (out: inout [T]) in … }`, `f(&v)` |
 | `Ok(match e { … => return Err(…) })`, `let (a, b) = match op { … => break }` | la valeur est calculée par des instructions avant son usage (`let value: Int` puis un `switch` qui l’affecte) : un `return`, `break` ou `?` dans une branche agit sur la fonction ou la boucle |
 | `v.push(match op { '+' => a + b, … })` | `v.append({ () -> Int in switch op { … } }())` |
 | `x as f64`, `n as u8` | `Double(x)`, `UInt8(truncatingIfNeeded: n)` |

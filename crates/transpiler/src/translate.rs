@@ -96,6 +96,15 @@ pub struct Translator<'a> {
     pub fmt_debug: bool,
     /// The function being translated takes `&mut self`: `self` can be assigned.
     pub self_mutable: bool,
+    /// The type parameters of the impl being translated that stand for another type
+    /// (`impl<T: Into<Value>> From<Vec<T>>`: `T` is `Value`).
+    pub impl_closure_generics: std::collections::HashMap<String, Ty>,
+    /// The `&mut` parameters of the closure translated last, and of the closures kept in
+    /// locals (by Swift name): their calls pass those arguments `inout`.
+    pub last_closure_inouts: Vec<bool>,
+    pub closure_inouts: std::collections::HashMap<String, Vec<bool>>,
+    /// The types whose `impl IntoIterator` has been written (`&Deck` after `Deck` adds none).
+    pub into_iter_done: std::collections::HashSet<String>,
     /// The variables being assigned by the branches of a `let x = match …` (Swift names),
     /// with the slot of their type: a binding of a branch must not take their name.
     pub assign_slots: std::collections::HashMap<String, usize>,
@@ -165,6 +174,10 @@ impl<'a> Translator<'a> {
             fmt_debug: false,
             self_mutable: false,
             assign_slots: std::collections::HashMap::new(),
+            into_iter_done: std::collections::HashSet::new(),
+            last_closure_inouts: Vec::new(),
+            closure_inouts: std::collections::HashMap::new(),
+            impl_closure_generics: std::collections::HashMap::new(),
             loops: Vec::new(),
             switch_depth: 0,
             used_labels: std::collections::HashSet::new(),
@@ -761,6 +774,7 @@ impl<'a> Translator<'a> {
                 "RsTupleKeys" => "tuple_keys",
                 "RsOrdTuple" => "ord_tuple",
                 "RsRefCell" => "refcell",
+                "RsDuration" => "duration",
                 _ => continue,
             };
             self.helper(helper);
@@ -1748,6 +1762,8 @@ impl<'a> Translator<'a> {
                 }
             }
         }
+        self.impl_closure_generics = self.syms.closure_generics(&imp.generics, Some(&self_ty));
+        self.closure_generics = self.impl_closure_generics.clone();
         let wc = self.where_clause(&imp.generics);
         if let Some(w) = wc.strip_prefix(" where ") {
             where_parts.push(w.to_string());
@@ -1781,6 +1797,15 @@ impl<'a> Translator<'a> {
                         } else {
                             self.fmt_impl(f, "description")
                         });
+                    }
+                }
+            }
+            // `impl fmt::Binary for Flags`: the text `{:b}` writes, a property.
+            Some("Binary") | Some("LowerHex") | Some("UpperHex") | Some("Octal") => {
+                let property = format!("rs{}", trait_name.as_deref().unwrap_or_default());
+                for it in &imp.items {
+                    if let ImplItem::Fn(f) = it {
+                        members.push(self.fmt_impl(f, &property));
                     }
                 }
             }
@@ -1821,6 +1846,51 @@ impl<'a> Translator<'a> {
                             Place::Method {
                                 mutating_allowed: true,
                             },
+                        ));
+                    }
+                }
+            }
+            // `impl IntoIterator for Deck` (and for `&Deck`, the same once): a `Sequence`
+            // iterating on what `into_iter` gives.
+            Some("IntoIterator") => {
+                if !self.into_iter_done.insert(swift.clone()) {
+                    self.imp = None;
+                    self.generics.clear();
+                    return String::new();
+                }
+                conformance = Some("Sequence".into());
+                let item = self
+                    .syms
+                    .iterators
+                    .get(&rust_name)
+                    .cloned()
+                    .unwrap_or(Ty::Unknown);
+                let item_swift = item.swift_lossy();
+                for it in &imp.items {
+                    if let ImplItem::Fn(f) = it {
+                        if f.sig.ident != "into_iter" {
+                            continue;
+                        }
+                        self.push_scope();
+                        self.fns.push(FnCx {
+                            ret: Ty::Vec(Box::new(item.clone())),
+                            throws: None,
+                            init: false,
+                            closure: false,
+                            self_name: None,
+                            key_path: None,
+                        });
+                        let body = self.block_lines(&f.block, Sink::Return);
+                        self.fns.pop();
+                        self.pop_scope();
+                        let body = self.resolve_slots(&body.join("\n"));
+                        members.push(format!(
+                            "func makeIterator() -> IndexingIterator<[{item_swift}]> {{\n{INDENT}intoIter().makeIterator()\n}}"
+                        ));
+                        members.push(format!(
+                            "{}func intoIter() -> [{item_swift}] {{\n{}\n}}",
+                            docs(&f.attrs),
+                            indent_lines(&body)
                         ));
                     }
                 }
@@ -1885,8 +1955,50 @@ impl<'a> Translator<'a> {
                 }
                 self.helper("Ordering");
             }
-            Some("Hash") | Some("Clone") | Some("Copy") | Some("Eq") | Some("Send")
-            | Some("Sync") => {
+            // `impl Hash for Card`: `hash(into:)`, each `x.hash(state)` combining `x`.
+            Some("Hash") => {
+                conformance = Some("Hashable".into());
+                for it in &imp.items {
+                    if let ImplItem::Fn(f) = it {
+                        if f.sig.ident != "hash" {
+                            continue;
+                        }
+                        self.push_scope();
+                        self.fns.push(FnCx {
+                            ret: Ty::Unit,
+                            throws: None,
+                            init: false,
+                            closure: false,
+                            self_name: None,
+                            key_path: None,
+                        });
+                        let state = f.sig.inputs.iter().find_map(|a| match a {
+                            FnArg::Typed(p) => match &*p.pat {
+                                Pat::Ident(i) => Some(i.ident.to_string()),
+                                _ => None,
+                            },
+                            _ => None,
+                        });
+                        if let Some(state) = &state {
+                            self.declare_alias(
+                                state,
+                                "hasher".into(),
+                                Ty::Named("Hasher".into(), vec![]),
+                            );
+                        }
+                        let body = self.block_lines(&f.block, Sink::Discard);
+                        self.fns.pop();
+                        self.pop_scope();
+                        let body = self.resolve_slots(&body.join("\n"));
+                        members.push(format!(
+                            "{}func hash(into hasher: inout Hasher) {{\n{}\n}}",
+                            docs(&f.attrs),
+                            indent_lines(&body)
+                        ));
+                    }
+                }
+            }
+            Some("Clone") | Some("Copy") | Some("Eq") | Some("Send") | Some("Sync") => {
                 self.imp = None;
                 self.generics.clear();
                 return String::new();
@@ -1913,6 +2025,9 @@ impl<'a> Translator<'a> {
                             | "TryInto"
                             | "Sum"
                             | "Product"
+                            | "FromIterator"
+                            | "Extend"
+                            | "AsRef"
                     ) {
                         conformance =
                             Some(protocol_name(t).unwrap_or_else(|| names::upper_camel(t)));
@@ -2064,6 +2179,18 @@ impl<'a> Translator<'a> {
         let body = self.block_lines(&f.block, Sink::Discard);
         self.fns.pop();
         self.pop_scope();
+        // `return write!(f, "-")`: the text written so far is the value.
+        let body: Vec<String> = body
+            .join("\n")
+            .lines()
+            .map(|l| {
+                if l.trim() == "return" {
+                    format!("{}return {out_name}", &l[..l.len() - l.trim_start().len()])
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
         let body = self.resolve_slots(&body.join("\n"));
         // A single `write!`: the string itself.
         if let Some(value) = body.strip_prefix(&format!("{out_name} += ")) {
@@ -2493,7 +2620,9 @@ impl<'a> Translator<'a> {
         let name = sig.ident.to_string();
         self.into_double_params.clear();
         let self_ty = self.imp.as_ref().map(|i| i.self_ty.clone());
-        self.closure_generics = self.syms.closure_generics(&sig.generics, self_ty.as_ref());
+        self.closure_generics = self.impl_closure_generics.clone();
+        self.closure_generics
+            .extend(self.syms.closure_generics(&sig.generics, self_ty.as_ref()));
         let generics = self.generic_params(&sig.generics);
         let where_clause = self.where_clause(&sig.generics);
         let mut params = Vec::new();
@@ -2767,10 +2896,21 @@ fn operator_of(trait_name: &str) -> Option<(&'static str, bool, bool)> {
         "Mul" => ("*", false, false),
         "Div" => ("/", false, false),
         "Rem" => ("%", false, false),
+        "BitOr" => ("|", false, false),
+        "BitAnd" => ("&", false, false),
+        "BitXor" => ("^", false, false),
+        "Shl" => ("<<", false, false),
+        "Shr" => (">>", false, false),
         "AddAssign" => ("+=", true, false),
         "SubAssign" => ("-=", true, false),
         "MulAssign" => ("*=", true, false),
         "DivAssign" => ("/=", true, false),
+        "RemAssign" => ("%=", true, false),
+        "BitOrAssign" => ("|=", true, false),
+        "BitAndAssign" => ("&=", true, false),
+        "BitXorAssign" => ("^=", true, false),
+        "ShlAssign" => ("<<=", true, false),
+        "ShrAssign" => (">>=", true, false),
         "Neg" => ("-", false, true),
         "Not" => ("!", false, true),
         "Index" | "IndexMut" => ("[]", false, false),

@@ -709,10 +709,25 @@ impl Translator<'_> {
     /// a path used where a function is expected becomes a closure, so that the usual
     /// translation of the call applies.
     fn path_as_closure(&mut self, segs: &[String], path: &syn::Path, expected: &Ty) -> Option<Ex> {
-        let Ty::Fn(params, _) = expected else {
+        let Ty::Fn(params, ret) = expected else {
             return None;
         };
         let last = segs.last()?.as_str();
+        // `.map(Into::into)`, `.map(From::from)`: the conversion of each element.
+        if segs.len() == 2
+            && matches!(
+                (segs[0].as_str(), last),
+                ("Into", "into") | ("From", "from")
+            )
+            && params.len() == 1
+        {
+            let x = Ex::primary("x", params[0].clone());
+            let body = self.converted(x, ret);
+            return Some(Ex::primary(
+                format!("{{ x in {} }}", body.code),
+                expected.clone(),
+            ));
+        }
         if segs.len() == 1 && !matches!(last, "Some" | "Ok" | "Err") {
             return None;
         }
@@ -895,6 +910,13 @@ impl Translator<'_> {
                 return Some(Ex::primary(".infinity", ty));
             }
             return Some(Ex::primary(format!("{t}.{member}"), ty));
+        }
+        if owner == "Duration" && matches!(last, "ZERO" | "MAX") {
+            self.helper("duration");
+            return Some(Ex::primary(
+                format!("RsDuration.{}", last.to_lowercase()),
+                Ty::Named("RsDuration".into(), vec![]),
+            ));
         }
         if owner == "char" && last == "MAX" {
             return Some(Ex::primary("Character(\"\\u{10FFFF}\")", Ty::Char));
@@ -1862,6 +1884,7 @@ impl Translator<'_> {
         let mut typed = false;
         let mut tys = Vec::new();
         let mut prologue = Vec::new();
+        let mut inouts = Vec::new();
         // `|f: fn(i32) -> i32| move |x| f(x)`: a closure given to a closure that returns a
         // closure is captured by it, so it escapes.
         let returns_closure = body_is_closure(&c.body)
@@ -1876,11 +1899,17 @@ impl Translator<'_> {
             let ty = annot.clone().unwrap_or(hint);
             tys.push(ty.clone());
             let name = self.closure_param(pat, &ty, &mut prologue, i);
+            // `|out: &mut Vec<Token>|`: an `inout` parameter of the closure.
+            let inout = matches!(p, Pat::Type(pt)
+                if matches!(&*pt.ty, syn::Type::Reference(r) if r.mutability.is_some()));
+            inouts.push(inout);
             match annot {
                 Some(t) => {
                     typed = true;
                     let escaping = if returns_closure && matches!(t, Ty::Fn(..)) {
                         "@escaping "
+                    } else if inout {
+                        "inout "
                     } else {
                         ""
                     };
@@ -2027,6 +2056,9 @@ impl Translator<'_> {
         } else {
             format!("{{ {head}\n{}\n}}", indent_lines(&lines.join("\n")))
         };
+        // After the body: a `let` inside it must not reset what the `let` of this closure
+        // reads.
+        self.last_closure_inouts = inouts;
         Ex::primary(code, ty)
     }
 
