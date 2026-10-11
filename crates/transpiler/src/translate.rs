@@ -342,6 +342,15 @@ impl<'a> Translator<'a> {
         let Some(local) = self.lookup(rust) else {
             return;
         };
+        // `let n = s.parse().ok()?;` then `n` used as a `u32`: the parse learns its target.
+        if let Some(slot) = placeholder_slot(&local.ty) {
+            if ty.is_complete() {
+                self.slots[slot].merge(ty);
+                let local = self.lookup_mut(rust).expect("local");
+                local.ty = ty.clone();
+            }
+            return;
+        }
         match local.slot {
             Some(slot) => self.slots[slot].merge(ty),
             None => {
@@ -351,8 +360,46 @@ impl<'a> Translator<'a> {
         }
     }
 
+    /// A type standing for a slot not known yet (`s.parse()` without its target): the
+    /// placeholder is replaced by the type learned later, in type position.
+    pub fn placeholder_ty(&mut self) -> Ty {
+        let (slot, _) = self.new_slot(Ty::Unknown);
+        Ty::Named(format!("\u{3}{slot}\u{3}"), vec![])
+    }
+
+    /// Replaces the placeholders standing for a type itself (`rsParse(s, ⟨3⟩.self)`).
+    fn resolve_bare_slots(&mut self, code: &str) -> String {
+        for i in 0..self.slots.len() {
+            let t = self.slots[i].clone();
+            self.note_types(&t);
+        }
+        let mut out = String::with_capacity(code.len());
+        let mut is_slot = false;
+        for part in code.split('\u{3}') {
+            if is_slot {
+                let swift = part
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|i| self.slots.get(i))
+                    .and_then(Ty::swift);
+                out.push_str(&swift.unwrap_or_else(|| "Int".into()));
+            } else {
+                out.push_str(part);
+            }
+            is_slot = !is_slot;
+        }
+        out
+    }
+
     /// Replaces the type placeholders of `code` with the types learned since.
     pub fn resolve_slots(&mut self, code: &str) -> String {
+        let bare;
+        let code = if code.contains('\u{3}') {
+            bare = self.resolve_bare_slots(code);
+            bare.as_str()
+        } else {
+            code
+        };
         if !code.contains('\u{1}') {
             return code.to_string();
         }
@@ -2983,5 +3030,16 @@ fn has_tuple_collection(t: &Ty) -> bool {
         }
         Ty::Map(_, v, _) => matches!(**v, Ty::Tuple(_)) || has_tuple_collection(v),
         _ => false,
+    }
+}
+
+/// The slot of a placeholder type (see `Translator::placeholder_ty`).
+pub fn placeholder_slot(t: &Ty) -> Option<usize> {
+    match t {
+        Ty::Named(n, _) => n
+            .strip_prefix('\u{3}')
+            .and_then(|r| r.strip_suffix('\u{3}'))
+            .and_then(|r| r.parse().ok()),
+        _ => None,
     }
 }

@@ -1041,6 +1041,19 @@ extension Array {
         return RsChunksExact(chunks: Array(self[..<full]).chunks(size), remainder: Array(self[full...]))
     }
 
+    /// `v.chunk_by(|a, b| …)`: runs of consecutive elements the predicate chains.
+    func chunkBy(_ same: (Element, Element) throws -> Bool) rethrows -> [[Element]] {
+        var out: [[Element]] = []
+        for x in self {
+            if let last = out.last?.last, try same(last, x) {
+                out[out.count - 1].append(x)
+            } else {
+                out.append([x])
+            }
+        }
+        return out
+    }
+
     /// `v.rchunks(n)`: the chunks from the end.
     func rchunks(_ size: Int) -> [[Element]] {
         var out: [[Element]] = []
@@ -1896,6 +1909,21 @@ struct RsParseBoolError: Error, Equatable, CustomStringConvertible, RsDebugCusto
 }
 
 /// `s.parse::<bool>()`.
+/// `s.parse()` whose target type is found later: one overload per type.
+func rsParse(_ s: String, _ t: Int.Type) -> Result<Int, RsParseIntError> { rsParseInt(s, Int.self) }
+func rsParse(_ s: String, _ t: Int8.Type) -> Result<Int8, RsParseIntError> { rsParseInt(s, Int8.self) }
+func rsParse(_ s: String, _ t: Int16.Type) -> Result<Int16, RsParseIntError> { rsParseInt(s, Int16.self) }
+func rsParse(_ s: String, _ t: Int32.Type) -> Result<Int32, RsParseIntError> { rsParseInt(s, Int32.self) }
+func rsParse(_ s: String, _ t: UInt.Type) -> Result<UInt, RsParseIntError> { rsParseInt(s, UInt.self) }
+func rsParse(_ s: String, _ t: UInt8.Type) -> Result<UInt8, RsParseIntError> { rsParseInt(s, UInt8.self) }
+func rsParse(_ s: String, _ t: UInt16.Type) -> Result<UInt16, RsParseIntError> { rsParseInt(s, UInt16.self) }
+func rsParse(_ s: String, _ t: UInt32.Type) -> Result<UInt32, RsParseIntError> { rsParseInt(s, UInt32.self) }
+func rsParse(_ s: String, _ t: Double.Type) -> Result<Double, RsParseFloatError> { rsParseFloat(s, Double.self) }
+func rsParse(_ s: String, _ t: Float.Type) -> Result<Float, RsParseFloatError> { rsParseFloat(s, Float.self) }
+func rsParse(_ s: String, _ t: Bool.Type) -> Result<Bool, RsParseBoolError> { rsParseBool(s) }
+func rsParse(_ s: String, _ t: Character.Type) -> Result<Character, RsParseCharError> { rsParseChar(s) }
+func rsParse(_ s: String, _ t: String.Type) -> Result<String, Never> { .success(s) }
+
 func rsParseBool(_ s: String) -> Result<Bool, RsParseBoolError> {
     switch s {
     case "true": .success(true)
