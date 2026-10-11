@@ -3,7 +3,8 @@
 //!
 //! What a static host cannot do is replaced: the root page and `404.html` pick the language
 //! with a tiny script (the language of the address, then the browser's, French by default)
-//! and link both languages; every language has its own "not found" page.
+//! and link both languages; every language has its own "not found" page. The manifests,
+//! the service worker and the offline page of the PWA are written too.
 
 use std::io;
 use std::path::Path;
@@ -51,6 +52,25 @@ pub fn export(out: &Path, base: &str, site_url: Option<String>) -> io::Result<us
             site.page(&Route::new(lang, Page::NotFound)).as_bytes(),
         )?;
     }
+    // The PWA: a manifest per language (the French one at the root too), the service
+    // worker and the page it shows without network.
+    let mut files = vec!["/manifest.webmanifest".to_string(), "/sw.js".to_string()];
+    files.extend(
+        Lang::ALL
+            .iter()
+            .map(|l| format!("/{}/manifest.webmanifest", l.code())),
+    );
+    for file in files {
+        let response = site.respond(&file);
+        if response.status != 200 {
+            return Err(io::Error::other(format!(
+                "{file}: status {}",
+                response.status
+            )));
+        }
+        write(&file, &response.body)?;
+    }
+    write("offline/index.html", &site.respond("/offline/").body)?;
     write("sitemap.xml", site.sitemap().as_bytes())?;
     write("robots.txt", site.robots().as_bytes())?;
     for (url, asset) in site.assets.iter() {

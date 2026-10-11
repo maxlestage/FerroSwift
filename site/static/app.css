@@ -1987,10 +1987,34 @@ a:hover > .arrow {
 
 .root-card ul {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 12px;
   margin: 24px 0 0;
   padding: 0;
   list-style: none;
+}
+
+/* The page shown without network, in both languages. */
+.offline .root-card {
+  max-width: 600px;
+}
+
+.offline-lang {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin-top: 36px;
+}
+
+.offline-lang h1 {
+  margin: 0;
+  font-size: clamp(26px, 4vw, 36px);
+  letter-spacing: -0.02em;
+}
+
+.offline-lang ul {
+  margin-top: 14px;
 }
 
 /* ----- Footer ----- */

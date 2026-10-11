@@ -4,7 +4,7 @@ use active::prelude::*;
 
 use super::compare::{self, Comparison};
 use super::i18n::{Item, Section, t};
-use super::{BUNDLE_JS, BUNDLE_WASM, Site};
+use super::{BUNDLE_JS, BUNDLE_WASM, Site, pwa};
 use crate::highlight::{Syntax, escape};
 use crate::islands::{Props, Variant};
 use crate::labels::labels;
@@ -438,12 +438,15 @@ fn document(site: &Site, route: &Route, kind: &str, content: Node, bundle: Bundl
         .lang(route.lang.code())
         .seo(defaults)
         .stylesheet(assets.url("/static/app.css"))
+        // Installable, and kept by the service worker for offline reading.
+        .manifest(&pwa::manifest_href(route.lang), &pwa::manifest(route.lang))
+        .service_worker(&link("/sw.js"))
         .head(format!(
             concat!(
                 r#"<meta name="color-scheme" content="dark"/>"#,
                 r#"<meta name="author" content="{author}"/>"#,
-                r##"<meta name="theme-color" content="#0d0b0a"/>"##,
                 r#"<link rel="icon" href="{base}/favicon.svg" type="image/svg+xml"/>"#,
+                r#"<link rel="apple-touch-icon" sizes="180x180" href="{base}/static/apple-touch-icon.png"/>"#,
                 // Same URL as in app.css (no version query), so the preload is reused.
                 r#"<link rel="preload" href="{base}/static/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin=""/>"#,
                 "{script}"
@@ -1071,6 +1074,66 @@ pub fn root(site: &Site, target: &str) -> String {
         .stylesheet(site.assets.url("/static/app.css"))
         .head(format!(
             r#"<meta name="color-scheme" content="dark"/><link rel="icon" href="{}/favicon.svg" type="image/svg+xml"/>{script}"#,
+            base()
+        ))
+        .render()
+}
+
+/// `/offline/`: shown by the service worker when a page is not cached and the network is
+/// missing, in both languages.
+pub fn offline(site: &Site) -> String {
+    let fr = &t(Lang::Fr).offline;
+    let seo = Seo::new()
+        .site_name("FerroSwift")
+        .title(fr.title)
+        .description(fr.text)
+        .base_url(site.origin.clone())
+        .canonical("/offline/")
+        .image("/og.png")
+        .noindex(true);
+    let body = main().class("root offline").child(
+        div()
+            .class("root-card")
+            .child(logo("g-offline"))
+            .children(Lang::ALL.map(|l| {
+                let d = t(l);
+                div()
+                    .class("offline-lang")
+                    .attr("lang", l.code())
+                    .child(h1().text(d.offline.title))
+                    .child(p().text(d.offline.text))
+                    .child(
+                        ul().child(
+                            li().child(
+                                a().class("btn primary")
+                                    .href(Route::new(l, Page::Home).href())
+                                    .text(d.not_found.back),
+                            ),
+                        )
+                        .child(
+                            li().child(
+                                a().class("btn")
+                                    .href(Route::new(l, Page::Docs).href())
+                                    .text(d.nav.docs),
+                            ),
+                        )
+                        .child(
+                            li().child(
+                                a().class("btn")
+                                    .href(Route::new(l, Page::Playground).href())
+                                    .text(d.nav.playground),
+                            ),
+                        ),
+                    )
+            })),
+    );
+    Document::new(body)
+        .lang("fr")
+        .seo(seo)
+        .stylesheet(site.assets.url("/static/app.css"))
+        .manifest(&pwa::manifest_href(Lang::Fr), &pwa::manifest(Lang::Fr))
+        .head(format!(
+            r#"<meta name="color-scheme" content="dark"/><link rel="icon" href="{}/favicon.svg" type="image/svg+xml"/>"#,
             base()
         ))
         .render()
