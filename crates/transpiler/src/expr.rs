@@ -678,6 +678,26 @@ impl Translator<'_> {
         if let Some(ex) = self.ui_constant(owner, last, expected) {
             return ex;
         }
+        // `Ordering::SeqCst` of the atomics: an argument the support ignores.
+        if owner == "Ordering"
+            && matches!(
+                last,
+                "Relaxed" | "Release" | "Acquire" | "AcqRel" | "SeqCst"
+            )
+        {
+            self.helper("thread");
+            return Ex::primary(
+                format!("RsMemoryOrdering.{}", names::case_name(last)),
+                Ty::Named("RsMemoryOrdering".into(), vec![]),
+            );
+        }
+        if matches!(owner, "TryRecvError" | "RecvTimeoutError") {
+            self.helper("thread");
+            return Ex::primary(
+                format!("Rs{owner}.{}", names::case_name(last)),
+                Ty::Named(format!("Rs{owner}"), vec![]),
+            );
+        }
         if owner == "Ordering" {
             self.helper("Ordering");
             return Ex::primary(
@@ -1950,7 +1970,14 @@ impl Translator<'_> {
                 self.binding_arg(&fv.expr)
             } else {
                 let v = self.expr_with(&fv.expr, &field.ty);
-                self.settle(v).code
+                let v = self.settle(v);
+                // `Pairs { inner: v.into_iter() }` for an iterator field: the support iterator.
+                if field.ty.named() == Some("RsIter") && v.ty.named() != Some("RsIter") {
+                    self.helper("iter");
+                    format!("RsIter({})", v.code)
+                } else {
+                    v.code
+                }
             };
             if info.tuple {
                 args.push(code);

@@ -142,6 +142,27 @@ extension MutableCollection {
     }
 }
 
+extension Array {
+    /// `q.remove(i)` of a `VecDeque`: the element, or `nil` past the end.
+    mutating func rsDequeRemove(_ i: Int) -> Element? {
+        i < count ? remove(at: i) : nil
+    }
+
+    /// `q.swap_remove_back(i)`: the element, the last one taking its place.
+    mutating func rsSwapRemoveBack(_ i: Int) -> Element? {
+        guard i < count else { return nil }
+        swapAt(i, count - 1)
+        return removeLast()
+    }
+
+    /// `q.swap_remove_front(i)`: the element, the first one taking its place.
+    mutating func rsSwapRemoveFront(_ i: Int) -> Element? {
+        guard i < count else { return nil }
+        swapAt(i, 0)
+        return removeFirst()
+    }
+}
+
 extension MutableCollection where Index == Int {
     /// `v[1..3].swap(i, j)`: the indices count from the start of the slice.
     mutating func rsSwap(_ i: Int, _ j: Int) {

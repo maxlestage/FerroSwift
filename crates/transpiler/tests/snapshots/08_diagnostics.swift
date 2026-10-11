@@ -9,6 +9,5 @@ func ok() -> Int {
 }
 
 // Diagnostics:
-// 1:1: warning: macro_rules! definitions are not translated
 // 7:15: error: raw pointers have no Swift equivalent here
 // 8:5: warning: unsafe code is translated as ordinary code: check it

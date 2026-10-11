@@ -224,6 +224,14 @@ impl Translator<'_> {
             return self.let_else(pat, &init.expr, diverge, &declared_ty);
         }
         let value_expr = &*init.expr;
+        // `let mut q: VecDeque<_> = …`, `let mut q = VecDeque::new();`: a deque.
+        if let Pat::Ident(id) = pat {
+            let typed = matches!(&l.pat, Pat::Type(pt) if crate::symbols::mentions_deque(&pt.ty));
+            let init_text = quote::quote!(#value_expr).to_string();
+            if typed || init_text.contains("VecDeque") {
+                self.deque_locals.insert(id.ident.to_string());
+            }
+        }
         match pat {
             Pat::Ident(id) if id.subpat.is_none() => {
                 let rust = id.ident.to_string();
@@ -2061,7 +2069,12 @@ impl Translator<'_> {
         let v = self.expr(inner);
         let v = self.settle(v);
         let item = match &v.ty {
-            Ty::Named(n, _) => self.syms.iterators.get(n).cloned().unwrap_or(Ty::Unknown),
+            Ty::Named(n, _) => self
+                .syms
+                .iterators
+                .get(n)
+                .cloned()
+                .unwrap_or_else(|| v.ty.item()),
             t => t.item(),
         };
         let code = match &v.ty {

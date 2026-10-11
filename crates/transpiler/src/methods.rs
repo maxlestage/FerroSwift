@@ -677,7 +677,14 @@ impl Translator<'_> {
                 matches!(&v.ty, Ty::Named(n, _) if self.syms.iterators.contains_key(n));
             if cast_empty && v.code == "[]" {
                 out.push(format!("[] as {}", expected.swift_lossy()));
-            } else if matches!(expected, Ty::Iter(_)) && user_iterator {
+            } else if matches!(expected, Ty::Iter(_))
+                && (user_iterator
+                    || (!matches!(v.ty, Ty::Vec(_))
+                        && !array_valued(&v.code)
+                        && !v.code.is_empty()))
+            {
+                // `pairs_of("xyz".bytes())`: a lazy view, collected into the array the
+                // parameter is.
                 out.push(format!("Array({})", v.code));
             } else {
                 out.push(v.code);
@@ -704,7 +711,18 @@ impl Translator<'_> {
                 let f = self.global_fn(last);
                 Some(Ex::primary(format!("{f}({}, {})", a.code, b.code), a.ty))
             }
-            "drop" if args.len() == 1 => Some(Ex::primary("", Ty::Unit)),
+            "drop" if args.len() == 1 => {
+                // `drop(tx)`: the sender closed, so that the channel can disconnect.
+                let v = self.expr(&args[0]);
+                let v = self.settle(v);
+                if v.ty.named() == Some("RsSender") {
+                    return Some(Ex::primary(
+                        format!("{}.close()", wrap(&v, P_PRIMARY)),
+                        Ty::Unit,
+                    ));
+                }
+                Some(Ex::primary("", Ty::Unit))
+            }
             "swap" | "take" | "replace" => {
                 self.std_path_call(&["mem".into(), last.into()], args, expected, &[])
             }
@@ -966,11 +984,29 @@ impl Translator<'_> {
                     Ty::Named("RsRefCell".into(), vec![v.ty]),
                 ))
             }
-            ("Box" | "Rc" | "Arc" | "Cow", "new" | "from") if args.len() == 1 => {
+            ("Box" | "Rc" | "Arc", "new" | "from") if args.len() == 1 => {
                 Some(arg(self, 0, expected))
             }
-            // `Cow::Owned(s)`, `Cow::Borrowed(s)`: the value itself.
-            ("Cow", "Owned" | "Borrowed") if args.len() == 1 => Some(arg(self, 0, expected)),
+            // `Cow::Owned(s)`, `Cow::Borrowed(s)`, `Cow::from(x)` (borrowed from a reference or
+            // a literal, owned otherwise).
+            ("Cow", "Owned" | "Borrowed" | "from") if args.len() == 1 => {
+                let inner = match expected {
+                    Ty::Named(n, a) if n == "RsCow" => a.first().cloned().unwrap_or(Ty::Unknown),
+                    _ => Ty::Unknown,
+                };
+                let borrowed = match last {
+                    "Borrowed" => true,
+                    "Owned" => false,
+                    _ => matches!(&args[0], Expr::Reference(_) | Expr::Lit(_)),
+                };
+                let v = arg(self, 0, &inner);
+                self.helper("cow");
+                let case = if borrowed { "borrowed" } else { "owned" };
+                Some(Ex::primary(
+                    format!("RsCow.{case}({})", v.code),
+                    Ty::Named("RsCow".into(), vec![v.ty]),
+                ))
+            }
             // `Rc::clone(&x)`: the same cell, or a copy of a plain value.
             ("Rc" | "Arc", "clone") if args.len() == 1 => Some(arg(self, 0, expected)),
             ("Rc" | "Arc", "ptr_eq") if args.len() == 2 => {
@@ -997,6 +1033,85 @@ impl Translator<'_> {
                 let b = arg(self, 1, &a.ty);
                 let f = self.global_fn(last);
                 Some(Ex::primary(format!("{f}({}, {})", a.code, b.code), a.ty))
+            }
+            // `thread::spawn(move || …)`: a task run when something waits for it.
+            ("thread", "spawn") if args.len() == 1 => {
+                self.helper("thread");
+                let f = arg(self, 0, &Ty::Fn(vec![], Box::new(Ty::Unknown)));
+                let ret = match &f.ty {
+                    Ty::Fn(_, r) => (**r).clone(),
+                    _ => Ty::Unknown,
+                };
+                let ret = if ret.is_unknown() { Ty::Unit } else { ret };
+                Some(Ex::primary(
+                    format!("rsSpawn({})", f.code),
+                    Ty::Named("RsJoinHandle".into(), vec![ret]),
+                ))
+            }
+            ("thread", "sleep") if args.len() == 1 => {
+                self.helper("thread");
+                self.helper("duration");
+                let d = arg(self, 0, &Ty::Named("RsDuration".into(), vec![]));
+                Some(Ex::primary(format!("rsSleep({})", d.code), Ty::Unit))
+            }
+            ("thread", "yield_now") if args.is_empty() => {
+                self.helper("thread");
+                Some(Ex::primary("rsYieldNow()", Ty::Unit))
+            }
+            // `thread::scope(|s| { s.spawn(…); })`: the tasks spawned finish with the scope.
+            ("thread", "scope") if args.len() == 1 => {
+                self.helper("thread");
+                let f = arg(
+                    self,
+                    0,
+                    &Ty::Fn(
+                        vec![Ty::Named("RsScope".into(), vec![])],
+                        Box::new(Ty::Unknown),
+                    ),
+                );
+                let ret = match &f.ty {
+                    Ty::Fn(_, r) => (**r).clone(),
+                    _ => Ty::Unknown,
+                };
+                Some(Ex::primary(format!("rsThreadScope({})", f.code), ret))
+            }
+            // `mpsc::channel()`: the type of the values is learned from the sends.
+            ("mpsc", "channel" | "sync_channel") => {
+                self.helper("thread");
+                let elem = match turbofish.first() {
+                    Some(t) if t.is_complete() => t.clone(),
+                    _ => match expected {
+                        Ty::Tuple(ts) => ts
+                            .first()
+                            .map(|t| t.item())
+                            .filter(Ty::is_complete)
+                            .unwrap_or_else(|| self.placeholder_ty()),
+                        _ => self.placeholder_ty(),
+                    },
+                };
+                let swift = elem
+                    .swift()
+                    .unwrap_or_else(|| elem.named().unwrap_or("Int").to_string());
+                Some(Ex::primary(
+                    format!("rsChannel({swift}.self)"),
+                    Ty::Tuple(vec![
+                        Ty::Named("RsSender".into(), vec![elem.clone()]),
+                        Ty::Named("RsReceiver".into(), vec![elem]),
+                    ]),
+                ))
+            }
+            (o, "new") if o.starts_with("Atomic") && args.len() == 1 => {
+                self.helper("thread");
+                let ty = crate::ty::from_name(o, vec![]);
+                let inner = match &ty {
+                    Ty::Named(_, a) => a.first().cloned().unwrap_or(Ty::Unknown),
+                    _ => Ty::Unknown,
+                };
+                let v = arg(self, 0, &inner);
+                Some(Ex::primary(
+                    format!("RsAtomic<{}>({})", inner.swift_lossy(), v.code),
+                    ty,
+                ))
             }
             ("mem", "swap") if args.len() == 2 => {
                 let a = self.place(strip_ref(&args[0]));
@@ -1253,6 +1368,28 @@ impl Translator<'_> {
     // ----- Method calls -----
 
     pub fn method_call(&mut self, m: &ExprMethodCall, expected: &Ty) -> Ex {
+        // `q.remove(i)` of a `VecDeque`: an `Option`, unlike `Vec::remove`.
+        if matches!(
+            m.method.to_string().as_str(),
+            "remove" | "swap_remove_back" | "swap_remove_front"
+        ) && m.args.len() == 1
+            && self.is_deque(&m.receiver)
+        {
+            let place = self.place(&m.receiver);
+            let elem = self.place_ty(&m.receiver).item();
+            let i = self.expr_with(&m.args[0], &Ty::Int(IntKind::Usize));
+            let i = self.settle(i);
+            self.helper("vec");
+            let f = match m.method.to_string().as_str() {
+                "remove" => "rsDequeRemove",
+                "swap_remove_back" => "rsSwapRemoveBack",
+                _ => "rsSwapRemoveFront",
+            };
+            return Ex::primary(
+                format!("{place}.{f}({})", i.code),
+                Ty::Option(Box::new(elem)),
+            );
+        }
         // `cur.take()` on a cursor local: the link emptied.
         if m.method == "take" && m.args.is_empty() {
             if let Expr::Path(p) = &*m.receiver {
@@ -1437,6 +1574,10 @@ impl Translator<'_> {
                             | "hash"
                             | "fmt"
                             | "borrow"
+                            | "to_mut"
+                            | "into_owned"
+                            | "is_borrowed"
+                            | "is_owned"
                     )
                     && !(name == "to_string" && self.displays(&recv.ty)) =>
             {
@@ -1852,9 +1993,47 @@ impl Translator<'_> {
         }
     }
 
+    /// Whether the expression is a `VecDeque`: a local or parameter declared so, or a field.
+    pub fn is_deque(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Path(p) => p
+                .path
+                .get_ident()
+                .is_some_and(|id| self.deque_locals.contains(&id.to_string())),
+            Expr::Paren(p) => self.is_deque(&p.expr),
+            Expr::Reference(r) => self.is_deque(&r.expr),
+            Expr::Field(f) => {
+                let syn::Member::Named(id) = &f.member else {
+                    return false;
+                };
+                let base_ty = if crate::expr::is_self(&f.base) {
+                    self.self_ty()
+                } else {
+                    match &*f.base {
+                        Expr::Path(p) => p
+                            .path
+                            .get_ident()
+                            .and_then(|i| self.lookup(&i.to_string()))
+                            .map_or(Ty::Unknown, |l| self.local_ty(l)),
+                        _ => Ty::Unknown,
+                    }
+                };
+                match &base_ty {
+                    Ty::Named(n, _) => self
+                        .struct_by_swift(n)
+                        .and_then(|s| s.field(&id.to_string()))
+                        .is_some_and(|f| f.deque),
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     /// The `Target` of the type's `impl Deref`, if it has one.
     pub fn deref_target(&self, ty: &Ty) -> Option<Ty> {
         match ty {
+            Ty::Named(n, a) if n == "RsCow" => a.first().cloned(),
             Ty::Named(n, _) => self.syms.derefs.get(n).cloned(),
             _ => None,
         }
@@ -2335,6 +2514,24 @@ impl Translator<'_> {
             },
             _ => recv,
         };
+        // A `Cow`'s own methods.
+        if let Ty::Named(n, a) = &recv.ty {
+            if n == "RsCow" && args.is_empty() {
+                let inner = a.first().cloned().unwrap_or(Ty::Unknown);
+                let r = wrap(&recv, P_PRIMARY);
+                match name {
+                    "is_borrowed" | "is_owned" => {
+                        return Ex::primary(format!("{r}.{}", names::lower_camel(name)), Ty::Bool);
+                    }
+                    "into_owned" | "as_ref" | "borrow" => {
+                        return Ex::primary(format!("{r}.value"), inner);
+                    }
+                    "to_mut" => return Ex::primary(format!("{r}.rsMut"), inner),
+                    "clone" => return recv,
+                    _ => {}
+                }
+            }
+        }
         // `e.kind()` of a `ParseIntError`: its `IntErrorKind`.
         if name == "kind" && args.is_empty() && recv.ty.named() == Some("RsParseIntError") {
             return Ex::primary(
@@ -2534,6 +2731,88 @@ impl Translator<'_> {
                 }
                 "saturating_add" | "saturating_sub" | "mul_f64" | "div_f64" => {
                     return call(duration);
+                }
+                _ => {}
+            }
+        }
+        // Threads, channels and atomics of the support file.
+        if let Ty::Named(n, targs) = &rty {
+            let t = targs.first().cloned().unwrap_or(Ty::Unknown);
+            let r = wrap(&recv, P_PRIMARY);
+            let codes: Vec<String> = args.iter().map(|a| a.code.clone()).collect();
+            let named = |s: &str| Ty::Named(s.into(), vec![]);
+            match (n.as_str(), name) {
+                ("RsJoinHandle", "join") => {
+                    return prim(
+                        format!("{r}.join()"),
+                        Ty::Result(Box::new(t), Box::new(named("RsJoinError"))),
+                    );
+                }
+                ("RsJoinHandle", "is_finished") => {
+                    return prim(format!("{r}.isFinished"), Ty::Bool);
+                }
+                ("RsSender", "send") if args.len() == 1 => {
+                    if let Some(slot) = crate::translate::placeholder_slot(&t) {
+                        self.slots[slot].merge(&args[0].ty);
+                    }
+                    return prim(
+                        format!("{r}.send({})", a(0)),
+                        Ty::Result(Box::new(Ty::Unit), Box::new(named("RsSendError"))),
+                    );
+                }
+                ("RsSender", "clone") => return prim(format!("{r}.clone()"), rty.clone()),
+                ("RsReceiver", "recv") => {
+                    return prim(
+                        format!("{r}.recv()"),
+                        Ty::Result(Box::new(t), Box::new(named("RsRecvError"))),
+                    );
+                }
+                ("RsReceiver", "try_recv") => {
+                    return prim(
+                        format!("{r}.tryRecv()"),
+                        Ty::Result(Box::new(t), Box::new(named("RsTryRecvError"))),
+                    );
+                }
+                ("RsReceiver", "recv_timeout") => {
+                    return prim(
+                        format!("{r}.recvTimeout()"),
+                        Ty::Result(Box::new(t), Box::new(named("RsRecvTimeoutError"))),
+                    );
+                }
+                ("RsReceiver", "iter" | "into_iter") => return prim(r, Ty::Iter(Box::new(t))),
+                ("RsReceiver", "try_iter") => {
+                    return prim(format!("{r}.tryIter()"), Ty::Iter(Box::new(t)));
+                }
+                ("RsScope", "spawn") if args.len() == 1 => {
+                    let ret = match &args[0].ty {
+                        Ty::Fn(_, ret) if !ret.is_unknown() => (**ret).clone(),
+                        _ => Ty::Unit,
+                    };
+                    return prim(
+                        format!("{r}.spawn({})", a(0)),
+                        Ty::Named("RsJoinHandle".into(), vec![ret]),
+                    );
+                }
+                ("RsAtomic", "load") => return prim(format!("{r}.load()"), t),
+                ("RsAtomic", "into_inner") => return prim(format!("{r}.value"), t),
+                ("RsAtomic", "store") if !args.is_empty() => {
+                    return prim(format!("{r}.store({})", a(0)), Ty::Unit);
+                }
+                (
+                    "RsAtomic",
+                    "swap" | "fetch_add" | "fetch_sub" | "fetch_and" | "fetch_or" | "fetch_xor"
+                    | "fetch_max" | "fetch_min" | "fetch_nand",
+                ) if !args.is_empty() => {
+                    return prim(format!("{r}.{}({})", names::lower_camel(name), a(0)), t);
+                }
+                ("RsAtomic", "compare_exchange" | "compare_exchange_weak") if args.len() >= 2 => {
+                    return prim(
+                        format!("{r}.compareExchange({}, {})", codes[0], codes[1]),
+                        Ty::Result(
+                            Box::new(t.clone()),
+                            Box::new(Ty::Named("RsValueError".into(), vec![t])),
+                        ),
+                    );
                 }
                 _ => {}
             }

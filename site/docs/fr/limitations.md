@@ -1,6 +1,6 @@
 ---
 title: Limites
-description: Ce que FerroSwift ne traduit pas (encore) : sémantique de possession, mutabilité partagée, async et threads, macros, code unsafe et autres crates.
+description: Ce que FerroSwift ne traduit pas, ou traduit autrement : sémantique de possession, mutabilité partagée, threads, async, code unsafe et autres crates.
 order: 5
 ---
 
@@ -23,12 +23,12 @@ rustc vérifie la possession et les durées de vie ; Swift n’en a pas besoin. 
 
 ## Concurrence et async
 
-- `async fn` devient `async func` et `.await` devient `await`, mais les exécuteurs et bibliothèques async (Tokio, futures, canaux) ne sont pas transposés.
-- `std::thread`, `Mutex`, les atomiques et les canaux ne sont pas traduits : leurs appels sont signalés comme fonctions inconnues.
+- `async fn` devient `async func` et `.await` devient `await` ; les exécuteurs et bibliothèques async (Tokio, futures) sont d’autres crates, non traduites.
+- `std::thread` (`spawn`, `scope`, `sleep`, `yield_now`, `JoinHandle::join`), les canaux `mpsc` (`channel`, `sync_channel`, `send`, `recv`, `try_recv`, `recv_timeout`, l’itération), les atomiques (`AtomicUsize`, `AtomicBool`… avec `load`, `store`, `swap`, `fetch_add` et les autres `fetch_…`, `compare_exchange`), `Arc`, `Mutex` et `RwLock` sont traduits avec des types du fichier de support. Un thread lancé est une tâche exécutée quand quelque chose l’attend : son `join`, un `recv` sur un canal vide, la fin de son `thread::scope`, un `sleep` ou un `yield_now`. Le programme affiche donc ce qu’affiche le programme Rust une fois ses threads rejoints, de façon déterministe et sans course de données ; ce qui diffère, c’est le temps : le travail n’est pas réparti sur les cœurs, un thread jamais rejoint ni attendu ne s’exécute pas, et un thread qui panique arrête le programme au lieu de faire renvoyer une erreur à `join`.
 
 ## Les macros
 
-Les macros de la bibliothèque standard sont traduites : `println!`, `eprintln!`, `format!`, `write!`, `vec!`, `assert!`, `assert_eq!`, `matches!`, `panic!`, `todo!`, `unreachable!`… Vos propres `macro_rules!` et macros procédurales ne le sont pas : leurs définitions sont ignorées et leurs utilisations signalées comme erreurs.
+Les macros de la bibliothèque standard sont traduites : `println!`, `eprintln!`, `format!`, `write!`, `vec!`, `assert!`, `assert_eq!`, `matches!`, `panic!`, `todo!`, `unreachable!`, `stringify!`, `concat!`… Vos propres `macro_rules!` sont développées avant la traduction, comme rustc les développe : toutes les sortes de fragments (`expr`, `ident`, `ty`, `tt`, `literal`, `pat`, `block`, `stmt`, `path`, `item`…), les répétitions (`$(…),*`, `+`, `?`, imbriquées), plusieurs règles, la récursion, les usages en expression, en instruction, en élément, dans un bloc `impl` et dans les arguments d’autres macros. Les macros procédurales (le `#[derive(Serialize)]` d’une crate, les macros d’attribut) ne le sont pas : elles appartiennent à d’autres crates.
 
 ## Code unsafe, FFI et autres crates
 
@@ -38,9 +38,7 @@ Les macros de la bibliothèque standard sont traduites : `println!`, `eprintln!`
 ## Différences de comportement
 
 - Un **dépassement d’entier** arrête un programme Swift dans tous les modes ; Rust panique en debug et boucle en release. `i32` est l’`Int` 64 bits de Swift : `+` déborde à 2⁶³ plutôt qu’à 2³¹ ; `wrapping_add`, `checked_add`, `saturating_add`, `overflowing_add`, `rotate_left`, `count_ones`, `s.parse::<i32>()`, `i32::try_from` et `x as i32` gardent les limites 32 bits. Les conversions `as` gardent le sens de Rust : `n as u8` tronque, un flottant converti en entier sature et `NaN` donne 0. `usize` est aussi `Int` : `usize::MAX` vaut 2⁶³ − 1.
-- **`Deref` et `Cow` :** `*x` sur une valeur dont le type a une `impl Deref` donne la cible (aussi quand `x` est une référence vers une telle valeur : écrire `x.clone()` pour la valeur elle-même). Un `Cow` est sa valeur : qu’il ait été emprunté ou possédé n’est pas conservé, un `match` sur `Cow::Borrowed` et `Cow::Owned` est signalé. Un trait à paramètres de type ne peut servir de valeur `dyn Converter<f64>` : son type associé n’a pas d’existentiel Swift.
-- **`VecDeque`** est un `Array` : `dq.remove(i)` donne l’élément, comme `Vec::remove`, là où le `VecDeque::remove` de Rust donne une `Option`.
-- **Une structure générique sur un type d’itérateur** (`struct Pairs<I: Iterator<Item = u8>> { inner: I }`) n’est pas encore traduite : garder l’itérateur dans un `Vec` à la place.
+- **`Deref` :** `*x` sur une valeur dont le type a une `impl Deref` donne la cible (aussi quand `x` est une référence vers une telle valeur : écrire `x.clone()` pour la valeur elle-même). Un trait à paramètres de type ne peut servir de valeur `dyn Converter<f64>` : son type associé n’a pas d’existentiel Swift.
 - **`i128` et `u128`** deviennent `Int128` et `UInt128`, que les plateformes Apple fournissent à partir d’iOS 18 et macOS 15.
 - **Display et largeur :** comme en Rust, `{:>10}` est ignoré par une impl `Display` écrite avec `write!` (une impl qui passe par `f.pad(…)`, `f.pad_integral(…)`, `self.0.fmt(f)` ou les requêtes du formateur l’honore) ; `{:?}` applique une largeur aux nombres et booléens à l’intérieur d’une valeur, pas à ses chaînes. Largeurs et précisions comptent des scalaires, comme Rust compte des `char`.
 - Les **tables de hachage et ensembles** sont parcourus dans un ordre non spécifié dans les deux langages, mais pas le même. Une `BTreeMap` est parcourue dans l’ordre des clés.

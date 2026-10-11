@@ -113,6 +113,8 @@ pub struct Translator<'a> {
     pub generic_impls_done: std::collections::HashSet<(String, String)>,
     /// `T` → `rsBitsT` in a function with `T: FromStr` (see `FnSig::parse_generics`).
     pub parse_bits: std::collections::HashMap<String, String>,
+    /// The locals and parameters holding a `VecDeque` (by Rust name).
+    pub deque_locals: std::collections::HashSet<String>,
     /// The type parameters a call knows before its arguments (turbofish, expected result).
     pub pending_bindings: std::collections::HashMap<String, Ty>,
     /// The variables being assigned by the branches of a `let x = match …` (Swift names),
@@ -190,6 +192,7 @@ impl<'a> Translator<'a> {
             into_iter_done: std::collections::HashSet::new(),
             generic_impls_done: std::collections::HashSet::new(),
             parse_bits: std::collections::HashMap::new(),
+            deque_locals: std::collections::HashSet::new(),
             pending_bindings: std::collections::HashMap::new(),
             last_closure_inouts: Vec::new(),
             closure_inouts: std::collections::HashMap::new(),
@@ -953,10 +956,9 @@ impl<'a> Translator<'a> {
             .syms
             .closure_generics(&s.generics, None)
             .into_iter()
-            .filter(|(_, t)| matches!(t, Ty::Fn(..)))
+            .filter(|(_, t)| matches!(t, Ty::Fn(..) | Ty::Iter(_)))
             .collect();
         let mut generics = self.generic_params(&s.generics);
-        self.closure_generics.clear();
         // `map: HashMap<K, V>`: Swift wants `K: Hashable` on the struct itself.
         let mut keyed = Vec::new();
         for f in &info.fields {
@@ -966,6 +968,7 @@ impl<'a> Translator<'a> {
             generics = with_bound(&generics, &g, "Hashable");
         }
         let where_clause = self.where_clause(&s.generics);
+        self.closure_generics.clear();
         self.generics = info.generics.clone();
         let derives = derives(&s.attrs);
         // A generic struct cannot default its fields (`var first: T = T()`): it gets an
@@ -1844,9 +1847,15 @@ impl<'a> Translator<'a> {
             }),
             _ => vec![],
         };
+        // Parameters standing for a closure or an iterator (`impl<I: Iterator<Item = u8>>`)
+        // are erased: no requirement to write.
+        let erased = self.syms.closure_generics(&imp.generics, Some(&self_ty));
         for p in &imp.generics.params {
             if let GenericParam::Type(t) = p {
                 let name = t.ident.to_string();
+                if erased.contains_key(&name) {
+                    continue;
+                }
                 let swift_name = std_params
                     .iter()
                     .find(|(rust, _)| *rust == name)
@@ -2833,6 +2842,11 @@ impl<'a> Translator<'a> {
                             swift_ty = swift_ty.replacen("any ", "some ", 1);
                         }
                         swift_ty = format!("inout {swift_ty}");
+                    }
+                    if crate::symbols::mentions_deque(&p.ty) {
+                        if let Pat::Ident(id) = &*p.pat {
+                            self.deque_locals.insert(id.ident.to_string());
+                        }
                     }
                     match &*p.pat {
                         Pat::Ident(id) => {
