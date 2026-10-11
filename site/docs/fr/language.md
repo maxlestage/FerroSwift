@@ -23,7 +23,7 @@ FerroSwift traduit du Rust ordinaire — le code que vous écrivez pour le modè
 | `Result<T, E>` | une fonction qui `throws(E)` et renvoie `T` |
 | `(A, B)`, `()` | `(A, B)`, `Void` |
 | `(A,)` | `RsTuple1<A>`, une struct du fichier de support (Swift n’a pas de tuple à un élément) |
-| `BinaryHeap<T>` | `RsBinaryHeap<T>`, un tas du fichier de support, disposé comme celui de Rust |
+| `BinaryHeap<T>` | `RsBinaryHeap<T>`, un tas du fichier de support, disposé comme celui de Rust ; un tuple dans le tas, ou dans un `Reverse`, est rangé en `RsOrd2` et rendu comme tuple |
 | `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<T>` | `T` |
 | `&T`, `&mut T` | `T` (`inout T` pour un paramètre `&mut`) |
 | `impl Trait`, `dyn Trait` | `some Proto`, `any Proto` |

@@ -38,10 +38,12 @@ impl Translator<'_> {
             self.helper("reverse");
             let v = self.expr(&c.args[0]);
             let v = self.settle(v);
-            return Ex::primary(
-                format!("RsReverse({})", v.code),
-                Ty::Named("RsReverse".into(), vec![v.ty]),
-            );
+            // `Reverse((d, node))`: the tuple made comparable.
+            let code = match crate::ty::ord_tuple_arity(&v.ty) {
+                Some(n) => format!("RsReverse(RsOrd{n}({}))", v.code),
+                None => format!("RsReverse({})", v.code),
+            };
+            return Ex::primary(code, Ty::Named("RsReverse".into(), vec![v.ty]));
         }
         if segs.len() == 1 {
             match last.as_str() {
@@ -536,11 +538,12 @@ impl Translator<'_> {
                 self.helper("heap");
                 let v = arg(self, 0, &Ty::Unknown);
                 let item = v.ty.item();
-                let code = if v.code.starts_with('[') || matches!(v.ty, Ty::Vec(_)) {
-                    format!("RsBinaryHeap({})", v.code)
-                } else {
-                    format!("RsBinaryHeap(Array({}))", v.code)
+                let values = match crate::ty::ord_tuple_arity(&item) {
+                    Some(n) => format!("{}.map {{ RsOrd{n}($0) }}", v.code),
+                    None if v.code.starts_with('[') || matches!(v.ty, Ty::Vec(_)) => v.code,
+                    None => format!("Array({})", v.code),
                 };
+                let code = format!("RsBinaryHeap({values})");
                 Some(Ex::primary(
                     code,
                     Ty::Named("RsBinaryHeap".into(), vec![item]),
@@ -2800,24 +2803,34 @@ impl Translator<'_> {
                 self.helper("heap");
                 let t = targs.first().cloned().unwrap_or(Ty::Unknown);
                 let usize_ty = Ty::Int(IntKind::Usize);
+                // Tuples are stored made comparable (`RsOrd2`), and given back as tuples.
+                let back = if crate::ty::ord_tuple_arity(&t).is_some() {
+                    ".map { $0.tuple }"
+                } else {
+                    ""
+                };
                 match name {
                     "push" => {
                         self.pending_refine = Some(Ty::Named("RsBinaryHeap".into(), vec![ty_a(0)]));
-                        return prim(format!("{r}.push({})", a(0)), Ty::Unit);
+                        let x = match crate::ty::ord_tuple_arity(&ty_a(0)) {
+                            Some(n) => format!("RsOrd{n}({})", a(0)),
+                            None => a(0),
+                        };
+                        return prim(format!("{r}.push({x})"), Ty::Unit);
                     }
-                    "pop" => return prim(format!("{r}.pop()"), Ty::Option(Box::new(t))),
-                    "peek" => return prim(format!("{r}.peek"), Ty::Option(Box::new(t))),
+                    "pop" => return prim(format!("{r}.pop(){back}"), Ty::Option(Box::new(t))),
+                    "peek" => return prim(format!("{r}.peek{back}"), Ty::Option(Box::new(t))),
                     "len" => return prim(format!("{r}.count"), usize_ty),
                     "is_empty" => return prim(format!("{r}.isEmpty"), Ty::Bool),
                     "into_sorted_vec" => {
-                        return prim(format!("{r}.intoSortedVec()"), Ty::Vec(Box::new(t)));
+                        return prim(format!("{r}.intoSortedVec(){back}"), Ty::Vec(Box::new(t)));
                     }
                     "into_vec" | "as_slice" => {
-                        return prim(format!("{r}.items"), Ty::Vec(Box::new(t)));
+                        return prim(format!("{r}.items{back}"), Ty::Vec(Box::new(t)));
                     }
-                    "drain" => return prim(format!("{r}.drain()"), Ty::Vec(Box::new(t))),
+                    "drain" => return prim(format!("{r}.drain(){back}"), Ty::Vec(Box::new(t))),
                     "iter" | "into_iter" => {
-                        return prim(format!("{r}.items"), Ty::Iter(Box::new(t)));
+                        return prim(format!("{r}.items{back}"), Ty::Iter(Box::new(t)));
                     }
                     "clear" => return prim(format!("{r}.clear()"), Ty::Unit),
                     "extend" => return prim(format!("{r}.extend({})", a(0)), Ty::Unit),
@@ -3450,10 +3463,10 @@ impl Translator<'_> {
                 self.helper("heap");
                 let mut t = item;
                 t.merge(args.first().unwrap_or(&Ty::Unknown));
-                let inner = if is_array_chain {
-                    code
-                } else {
-                    format!("Array({code})")
+                let inner = match crate::ty::ord_tuple_arity(&t) {
+                    Some(k) => format!("{code}.map {{ RsOrd{k}($0) }}"),
+                    None if is_array_chain => code,
+                    None => format!("Array({code})"),
                 };
                 Ex::primary(
                     format!("RsBinaryHeap({inner})"),

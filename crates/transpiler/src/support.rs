@@ -23,6 +23,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("tuple1", &[], TUPLE1),
     ("heap", &[], HEAP),
     ("tuple_keys", &[], TUPLE_KEYS),
+    ("ord_tuple", &[], ORD_TUPLE),
     ("exp", &[], EXP),
     ("map", &[], MAP),
     ("iter", &[], ITER),
@@ -2016,4 +2017,27 @@ struct RsTupleMap3<A: Hashable, B: Hashable, C: Hashable, V>: Sequence, Expressi
 }
 
 extension RsTupleMap3: Equatable where V: Equatable {}
+"#;
+const ORD_TUPLE: &str = r#"
+/// A comparable `(A, B)`, for a `BinaryHeap` or a `Reverse`: Swift compares tuples but cannot
+/// make them `Comparable`.
+struct RsOrd2<A: Comparable, B: Comparable>: Comparable {
+    let a: A; let b: B
+    init(_ value: (A, B)) { self.a = value.0; self.b = value.1 }
+    var tuple: (A, B) { (a, b) }
+    static func == (lhs: RsOrd2, rhs: RsOrd2) -> Bool { lhs.tuple == rhs.tuple }
+    static func < (lhs: RsOrd2, rhs: RsOrd2) -> Bool { (lhs.a < rhs.a) || (lhs.a == rhs.a && lhs.b < rhs.b) }
+}
+extension RsOrd2: Hashable where A: Hashable, B: Hashable {}
+
+/// A comparable `(A, B, C)`, for a `BinaryHeap` or a `Reverse`: Swift compares tuples but cannot
+/// make them `Comparable`.
+struct RsOrd3<A: Comparable, B: Comparable, C: Comparable>: Comparable {
+    let a: A; let b: B; let c: C
+    init(_ value: (A, B, C)) { self.a = value.0; self.b = value.1; self.c = value.2 }
+    var tuple: (A, B, C) { (a, b, c) }
+    static func == (lhs: RsOrd3, rhs: RsOrd3) -> Bool { lhs.tuple == rhs.tuple }
+    static func < (lhs: RsOrd3, rhs: RsOrd3) -> Bool { (lhs.a < rhs.a) || (lhs.a == rhs.a && lhs.b < rhs.b) || (lhs.a == rhs.a && lhs.b == rhs.b && lhs.c < rhs.c) }
+}
+extension RsOrd3: Hashable where A: Hashable, B: Hashable, C: Hashable {}
 "#;
