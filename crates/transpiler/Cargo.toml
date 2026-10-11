@@ -12,6 +12,6 @@ keywords = ["swift", "swiftui", "transpiler", "rust", "ios"]
 categories = ["development-tools", "compilers"]
 
 [dependencies]
-syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "extra-traits", "clone-impls", "visit"] }
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "extra-traits", "clone-impls", "visit", "visit-mut"] }
 proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
 quote = { version = "1", default-features = false }

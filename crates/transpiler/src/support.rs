@@ -45,6 +45,8 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("option_cmp", &[], OPTION_CMP),
     ("array_cmp", &[], ARRAY_CMP),
     ("link", &[], LINK),
+    ("thread", &["debug", "duration"], THREAD),
+    ("cow", &["debug"], COW),
     ("result", &[], RESULT),
     ("int", &[], INT),
     ("mem", &[], MEM),
@@ -1394,6 +1396,27 @@ extension MutableCollection {
     }
 }
 
+extension Array {
+    /// `q.remove(i)` of a `VecDeque`: the element, or `nil` past the end.
+    mutating func rsDequeRemove(_ i: Int) -> Element? {
+        i < count ? remove(at: i) : nil
+    }
+
+    /// `q.swap_remove_back(i)`: the element, the last one taking its place.
+    mutating func rsSwapRemoveBack(_ i: Int) -> Element? {
+        guard i < count else { return nil }
+        swapAt(i, count - 1)
+        return removeLast()
+    }
+
+    /// `q.swap_remove_front(i)`: the element, the first one taking its place.
+    mutating func rsSwapRemoveFront(_ i: Int) -> Element? {
+        guard i < count else { return nil }
+        swapAt(i, 0)
+        return removeFirst()
+    }
+}
+
 extension MutableCollection where Index == Int {
     /// `v[1..3].swap(i, j)`: the indices count from the start of the slice.
     mutating func rsSwap(_ i: Int, _ j: Int) {
@@ -2437,6 +2460,299 @@ extension Bool: @retroactive Error {}
 const CHAR_ERROR: &str = r#"
 /// Rust functions returning `Result<T, char>` throw the character.
 extension Character: @retroactive Error {}
+"#;
+
+const COW: &str = r##"
+/// `Cow<'a, T>`: a value borrowed or owned; it reads, prints and compares as the value.
+enum RsCow<T> {
+    case borrowed(T)
+    case owned(T)
+
+    /// `&*cow`, the value behind it.
+    var value: T {
+        switch self {
+        case .borrowed(let v), .owned(let v): v
+        }
+    }
+
+    func deref() -> T { value }
+
+    var isBorrowed: Bool { if case .borrowed = self { true } else { false } }
+    var isOwned: Bool { !isBorrowed }
+
+    /// `cow.to_mut()`: the value, owned from then on.
+    var rsMut: T {
+        get { value }
+        set { self = .owned(newValue) }
+    }
+}
+
+extension RsCow: CustomStringConvertible {
+    var description: String { String(describing: value) }
+}
+
+extension RsCow: RsDebugText {
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebug(value, pretty: pretty, style: style)
+    }
+}
+
+extension RsCow: Equatable where T: Equatable {
+    static func == (lhs: RsCow, rhs: RsCow) -> Bool { lhs.value == rhs.value }
+    static func == (lhs: RsCow, rhs: T) -> Bool { lhs.value == rhs }
+    static func == (lhs: T, rhs: RsCow) -> Bool { lhs == rhs.value }
+}
+
+extension RsCow: Hashable where T: Hashable {
+    func hash(into hasher: inout Hasher) { hasher.combine(value) }
+}
+"##;
+
+const THREAD: &str = r#"
+/// `std::thread`: a spawned thread is a task run when something waits for it (its `join`,
+/// a `recv` on an empty channel, the end of its `thread::scope`, a `sleep` or `yield_now`),
+/// in the order the tasks were spawned, so that the program prints what Rust's prints when
+/// its threads are joined, without data races.
+final class RsTask: @unchecked Sendable {
+    var run: (() -> Void)?
+    init(_ run: @escaping () -> Void) { self.run = run }
+
+    func finish() {
+        if let run {
+            self.run = nil
+            run()
+        }
+    }
+}
+
+/// The tasks spawned and not run yet (a static, initialized on first use: the globals of a
+/// `main.swift` are only set when the top-level code reaches them).
+enum RsTasks {
+    nonisolated(unsafe) static var pending: [RsTask] = []
+}
+
+/// Runs the first task not run yet: `false` when none is left.
+@discardableResult
+func rsRunPending() -> Bool {
+    while !RsTasks.pending.isEmpty {
+        let task = RsTasks.pending.removeFirst()
+        if task.run != nil {
+            task.finish()
+            return true
+        }
+    }
+    return false
+}
+
+/// `JoinHandle<T>`.
+final class RsJoinHandle<T>: @unchecked Sendable {
+    var task: RsTask? = nil
+    var result: T? = nil
+
+    var isFinished: Bool { task?.run == nil }
+
+    func join() -> Result<T, RsJoinError> {
+        task?.finish()
+        return .success(result!)
+    }
+}
+
+/// The error of `join` (a thread that panicked, which stops the Swift program instead).
+struct RsJoinError: Error, CustomStringConvertible, RsDebugCustom {
+    var description: String { "Any { .. }" }
+    var rsDebugText: String { "Any { .. }" }
+}
+
+func rsSpawn<T>(_ body: @escaping () -> T) -> RsJoinHandle<T> {
+    let handle = RsJoinHandle<T>()
+    let task = RsTask { handle.result = body() }
+    handle.task = task
+    RsTasks.pending.append(task)
+    return handle
+}
+
+/// `thread::sleep(d)`: the other threads progress meanwhile.
+func rsSleep(_ d: RsDuration) {
+    while rsRunPending() {}
+    Thread.sleep(forTimeInterval: d.asSecsF64())
+}
+
+func rsYieldNow() {
+    rsRunPending()
+}
+
+/// `thread::scope(|s| …)`: the threads of the scope are joined at its end.
+final class RsScope: @unchecked Sendable {
+    var tasks: [RsTask] = []
+
+    func spawn<T>(_ body: @escaping () -> T) -> RsJoinHandle<T> {
+        let handle = rsSpawn(body)
+        if let task = handle.task { tasks.append(task) }
+        return handle
+    }
+}
+
+func rsThreadScope<T>(_ body: (RsScope) -> T) -> T {
+    let scope = RsScope()
+    let result = body(scope)
+    for task in scope.tasks { task.finish() }
+    return result
+}
+
+/// `mpsc::channel()`.
+final class RsChannelState<T>: @unchecked Sendable {
+    var queue: [T] = []
+    var senders = 0
+}
+
+final class RsSender<T>: @unchecked Sendable {
+    let state: RsChannelState<T>
+    private var closed = false
+
+    init(_ state: RsChannelState<T>) {
+        self.state = state
+        state.senders += 1
+    }
+
+    deinit { close() }
+
+    /// `drop(tx)`.
+    func close() {
+        if !closed {
+            closed = true
+            state.senders -= 1
+        }
+    }
+
+    func clone() -> RsSender<T> { RsSender(state) }
+
+    func send(_ value: T) -> Result<Void, RsSendError> {
+        state.queue.append(value)
+        return .success(())
+    }
+}
+
+final class RsReceiver<T>: Sequence, IteratorProtocol, @unchecked Sendable {
+    let state: RsChannelState<T>
+    init(_ state: RsChannelState<T>) { self.state = state }
+
+    /// Waits for a value: the pending threads run until one is sent; none left means that
+    /// every sender is gone (a Rust program waiting otherwise would never end).
+    func recv() -> Result<T, RsRecvError> {
+        while state.queue.isEmpty {
+            if !rsRunPending() { return .failure(RsRecvError()) }
+        }
+        return .success(state.queue.removeFirst())
+    }
+
+    func tryRecv() -> Result<T, RsTryRecvError> {
+        if state.queue.isEmpty { return .failure(state.senders > 0 ? .empty : .disconnected) }
+        return .success(state.queue.removeFirst())
+    }
+
+    func recvTimeout() -> Result<T, RsRecvTimeoutError> {
+        switch recv() {
+        case .success(let v): .success(v)
+        case .failure: .failure(.disconnected)
+        }
+    }
+
+    func next() -> T? { try? recv().get() }
+
+    /// `rx.try_iter()`: the values already sent.
+    func tryIter() -> [T] {
+        defer { state.queue.removeAll() }
+        return state.queue
+    }
+}
+
+func rsChannel<T>(_: T.Type) -> (RsSender<T>, RsReceiver<T>) {
+    let state = RsChannelState<T>()
+    return (RsSender(state), RsReceiver(state))
+}
+
+struct RsSendError: Error, CustomStringConvertible, RsDebugCustom {
+    var description: String { "sending on a closed channel" }
+    var rsDebugText: String { "SendError { .. }" }
+}
+
+struct RsRecvError: Error, Equatable, CustomStringConvertible, RsDebugCustom {
+    var description: String { "receiving on a closed channel" }
+    var rsDebugText: String { "RecvError" }
+}
+
+enum RsTryRecvError: Error, Equatable, CustomStringConvertible, RsDebugCustom {
+    case empty, disconnected
+    var description: String {
+        self == .empty ? "receiving on an empty channel" : "receiving on an empty and disconnected channel"
+    }
+    var rsDebugText: String { self == .empty ? "Empty" : "Disconnected" }
+}
+
+enum RsRecvTimeoutError: Error, Equatable, CustomStringConvertible, RsDebugCustom {
+    case timeout, disconnected
+    var description: String {
+        self == .timeout ? "timed out waiting on channel" : "channel is empty and sending half is closed"
+    }
+    var rsDebugText: String { self == .timeout ? "Timeout" : "Disconnected" }
+}
+
+/// `std::sync::atomic::Ordering`: one thread runs at a time, so every ordering is the same.
+enum RsMemoryOrdering { case relaxed, release, acquire, acqRel, seqCst }
+
+/// `AtomicUsize`, `AtomicBool`…: a shared value.
+final class RsAtomic<T>: @unchecked Sendable, RsDebugText {
+    var value: T
+    init(_ value: T) { self.value = value }
+
+    func load(_: RsMemoryOrdering = .seqCst) -> T { value }
+    func store(_ v: T, _: RsMemoryOrdering = .seqCst) { value = v }
+    func swap(_ v: T, _: RsMemoryOrdering = .seqCst) -> T {
+        defer { value = v }
+        return value
+    }
+
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebug(value, pretty: pretty, style: style)
+    }
+}
+
+/// The `Err(actual)` of `compare_exchange`: a value, which Swift's `Result` wants as an error.
+struct RsValueError<T>: Error, @unchecked Sendable, RsDebugText, CustomStringConvertible {
+    let value: T
+    var description: String { String(describing: value) }
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebug(value, pretty: pretty, style: style)
+    }
+}
+
+extension RsAtomic where T: Equatable {
+    func compareExchange(_ current: T, _ new: T, _: RsMemoryOrdering = .seqCst, _: RsMemoryOrdering = .seqCst) -> Result<T, RsValueError<T>> {
+        if value == current {
+            value = new
+            return .success(current)
+        }
+        return .failure(RsValueError(value: value))
+    }
+}
+
+extension RsAtomic where T: FixedWidthInteger {
+    func fetchAdd(_ v: T, _: RsMemoryOrdering = .seqCst) -> T { defer { value &+= v }; return value }
+    func fetchSub(_ v: T, _: RsMemoryOrdering = .seqCst) -> T { defer { value &-= v }; return value }
+    func fetchAnd(_ v: T, _: RsMemoryOrdering = .seqCst) -> T { defer { value &= v }; return value }
+    func fetchOr(_ v: T, _: RsMemoryOrdering = .seqCst) -> T { defer { value |= v }; return value }
+    func fetchXor(_ v: T, _: RsMemoryOrdering = .seqCst) -> T { defer { value ^= v }; return value }
+    func fetchNand(_ v: T, _: RsMemoryOrdering = .seqCst) -> T { defer { value = ~(value & v) }; return value }
+    func fetchMax(_ v: T, _: RsMemoryOrdering = .seqCst) -> T { defer { value = Swift.max(value, v) }; return value }
+    func fetchMin(_ v: T, _: RsMemoryOrdering = .seqCst) -> T { defer { value = Swift.min(value, v) }; return value }
+}
+
+extension RsAtomic where T == Bool {
+    func fetchAnd(_ v: Bool, _: RsMemoryOrdering = .seqCst) -> Bool { defer { value = value && v }; return value }
+    func fetchOr(_ v: Bool, _: RsMemoryOrdering = .seqCst) -> Bool { defer { value = value || v }; return value }
+    func fetchXor(_ v: Bool, _: RsMemoryOrdering = .seqCst) -> Bool { defer { value = value != v }; return value }
+    func fetchNand(_ v: Bool, _: RsMemoryOrdering = .seqCst) -> Bool { defer { value = !(value && v) }; return value }
+}
 "#;
 
 const LINK: &str = r#"

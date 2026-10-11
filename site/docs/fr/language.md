@@ -24,7 +24,10 @@ FerroSwift traduit du Rust ordinaire — le code que vous écrivez pour le modè
 | `(A, B)`, `()` | `(A, B)`, `Void` |
 | `(A,)` | `RsTuple1<A>`, une struct du fichier de support (Swift n’a pas de tuple à un élément), avec `.0`, `{:?}` (`(5,)`), les comparaisons, le hachage, et les motifs `(x,)` dans `let`, les paramètres, les bras de `match` et les données (`Some((c,))`) |
 | `BinaryHeap<T>` | `RsBinaryHeap<T>`, un tas du fichier de support, disposé comme celui de Rust ; un tuple dans le tas, ou dans un `Reverse`, est rangé en `RsOrd2` et rendu comme tuple |
-| `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<T>` | `T` (`Cow::Owned(s)` et `Cow::Borrowed(s)` sont `s`) |
+| `Box<T>`, `Rc<T>`, `Arc<T>` | `T` |
+| `Cow<'a, T>` | `RsCow<T>`, un enum du fichier de support (`.borrowed(T)`, `.owned(T)`) : `match` sur `Cow::Borrowed`/`Cow::Owned`, `to_mut()`, `into_owned()` ; les méthodes de la valeur, `{}`, `{:?}` et `==` passent au travers |
+| `VecDeque<T>` | `[T]`, dont `remove(i)`, `swap_remove_back(i)` et `swap_remove_front(i)` donnent une `Option` comme en Rust |
+| `struct S<I: Iterator<Item = T>> { it: I }` | `struct S { var it: RsIter<T> }` : le paramètre d’itérateur est effacé, une valeur donnée au champ est enveloppée |
 | `Range<T>`, `RangeInclusive<T>` | `Range<T>`, `ClosedRange<T>` : `r.start()`, `r.end`, `r.len()`, `r.contains(&x)` et `{:?}` (`1..5`, `1..=5`) comme en Rust |
 | `RefCell<T>`, `Cell<T>`, `Mutex<T>`, `RwLock<T>` | `RsRefCell<T>`, une classe qui porte la valeur : les clones d’un `Rc` la partagent |
 | `&T`, `&mut T` | `T` (`inout T` pour un paramètre `&mut` ; une méthode qui renvoie `&mut T` renvoie un `WritableKeyPath<Self, T>`) |

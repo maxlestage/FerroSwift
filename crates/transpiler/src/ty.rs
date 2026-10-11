@@ -173,7 +173,7 @@ impl Ty {
             }
             Ty::Map(k, v, _) => Ty::Tuple(vec![(**k).clone(), (**v).clone()]),
             Ty::Str => Ty::Char,
-            Ty::Named(n, args) if n == "RsBinaryHeap" || n == "RsIter" => {
+            Ty::Named(n, args) if n == "RsBinaryHeap" || n == "RsIter" || n == "RsReceiver" => {
                 args.first().cloned().unwrap_or(Ty::Unknown)
             }
             _ => Ty::Unknown,
@@ -473,8 +473,29 @@ pub fn from_name(name: &str, args: Vec<Ty>) -> Ty {
             Box::new(if args.len() > 1 { arg(1) } else { Ty::Unknown }),
         ),
         // Smart pointers disappear: Swift values are copied, classes shared.
-        "Box" | "Rc" | "Arc" | "Cow" => arg(0),
+        "Box" | "Rc" | "Arc" => arg(0),
+        // `Cow<'a, str>`: borrowed or owned, as the support enum keeps it.
+        "Cow" => Ty::Named("RsCow".into(), vec![arg(0)]),
         // The iterators of the standard library kept in a field or a variable: `RsIter`.
+        // Threads, channels and atomics of the support file.
+        "JoinHandle" | "ScopedJoinHandle" => Ty::Named("RsJoinHandle".into(), vec![arg(0)]),
+        "Sender" | "SyncSender" => Ty::Named("RsSender".into(), vec![arg(0)]),
+        "Receiver" => Ty::Named("RsReceiver".into(), vec![arg(0)]),
+        "Scope" => Ty::Named("RsScope".into(), vec![]),
+        "TryRecvError" => Ty::Named("RsTryRecvError".into(), vec![]),
+        "RecvError" => Ty::Named("RsRecvError".into(), vec![]),
+        "RecvTimeoutError" => Ty::Named("RsRecvTimeoutError".into(), vec![]),
+        "AtomicBool" => Ty::Named("RsAtomic".into(), vec![Ty::Bool]),
+        "AtomicUsize" => Ty::Named("RsAtomic".into(), vec![Ty::Int(IntKind::Usize)]),
+        "AtomicIsize" => Ty::Named("RsAtomic".into(), vec![Ty::Int(IntKind::Isize)]),
+        "AtomicI8" => Ty::Named("RsAtomic".into(), vec![Ty::Int(IntKind::I8)]),
+        "AtomicI16" => Ty::Named("RsAtomic".into(), vec![Ty::Int(IntKind::I16)]),
+        "AtomicI32" => Ty::Named("RsAtomic".into(), vec![Ty::Int(IntKind::I32)]),
+        "AtomicI64" => Ty::Named("RsAtomic".into(), vec![Ty::Int(IntKind::I64)]),
+        "AtomicU8" => Ty::Named("RsAtomic".into(), vec![Ty::Int(IntKind::U8)]),
+        "AtomicU16" => Ty::Named("RsAtomic".into(), vec![Ty::Int(IntKind::U16)]),
+        "AtomicU32" => Ty::Named("RsAtomic".into(), vec![Ty::Int(IntKind::U32)]),
+        "AtomicU64" => Ty::Named("RsAtomic".into(), vec![Ty::Int(IntKind::U64)]),
         "Peekable" | "Fuse" => match arg(0) {
             Ty::Iter(t) => Ty::Named("RsIter".into(), vec![*t]),
             Ty::Named(n, args) if n == "RsIter" => Ty::Named(n, args),

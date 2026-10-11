@@ -123,7 +123,8 @@ The complete list, and what is not supported, is in [the language guide](site/do
 
 - No borrow checker semantics in Swift: values are copied. `Rc<RefCell<T>>`, `Cell<T>` and `Arc<Mutex<T>>` become a class holding the value, shared as in Rust; the locks never block and `Rc::strong_count` has no equivalent.
 - `i32`, `i64` and `usize` all become Swift's 64-bit `Int`: `+` overflows at 2⁶³, not 2³¹ (parsing, `as` casts and the `wrapping_*`/`checked_*` methods keep the 32-bit limits).
-- Not translated: lifetimes (dropped), `unsafe` and raw pointers, `macro_rules!`, threads, `async` runtimes, trait objects with generic methods, crates other than `std` and `ferroswift`.
+- `macro_rules!` are expanded before translation; threads, channels and atomics run as tasks of the support file, deterministically (see [limitations](site/docs/en/limitations.md)).
+- Not translated: lifetimes (dropped), `unsafe` and raw pointers, procedural macros and `async` runtimes of other crates, crates other than `std` and `ferroswift`.
 
 ## Repository
 

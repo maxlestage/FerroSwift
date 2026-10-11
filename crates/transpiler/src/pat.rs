@@ -288,6 +288,12 @@ impl Translator<'_> {
                         self.helper("Ordering");
                         return format!(".{}", names::case_name(&last));
                     }
+                    if matches!(
+                        segs[segs.len() - 2].as_str(),
+                        "TryRecvError" | "RecvTimeoutError"
+                    ) {
+                        return format!(".{}", names::case_name(&last));
+                    }
                     if segs[segs.len() - 2] == "IntErrorKind" {
                         return format!("RsParseIntError.Kind.{}", names::case_name(&last));
                     }
@@ -376,6 +382,17 @@ impl Translator<'_> {
                 return one(self, cx, &inner, "failure");
             }
             _ => {}
+        }
+        // `Cow::Borrowed(s)`, `Cow::Owned(s)`: the cases of the support enum.
+        if segs.len() >= 2
+            && segs[segs.len() - 2] == "Cow"
+            && matches!(last.as_str(), "Borrowed" | "Owned")
+        {
+            let inner = match ty {
+                Ty::Named(n, a) if n == "RsCow" => a.first().cloned().unwrap_or(Ty::Unknown),
+                _ => Ty::Unknown,
+            };
+            return one(self, cx, &inner, &last.to_lowercase());
         }
         // An enum variant: `Shape::Circle(r)`, or `Circle(r)` after `use Shape::*`.
         let owner = if segs.len() >= 2 {

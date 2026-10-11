@@ -16,6 +16,7 @@
 
 mod comments;
 mod diag;
+mod expand;
 mod expr;
 mod format;
 mod keypath;
@@ -104,7 +105,7 @@ pub fn transpile(source: &str) -> Output {
 
 /// Translates one Rust file into one Swift file.
 pub fn transpile_with(source: &str, options: &Options) -> Output {
-    let file = match syn::parse_file(source) {
+    let mut file = match syn::parse_file(source) {
         Ok(file) => file,
         Err(error) => {
             return Output {
@@ -113,6 +114,8 @@ pub fn transpile_with(source: &str, options: &Options) -> Output {
             };
         }
     };
+    let macros = expand::Macros::collect(&[&file]);
+    expand::expand_files(&mut [&mut file], &macros);
     let symbols = Symbols::collect(&[&file]);
     let mut helpers = BTreeSet::new();
     let mut t = Translator::new(&symbols, options, source, None);
@@ -147,6 +150,14 @@ pub fn transpile_crate(
                 out.unparsed.push(f.path.clone());
             }
         }
+    }
+    let macros = {
+        let refs: Vec<&syn::File> = parsed.iter().map(|(_, f)| f).collect();
+        expand::Macros::collect(&refs)
+    };
+    {
+        let mut files: Vec<&mut syn::File> = parsed.iter_mut().map(|(_, f)| f).collect();
+        expand::expand_files(&mut files, &macros);
     }
     let refs: Vec<&syn::File> = parsed.iter().map(|(_, f)| f).collect();
     let symbols = Symbols::collect(&refs);

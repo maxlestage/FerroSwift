@@ -29,6 +29,8 @@ pub struct FieldInfo {
     pub role: FieldRole,
     /// `[bool; 2]`: the length of an array field, whose default has that many elements.
     pub array_len: Option<usize>,
+    /// A `VecDeque` (an `Array` in Swift, whose `remove` gives an `Option`).
+    pub deque: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -348,10 +350,15 @@ impl Symbols {
             Item::Struct(st) => {
                 let derives = derives(&st.attrs);
                 // `struct Button<F: Fn()>`: `F` is the closure type itself, not a parameter.
+                // `struct Pairs<I: Iterator<Item = u8>>`: `I` is the support iterator.
                 let closures: HashMap<String, Ty> = self
                     .closure_generics(&st.generics, None)
                     .into_iter()
-                    .filter(|(_, t)| matches!(t, Ty::Fn(..)))
+                    .filter_map(|(g, t)| match t {
+                        Ty::Fn(..) => Some((g, t)),
+                        Ty::Iter(item) => Some((g, Ty::Named("RsIter".into(), vec![*item]))),
+                        _ => None,
+                    })
                     .collect();
                 let declared = type_params(&st.generics);
                 let erased: Vec<usize> = declared
@@ -393,6 +400,7 @@ impl Symbols {
                             ty: substitute(&self.ty(&f.ty, None), &closures),
                             role: field_role(&f.attrs),
                             array_len: array_length(&f.ty),
+                            deque: mentions_deque(&f.ty),
                         }
                     })
                     .collect();
@@ -1208,6 +1216,19 @@ pub fn phantom_params(sig: &syn::Signature, closures: &HashMap<String, Ty>) -> V
             !in_params && !in_ret
         })
         .collect()
+}
+
+/// Whether a written type is a `VecDeque` (behind references).
+pub fn mentions_deque(t: &Type) -> bool {
+    match t {
+        Type::Reference(r) => mentions_deque(&r.elem),
+        Type::Path(p) => p
+            .path
+            .segments
+            .last()
+            .is_some_and(|s| s.ident == "VecDeque"),
+        _ => false,
+    }
 }
 
 /// The type parameters bounded by `FromStr`, in the list or in the `where` clause.
