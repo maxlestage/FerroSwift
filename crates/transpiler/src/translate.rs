@@ -557,7 +557,7 @@ impl<'a> Translator<'a> {
                     format!(
                         "{}typealias {}{} = {}",
                         docs(&t.attrs),
-                        names::upper_camel(&t.ident.to_string()),
+                        names::type_name(&t.ident.to_string()),
                         generics,
                         self.swift_ty(&ty, t.ty.span())
                     )
@@ -788,6 +788,15 @@ impl<'a> Translator<'a> {
             conformances.push("Error".into());
         }
         let mut body: Vec<String> = Vec::new();
+        // A type renamed after Swift's own (`Task` → `TaskType`): `{:?}` keeps the Rust name.
+        if swift != names::upper_camel(&name) && derives.iter().any(|d| d == "Debug") {
+            self.helper("debug_custom");
+            conformances.push("RsDebugNamed".into());
+            body.push(format!(
+                "var rsDebugName: String {{ \"{}\" }}",
+                names::upper_camel(&name)
+            ));
+        }
         let mut prefix = String::new();
         let keyword = match info.kind {
             TypeKind::View => {
