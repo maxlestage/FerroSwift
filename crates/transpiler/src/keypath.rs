@@ -181,10 +181,10 @@ impl Translator<'_> {
                     _ => None,
                 }
             }
-            "last_mut" | "first_mut" if m.args.is_empty() => {
+            "last_mut" | "first_mut" | "back_mut" | "front_mut" if m.args.is_empty() => {
                 let coll = self.place(&m.receiver);
                 let kp = key_path_of_place(&coll, root);
-                let index = if method == "last_mut" {
+                let index = if method == "last_mut" || method == "back_mut" {
                     format!("{coll}.count - 1")
                 } else {
                     "0".into()

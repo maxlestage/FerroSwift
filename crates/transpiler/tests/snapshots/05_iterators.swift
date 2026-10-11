@@ -108,6 +108,14 @@ func rsTotalCmp<T: BinaryFloatingPoint>(_ a: T, _ b: T) -> Ordering {
     return .greater
 }
 
+/// `a.cmp(&b)` on slices: element by element, the shorter first.
+func rsCmp<T: Comparable>(_ a: [T], _ b: [T]) -> Ordering {
+    for (x, y) in zip(a, b) where x != y {
+        return x < y ? .less : .greater
+    }
+    return rsCmp(a.count, b.count)
+}
+
 /// `(a, b).cmp(&(c, d))`: tuples compare element by element.
 func rsCmp<A: Comparable, B: Comparable>(_ a: (A, B), _ b: (A, B)) -> Ordering {
     rsCmp(a.0, b.0).then(rsCmp(a.1, b.1))
@@ -465,6 +473,13 @@ extension Set where Element: Comparable {
         guard let m = self.max() else { return nil }
         remove(m)
         return m
+    }
+
+    /// `set.split_off(&x)` of a `BTreeSet`: the elements from `x` on, removed from the set.
+    mutating func rsSplitOff(_ from: Element) -> Set<Element> {
+        let out = filter { $0 >= from }
+        subtract(out)
+        return out
     }
 }
 

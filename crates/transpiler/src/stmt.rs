@@ -1163,10 +1163,17 @@ impl Translator<'_> {
                 };
             }
             let v = self.settle(v);
+            if v.ty == Ty::Never {
+                return vec![v.code];
+            }
             return vec![format!("return {}", v.code)];
         }
         let v = self.expr_with(e, &cx.ret);
         let v = self.settle(v);
+        // `std::process::exit(3)` as the value: nothing comes back to return.
+        if v.ty == Ty::Never {
+            return vec![v.code];
+        }
         if cx.closure && !cx.ret.is_complete() {
             if let Some(f) = self.fns.last_mut() {
                 f.ret.merge(&v.ty);
@@ -1291,7 +1298,7 @@ impl Translator<'_> {
             let consumed_self = subject_code == "self" && !self.self_mutable;
             // `match map.get_mut(k)`: the subject is the place in the map.
             let lookup = matches!(&*m.expr, Expr::MethodCall(c)
-                if matches!(c.method.to_string().as_str(), "get_mut" | "as_mut" | "last_mut" | "first_mut")
+                if matches!(c.method.to_string().as_str(), "get_mut" | "as_mut" | "last_mut" | "first_mut" | "back_mut" | "front_mut")
                     && simple_place(&c.receiver));
             let write_back = if (crate::expr::is_place(&m.expr) || lookup)
                 && arm.guard.is_none()
@@ -1389,7 +1396,7 @@ impl Translator<'_> {
         };
         if !matches!(
             call.method.to_string().as_str(),
-            "get_mut" | "as_mut" | "last_mut" | "first_mut" | "find"
+            "get_mut" | "as_mut" | "last_mut" | "first_mut" | "back_mut" | "front_mut" | "find"
         ) && !self.is_key_path_call(call)
             || m.arms.len() != 2
         {
@@ -2125,11 +2132,11 @@ impl Translator<'_> {
                 let place = self.place(&m.receiver);
                 Some((format!("{place}!"), *inner, format!("{place} != nil")))
             }
-            "last_mut" | "first_mut" if m.args.is_empty() => {
+            "last_mut" | "first_mut" | "back_mut" | "front_mut" if m.args.is_empty() => {
                 let coll = self.expr(&m.receiver);
                 let coll = self.settle(coll);
                 let c = crate::expr::wrap(&coll, P_PRIMARY);
-                let index = if m.method == "last_mut" {
+                let index = if m.method == "last_mut" || m.method == "back_mut" {
                     format!("{c}.count - 1")
                 } else {
                     "0".into()
@@ -2204,7 +2211,7 @@ impl Translator<'_> {
         }
         if !matches!(
             accessor.method.to_string().as_str(),
-            "get_mut" | "as_mut" | "last_mut" | "first_mut" | "find"
+            "get_mut" | "as_mut" | "last_mut" | "first_mut" | "back_mut" | "front_mut" | "find"
         ) && !self.is_key_path_call(accessor)
         {
             return None;
@@ -2295,7 +2302,7 @@ impl Translator<'_> {
     pub fn mutable_place_forced(&mut self, m: &syn::ExprMethodCall) -> Option<(String, Ty)> {
         if !matches!(
             m.method.to_string().as_str(),
-            "get_mut" | "as_mut" | "last_mut" | "first_mut" | "find"
+            "get_mut" | "as_mut" | "last_mut" | "first_mut" | "back_mut" | "front_mut" | "find"
         ) && !self.is_key_path_call(m)
         {
             return None;
@@ -2341,7 +2348,7 @@ impl Translator<'_> {
         };
         if !matches!(
             accessor.method.to_string().as_str(),
-            "as_mut" | "get_mut" | "last_mut" | "first_mut"
+            "as_mut" | "get_mut" | "last_mut" | "first_mut" | "back_mut" | "front_mut"
         ) || c.inputs.len() != 1
         {
             return None;

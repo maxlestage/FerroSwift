@@ -166,6 +166,8 @@ func rsParse(_ s: String, _ t: UInt.Type) -> Result<UInt, RsParseIntError> { rsP
 func rsParse(_ s: String, _ t: UInt8.Type) -> Result<UInt8, RsParseIntError> { rsParseInt(s, UInt8.self) }
 func rsParse(_ s: String, _ t: UInt16.Type) -> Result<UInt16, RsParseIntError> { rsParseInt(s, UInt16.self) }
 func rsParse(_ s: String, _ t: UInt32.Type) -> Result<UInt32, RsParseIntError> { rsParseInt(s, UInt32.self) }
+func rsParse(_ s: String, _ t: Int64.Type) -> Result<Int64, RsParseIntError> { rsParseInt(s, Int64.self) }
+func rsParse(_ s: String, _ t: UInt64.Type) -> Result<UInt64, RsParseIntError> { rsParseInt(s, UInt64.self) }
 func rsParse(_ s: String, _ t: Double.Type) -> Result<Double, RsParseFloatError> { rsParseFloat(s, Double.self) }
 func rsParse(_ s: String, _ t: Float.Type) -> Result<Float, RsParseFloatError> { rsParseFloat(s, Float.self) }
 func rsParse(_ s: String, _ t: Bool.Type) -> Result<Bool, RsParseBoolError> { rsParseBool(s) }
