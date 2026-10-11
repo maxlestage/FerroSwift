@@ -716,6 +716,25 @@ impl Translator<'_> {
         } else {
             String::new()
         };
+        // `or_insert_with(Account::default)`: the derived `Default` is the plain initializer.
+        if last == "default" && params.is_empty() {
+            if let Some(info) = self.syms.structs.get(&owner) {
+                let derived = info.derives.iter().any(|d| d == "Default")
+                    || self
+                        .syms
+                        .methods
+                        .get(&owner)
+                        .and_then(|m| m.get("default"))
+                        .is_some_and(|m| m.is_init);
+                if derived {
+                    let swift = info.swift.clone();
+                    return Some(Ex::primary(
+                        format!("{{ {swift}() }}"),
+                        Ty::Fn(vec![], Box::new(Ty::Named(swift, vec![]))),
+                    ));
+                }
+            }
+        }
         // A method takes the first argument as its receiver; a function takes them all.
         let method = if segs.len() < 2 {
             false
@@ -1346,8 +1365,14 @@ impl Translator<'_> {
                             "HashMap::new" | "BTreeMap::new" => "[:]".into(),
                             "String::new" => "\"\"".into(),
                             _ => {
-                                let v = self.expr(f);
-                                format!("{}()", v.code)
+                                // `or_insert_with(Account::default)`: the function as a
+                                // closure, called; a one-expression closure is inlined.
+                                let v =
+                                    self.expr_with(f, &Ty::Fn(vec![], Box::new(value_ty.clone())));
+                                match v.code.strip_prefix("{ ").and_then(|c| c.strip_suffix(" }")) {
+                                    Some(inner) if !inner.contains(" in ") => inner.to_string(),
+                                    _ => format!("{}()", v.code),
+                                }
                             }
                         }
                     }
@@ -1475,7 +1500,9 @@ impl Translator<'_> {
                 .imp
                 .as_ref()
                 .is_some_and(|i| i.kind == TypeKind::Observable);
-            if !in_class && !self.swift_local_visible(&swift_member) {
+            // `let data = … self.data …`: the local being declared hides the field too.
+            let pending = self.pending_locals.iter().any(|l| l == &swift_member);
+            if !in_class && !pending && !self.swift_local_visible(&swift_member) {
                 return Ex::primary(swift_member, ty);
             }
         }

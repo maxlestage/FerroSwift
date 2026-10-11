@@ -421,9 +421,10 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
         }
         if fields.displayStyle == .tuple && fields.children.contains(where: { $0.label.map { !$0.hasPrefix(".") } ?? false }) {
             list(" {", "}", fields.children.map { ($0.label.map(rsSnake), $0.value) })
-        } else if fields.displayStyle == .tuple {
+        } else if fields.displayStyle == .tuple && !isResult {
             list("(", ")", fields.children.map { (nil, $0.value) })
         } else {
+            // `Ok((0, 0))`: a `Result` holds one value, a tuple included.
             list("(", ")", [(nil, payload.value)])
         }
     case .struct, .class:
@@ -561,6 +562,25 @@ func rsCmp(_ a: Bool, _ b: Bool) -> Ordering {
 /// `a.partial_cmp(&b)`: `nil` when a value is NaN.
 func rsPartialCmp<T: Comparable>(_ a: T, _ b: T) -> Ordering? {
     a < b ? .less : a == b ? .equal : b < a ? .greater : nil
+}
+
+/// `(a, b).cmp(&(c, d))`: tuples compare element by element.
+func rsCmp<A: Comparable, B: Comparable>(_ a: (A, B), _ b: (A, B)) -> Ordering {
+    rsCmp(a.0, b.0).then(rsCmp(a.1, b.1))
+}
+
+func rsCmp<A: Comparable, B: Comparable, C: Comparable>(_ a: (A, B, C), _ b: (A, B, C)) -> Ordering {
+    rsCmp(a.0, b.0).then(rsCmp(a.1, b.1)).then(rsCmp(a.2, b.2))
+}
+
+func rsPartialCmp<A: Comparable, B: Comparable>(_ a: (A, B), _ b: (A, B)) -> Ordering? {
+    guard let first = rsPartialCmp(a.0, b.0) else { return nil }
+    return first == .equal ? rsPartialCmp(a.1, b.1) : first
+}
+
+func rsPartialCmp<A: Comparable, B: Comparable, C: Comparable>(_ a: (A, B, C), _ b: (A, B, C)) -> Ordering? {
+    guard let first = rsPartialCmp((a.0, a.1), (b.0, b.1)) else { return nil }
+    return first == .equal ? rsPartialCmp(a.2, b.2) : first
 }
 "#;
 
@@ -1158,6 +1178,22 @@ struct RsStepBy<Base: Sequence>: Sequence, IteratorProtocol {
     }
 }
 
+extension Set where Element: Comparable {
+    /// `set.pop_first()` of a `BTreeSet`: removes and returns the smallest element.
+    mutating func rsPopFirst() -> Element? {
+        guard let m = self.min() else { return nil }
+        remove(m)
+        return m
+    }
+
+    /// `set.pop_last()`.
+    mutating func rsPopLast() -> Element? {
+        guard let m = self.max() else { return nil }
+        remove(m)
+        return m
+    }
+}
+
 extension Array where Element: Equatable {
     mutating func dedup() {
         var out: [Element] = []
@@ -1213,6 +1249,12 @@ func rsSuccessors<T>(_ first: T?, _ next: @escaping (T) -> T?) -> UnfoldSequence
         return current
     }
 }
+
+/// `std::iter::from_fn(f)`: the values until `f` gives `None`.
+func rsFromFn<T>(_ next: @escaping () -> T?) -> AnyIterator<T> { AnyIterator(next) }
+
+/// `std::iter::repeat_with(f)`.
+func rsRepeatWith<T>(_ make: @escaping () -> T) -> AnyIterator<T> { AnyIterator { make() } }
 
 /// `std::iter::repeat(x)`.
 func rsRepeat<T>(_ x: T) -> UnfoldFirstSequence<T> {
@@ -1590,8 +1632,10 @@ extension RsRefCell: RsDebugNamed, CustomReflectable {
 "#;
 
 const EPRINT: &str = r#"
-/// `eprintln!`: a line on the standard error.
+/// `eprintln!`: a line on the standard error. The standard output is flushed first, so that
+/// the lines of both keep their order, as with Rust's line-buffered output.
 func rsEprint(_ text: String, terminator: String = "\n") {
+    fflush(nil)
     FileHandle.standardError.write(Data((text + terminator).utf8))
 }
 "#;

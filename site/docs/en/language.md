@@ -66,7 +66,7 @@ Closures become Swift closures (`|x| x * 2` → `{ x in x * 2 }`), and iterator 
 
 ## Errors
 
-A function returning `Result<T, E>` becomes a function that `throws(E)`; `?` becomes `try`, `Err(e)` a `throw`, and a `match` on a `Result` catches the error. An error that is a `String`, a number, a `bool` or a `char` is thrown as that value (the support file makes the type an `Error`):
+A function returning `Result<T, E>` becomes a function that `throws(E)`; `?` becomes `try`, `Err(e)` a `throw`, and a `match` on a `Result` catches the error. An error that is a `String`, a number, a `bool` or a `char` is thrown as that value (the support file makes the type an `Error`). A `main` returning an `Err` prints `Error: {:?}` on the standard error and exits with 1, as in Rust:
 
 ```rust
 fn check(name: &str) -> Result<&str, LoginError> {

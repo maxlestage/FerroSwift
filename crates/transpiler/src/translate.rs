@@ -218,10 +218,16 @@ impl<'a> Translator<'a> {
         if self.scopes.is_empty() {
             self.push_scope();
         }
+        // `const SEEN` is `seen` in Swift: a local `seen` must not hide it.
+        let hides_constant = self
+            .syms
+            .consts
+            .keys()
+            .any(|k| k != rust && names::constant(k) == base);
         let scope = self.scopes.last_mut().expect("scope");
         let mut swift = base.clone();
         let mut n = 2;
-        while scope.declared.contains(&swift) {
+        while scope.declared.contains(&swift) || (hides_constant && swift == base) {
             let bare = base.trim_matches('`');
             swift = format!("{bare}{n}");
             n += 1;
@@ -435,6 +441,9 @@ impl<'a> Translator<'a> {
             "import Foundation\n"
         });
         for item in items {
+            if item.is_empty() {
+                continue;
+            }
             out.push('\n');
             out.push_str(&item);
             if !item.ends_with('\n') {
@@ -442,7 +451,18 @@ impl<'a> Translator<'a> {
             }
         }
         if entry && has_main && !has_app {
-            out.push_str("\nmain()\n");
+            out.push('\n');
+            let fallible = self.syms.fns.get("main").is_some_and(|s| s.ret.is_result());
+            if fallible {
+                // `fn main() -> Result<(), E>`: an `Err` prints `Error: {:?}` and exits with 1.
+                self.helper("eprint");
+                self.helper("debug");
+                out.push_str(
+                    "do {\n    try main()\n} catch {\n    rsEprint(\"Error: \\(rsDebug(error))\")\n    exit(1)\n}\n",
+                );
+            } else {
+                out.push_str("main()\n");
+            }
         }
         out
     }
@@ -1572,7 +1592,12 @@ impl<'a> Translator<'a> {
                     }
                 }
             }
-            Some("Error") => conformance = Some("Error".into()),
+            // `impl Error for E {}`: the type already conforms when it is the error of a
+            // `Result` somewhere.
+            Some("Error") if !self.syms.errors.contains(&swift) => {
+                conformance = Some("Error".into());
+            }
+            Some("Error") => {}
             Some("Iterator") => {
                 conformance = Some("Sequence, IteratorProtocol".into());
                 for it in &imp.items {
@@ -1743,7 +1768,10 @@ impl<'a> Translator<'a> {
         }
         self.imp = None;
         self.generics.clear();
-        let conf = conformance.map(|c| format!(": {c}")).unwrap_or_default();
+        let conf = conformance
+            .as_ref()
+            .map(|c| format!(": {c}"))
+            .unwrap_or_default();
         let wc = if where_parts.is_empty() {
             String::new()
         } else {
@@ -1751,7 +1779,9 @@ impl<'a> Translator<'a> {
         };
         let closing = self.comments.take_between(prev, imp.span().end().line);
         members.extend(closing);
-        if members.is_empty() {
+        if members.is_empty() && conformance.is_none() {
+            String::new()
+        } else if members.is_empty() {
             format!("extension {swift}{conf}{wc} {{}}")
         } else {
             format!(
@@ -2118,8 +2148,39 @@ impl<'a> Translator<'a> {
             None => String::new(),
         };
         let body = self.resolve_slots(&body.join("\n"));
+        // A class (a recursive struct) gets a `convenience init` calling the designated one.
+        let class = self.imp.as_ref().is_some_and(|i| {
+            i.kind == TypeKind::Observable
+                || self.syms.structs.get(&i.rust).is_some_and(|s| s.recursive)
+        });
+        let (prefix, body) = if class {
+            let swift = self
+                .imp
+                .as_ref()
+                .map(|i| i.swift.clone())
+                .unwrap_or_default();
+            let body = body
+                .lines()
+                .map(|l| {
+                    let trimmed = l.trim_start();
+                    let indent = &l[..l.len() - trimmed.len()];
+                    match trimmed
+                        .strip_prefix("self = ")
+                        .and_then(|r| r.strip_prefix(swift.as_str()))
+                        .filter(|r| r.starts_with('('))
+                    {
+                        Some(rest) => format!("{indent}self.init{rest}"),
+                        None => l.to_string(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            ("convenience ", body)
+        } else {
+            ("", body)
+        };
         format!(
-            "{}init{}({}){throws_clause} {{\n{}\n}}",
+            "{}{prefix}init{}({}){throws_clause} {{\n{}\n}}",
             docs(&f.attrs),
             if failable { "?" } else { "" },
             s.params.join(", "),

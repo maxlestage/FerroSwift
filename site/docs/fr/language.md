@@ -66,7 +66,7 @@ Les closures deviennent des closures Swift (`|x| x * 2` → `{ x in x * 2 }`), e
 
 ## Les erreurs
 
-Une fonction qui renvoie `Result<T, E>` devient une fonction qui `throws(E)` ; `?` devient `try`, `Err(e)` un `throw`, et un `match` sur un `Result` attrape l’erreur. Une erreur qui est une `String`, un nombre, un `bool` ou un `char` est levée telle quelle (le fichier de support fait du type une `Error`) :
+Une fonction qui renvoie `Result<T, E>` devient une fonction qui `throws(E)` ; `?` devient `try`, `Err(e)` un `throw`, et un `match` sur un `Result` attrape l’erreur. Une erreur qui est une `String`, un nombre, un `bool` ou un `char` est levée telle quelle (le fichier de support fait du type une `Error`). Un `main` qui renvoie une `Err` affiche `Error: {:?}` sur la sortie d’erreur et termine avec le code 1, comme en Rust :
 
 ```rust
 fn check(name: &str) -> Result<&str, LoginError> {

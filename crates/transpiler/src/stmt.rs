@@ -190,15 +190,12 @@ impl Translator<'_> {
         declared: Option<Ty>,
         value: &Expr,
     ) -> Vec<String> {
-        // `let max = …`: inside the initializer, `max(a, b)` must already say `Swift.max`.
+        // `let max = …`: inside the initializer, `max(a, b)` must already say `Swift.max`;
+        // `let data = self.data…`: the field must keep its `self.`.
         let swift_name = names::lower_camel(rust);
-        if names::shadows_global(&swift_name) {
-            self.pending_locals.push(swift_name.clone());
-        }
+        self.pending_locals.push(swift_name);
         let lines = self.let_ident_inner(rust, mutable, declared, value);
-        if names::shadows_global(&swift_name) {
-            self.pending_locals.pop();
-        }
+        self.pending_locals.pop();
         lines
     }
 

@@ -829,6 +829,34 @@ impl Translator<'_> {
                     Ty::Iter(Box::new(item)),
                 ))
             }
+            ("iter", "from_fn") if args.len() == 1 => {
+                self.helper("iter");
+                let f = arg(
+                    self,
+                    0,
+                    &Ty::Fn(vec![], Box::new(Ty::Option(Box::new(expected.item())))),
+                );
+                let item = match &f.ty {
+                    Ty::Fn(_, r) => r.item(),
+                    _ => Ty::Unknown,
+                };
+                Some(Ex::primary(
+                    format!("rsFromFn({})", f.code),
+                    Ty::Iter(Box::new(item)),
+                ))
+            }
+            ("iter", "repeat_with") if args.len() == 1 => {
+                self.helper("iter");
+                let f = arg(self, 0, &Ty::Fn(vec![], Box::new(expected.item())));
+                let item = match &f.ty {
+                    Ty::Fn(_, r) => (**r).clone(),
+                    _ => Ty::Unknown,
+                };
+                Some(Ex::primary(
+                    format!("rsRepeatWith({})", f.code),
+                    Ty::Iter(Box::new(item)),
+                ))
+            }
             ("iter", "repeat") if args.len() == 1 => {
                 self.helper("iter");
                 let v = arg(self, 0, &expected.item());
@@ -3023,12 +3051,32 @@ impl Translator<'_> {
                 "contains" => return prim(format!("{r}.contains({})", a(0)), Ty::Bool),
                 "len" => return prim(format!("{r}.count"), usize_ty),
                 "is_empty" => return prim(format!("{r}.isEmpty"), Ty::Bool),
+                // `set.pop_first()`, `set.pop_last()` of a `BTreeSet`: the smallest, the largest.
+                "pop_first" | "pop_last" if ordered && args.is_empty() => {
+                    self.helper("vec");
+                    let f = if name == "pop_first" {
+                        "rsPopFirst"
+                    } else {
+                        "rsPopLast"
+                    };
+                    return prim(format!("{r}.{f}()"), Ty::Option(Box::new(t)));
+                }
                 // `set.range(a..b)` of a `BTreeSet`: the elements in order, within the bounds.
                 "range" if ordered && args.len() == 1 => {
                     return prim(
                         format!("{r}.sorted().filter {{ ({}).contains($0) }}", a(0)),
                         Ty::Iter(Box::new(t)),
                     );
+                }
+                // The operations of a `BTreeSet` give their elements in order.
+                "union" | "intersection" | "difference" | "symmetric_difference" if ordered => {
+                    let f = match name {
+                        "union" => "union",
+                        "intersection" => "intersection",
+                        "difference" => "subtracting",
+                        _ => "symmetricDifference",
+                    };
+                    return prim(format!("{r}.{f}({}).sorted()", a(0)), Ty::Iter(Box::new(t)));
                 }
                 "union" => return prim(format!("{r}.union({})", a(0)), rty.clone()),
                 "intersection" => return prim(format!("{r}.intersection({})", a(0)), rty.clone()),
@@ -3357,6 +3405,10 @@ impl Translator<'_> {
                 prim(format!("{r}.retain({})", a(0)), Ty::Unit)
             }
             "first" | "front" => prim(format!("{r}.first"), Ty::Option(Box::new(item))),
+            "last" | "back" if matches!(rty, Ty::Iter(_)) && !array_valued(&recv.code) => prim(
+                format!("Array({}).last", recv.code),
+                Ty::Option(Box::new(item)),
+            ),
             "last" | "back" => prim(format!("{r}.last"), Ty::Option(Box::new(item))),
             "next" => prim(format!("{r}.first"), Ty::Option(Box::new(item))),
             "get" if !matches!(rty, Ty::Map(..)) => {
@@ -3520,7 +3572,15 @@ impl Translator<'_> {
                 self.helper("iter");
                 prim(format!("rsCycle({})", recv.code), iter(item))
             }
-            "peekable" | "fuse" => recv.clone(),
+            // `it.peekable()`: an iterator with a position and a buffered element.
+            "peekable" => {
+                self.helper("iter");
+                prim(
+                    format!("RsIter({})", recv.code),
+                    Ty::Named("RsIter".into(), vec![item.clone()]),
+                )
+            }
+            "fuse" => recv.clone(),
             "inspect" => recv.clone(),
             "sum" | "product" => {
                 let mut t = turbofish
@@ -3564,6 +3624,10 @@ impl Translator<'_> {
                     }
                     _ => prim(format!("{r}.reduce({zero}, {op})"), t),
                 }
+            }
+            // A lazy sequence has no `count`: its elements are gathered first.
+            "count" if matches!(rty, Ty::Iter(_)) && !array_valued(&recv.code) => {
+                prim(format!("Array({}).count", recv.code), usize_ty)
             }
             "count" => prim(format!("{r}.count"), usize_ty),
             "min" | "max" if args.is_empty() && matches!(item, Ty::Tuple(_)) => {
@@ -3703,23 +3767,7 @@ impl Translator<'_> {
             .unwrap_or_else(|| expected.clone());
         let item = recv.ty.item();
         let code = recv.code.clone();
-        // These methods already return an `Array`.
-        // A lazy sequence (`s.rsChars`, `.lazy`) is not an array, whatever its last call.
-        let lazy = code.contains(".rsChars") || code.contains(".lazy");
-        let is_array_chain = !lazy
-            && ((code.starts_with('[') && code.ends_with(']'))
-                || matches!(
-                    last_member(&code).as_deref(),
-                    Some(
-                        "map"
-                            | "filter"
-                            | "compactMap"
-                            | "flatMap"
-                            | "sorted"
-                            | "components"
-                            | "shuffled"
-                    )
-                ));
+        let is_array_chain = array_valued(&code);
         match &target {
             // Pieces of text are joined; characters make a string.
             Ty::Str if item == Ty::Str => Ex::primary(format!("{code}.joined()"), Ty::Str),
@@ -4028,6 +4076,26 @@ impl Translator<'_> {
             _ => Vec::new(),
         }
     }
+}
+
+/// Whether the Swift expression is an `Array`: a literal, or a chain ending with a method
+/// that builds one (`map`, `filter`…) — not a lazy sequence (`s.rsChars`, `.lazy`).
+fn array_valued(code: &str) -> bool {
+    let lazy = code.contains(".rsChars") || code.contains(".lazy");
+    !lazy
+        && ((code.starts_with('[') && code.ends_with(']'))
+            || matches!(
+                last_member(code).as_deref(),
+                Some(
+                    "map"
+                        | "filter"
+                        | "compactMap"
+                        | "flatMap"
+                        | "sorted"
+                        | "components"
+                        | "shuffled"
+                )
+            ))
 }
 
 /// `lock()`, `read()`, `try_borrow_mut()`…: an access to a cell's value that Rust wraps in
