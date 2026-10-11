@@ -1,9 +1,9 @@
 # ferroswift-cli
 
-The `ferroswift` command of [FerroSwift](https://github.com/maxlestage/FerroSwift).
+The `ferroswift` command of [FerroSwift](https://maxlestage.github.io/FerroSwift/).
 
 ```sh
-cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli
+cargo install ferroswift-cli
 
 ferroswift new my-app        # a Rust crate and its Swift package
 ferroswift build             # src/**/*.rs → swift/Sources/MyApp/*.swift
