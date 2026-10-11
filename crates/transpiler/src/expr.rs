@@ -34,9 +34,6 @@ pub struct Ex {
     /// The code calls a function that throws (a Rust function returning `Result`), without
     /// `try` yet: (success type, error type).
     pub throws: Option<Box<(Ty, Ty)>>,
-    /// A Swift optional standing for a Rust `Result` whose error does not matter
-    /// (`s.parse::<i32>()` is `Int(s)`).
-    pub parsed: bool,
     /// A number literal without suffix: its type comes from the context.
     pub weak: bool,
 }
@@ -48,7 +45,6 @@ impl Ex {
             prec,
             ty,
             throws: None,
-            parsed: false,
             weak: false,
         }
     }
@@ -145,6 +141,24 @@ impl Translator<'_> {
     fn expr_raw(&mut self, e: &Expr, expected: &Ty) -> Ex {
         match e {
             Expr::Lit(l) => self.lit(&l.lit, expected),
+            // `<Vowels as Scorer>::NAME`: the constant of the type.
+            Expr::Path(p) if p.qself.is_some() => {
+                let ty = p.qself.as_ref().map_or(Ty::Unknown, |q| self.ty(&q.ty));
+                let last = p.path.segments.last().map(|s| s.ident.to_string());
+                match (ty.swift(), last) {
+                    (Some(t), Some(last))
+                        if last
+                            .chars()
+                            .all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit()) =>
+                    {
+                        Ex::primary(format!("{t}.{}", names::constant(&last)), Ty::Unknown)
+                    }
+                    (Some(t), Some(last)) => {
+                        Ex::primary(format!("{t}.{}", names::lower_camel(&last)), Ty::Unknown)
+                    }
+                    _ => self.path_expr(&p.path, expected, e.span()),
+                }
+            }
             Expr::Path(p) => self.path_expr(&p.path, expected, e.span()),
             Expr::Binary(b) => self.binary(b, expected),
             Expr::Unary(u) => self.unary(u, expected),
@@ -177,6 +191,11 @@ impl Translator<'_> {
                     let v = self.settle(v);
                     tys.push(v.ty.clone());
                     codes.push(v.code);
+                }
+                // `(x,)`: Swift has no tuple of one element.
+                if codes.len() == 1 {
+                    self.helper("tuple1");
+                    return Ex::primary(format!("RsTuple1({})", codes[0]), Ty::Tuple(tys));
                 }
                 Ex::primary(format!("({})", codes.join(", ")), Ty::Tuple(tys))
             }
@@ -268,6 +287,10 @@ impl Translator<'_> {
                 );
                 return Ex::new(code, P_TRY, Ty::Result(Box::new(ok), Box::new(err)));
             }
+            if matches!(err, Ty::Str) {
+                self.helper("StringError");
+            }
+            self.note_support_types(&err);
             let code = match (ok.swift(), err.swift()) {
                 (Some(o), Some(e)) if !matches!(err, Ty::Dyn(_)) => {
                     format!(
@@ -581,11 +604,21 @@ impl Translator<'_> {
                 return Ex::primary(format!("{tname}.{}", names::lower_camel(last)), Ty::Unknown);
             }
         }
-        if self.syms.is_user_type(&owner_rust) || owner == "Self" {
+        // `S::NAME` with `S: Scorer`: the constant of the type parameter.
+        if self.syms.is_user_type(&owner_rust)
+            || owner == "Self"
+            || self.generics.iter().any(|g| g == owner)
+        {
             // An associated constant.
+            let ty = self
+                .syms
+                .assoc_consts
+                .get(&(owner_rust.clone(), last.to_string()))
+                .cloned()
+                .unwrap_or(Ty::Unknown);
             return Ex::primary(
                 format!("{}.{}", self.type_path_name(owner), names::constant(last)),
-                Ty::Unknown,
+                ty,
             );
         }
         if let Some(ex) = self.ui_constant(owner, last, expected) {
@@ -1030,6 +1063,15 @@ impl Translator<'_> {
                     Ex::primary(format!("{t}(rsInt({exact}.self, {}))", v.code), target)
                 }
             }
+            // `x as i32` from a type of 32 bits or more: Swift's `Int` has 64, the 32 are kept.
+            (Ty::Int(from), Ty::Int(IntKind::I32))
+                if *from != IntKind::I32 && from.rust_bits() >= 32 =>
+            {
+                Ex::primary(
+                    format!("Int(Int32(truncatingIfNeeded: {}))", v.code),
+                    target,
+                )
+            }
             // Narrowing, or a negative value made unsigned: Rust's `as` truncates.
             (Ty::Int(from), Ty::Int(to))
                 if to.bits() < from.bits()
@@ -1113,27 +1155,48 @@ impl Translator<'_> {
             // `write!(f, …)?`
             return v;
         }
+        // `f()?` whose error converts into the function's (`impl From<E> for F`).
+        let source = match (&v.throws, &v.ty) {
+            (Some(th), _) => Some(th.1.clone()),
+            (None, Ty::Result(_, e)) => Some((**e).clone()),
+            _ => None,
+        };
+        if let Some(target) = source.and_then(|s| self.error_conversion(&s)) {
+            let v = self.settle(v);
+            let ok = match &v.ty {
+                Ty::Result(o, _) => (**o).clone(),
+                _ => Ty::Unknown,
+            };
+            return Ex::new(
+                format!(
+                    "try {}.mapError {{ {target}($0) }}.get()",
+                    wrap(&v, P_PRIMARY)
+                ),
+                P_TRY,
+                ok,
+            );
+        }
         if let Some(th) = &v.throws {
             let ok = th.0.clone();
             return Ex::new(format!("try {}", v.code), P_TRY, ok);
         }
-        if v.ty.is_result() && !v.parsed {
+        if v.ty.is_result() {
             let ok = match &v.ty {
                 Ty::Result(o, _) => (**o).clone(),
                 _ => Ty::Unknown,
             };
             return Ex::new(format!("try {}.get()", wrap(&v, P_PRIMARY)), P_TRY, ok);
         }
-        // `?` on an Option (or a parsed value): leave the function early.
+        // `?` on an Option: leave the function early.
         let item = v.ty.item();
         let tmp = self.fresh("value");
         let throws = self.fn_cx().and_then(|f| f.throws.clone());
-        let exit = match (&throws, v.parsed) {
-            (Some(_), _) => {
+        let exit = match &throws {
+            Some(_) => {
                 self.helper("ParseError");
                 "throw RsParseError()".to_string()
             }
-            (None, _) => {
+            None => {
                 let cx = self.fn_cx();
                 let unit = cx.is_some_and(|f| f.ret == Ty::Unit);
                 if unit {
@@ -1145,6 +1208,20 @@ impl Translator<'_> {
         };
         self.prelude(format!("guard let {tmp} = {} else {{ {exit} }}", v.code));
         Ex::primary(tmp, item)
+    }
+
+    /// The function's error type, when `source` converts into it through a `From` impl.
+    fn error_conversion(&self, source: &Ty) -> Option<String> {
+        let target = self.fn_cx().and_then(|f| f.throws.clone())?;
+        let Ty::Named(swift, _) = &target else {
+            return None;
+        };
+        if source.is_unknown() || *source == target || matches!(source, Ty::Dyn(_)) {
+            return None;
+        }
+        let rust = self.rust_name_of_swift(swift)?;
+        let froms = self.syms.from_impls.get(&rust)?;
+        froms.contains(source).then(|| swift.clone())
     }
 
     // ----- Places (assignment targets) -----
@@ -1281,6 +1358,9 @@ impl Translator<'_> {
             (Ty::Tuple(ts), syn::Member::Unnamed(i)) => {
                 ts.get(i.index as usize).cloned().unwrap_or(Ty::Unknown)
             }
+            (Ty::Named(n, args), syn::Member::Unnamed(_)) if n == "RsReverse" => {
+                args.first().cloned().unwrap_or(Ty::Unknown)
+            }
             (Ty::Named(n, args), m) => {
                 let rust = match m {
                     syn::Member::Named(id) => id.to_string(),
@@ -1353,6 +1433,10 @@ impl Translator<'_> {
             {
                 format!("_{}", i.index)
             }
+            // `t.0` of a `(T,)`: the field of the support struct.
+            (syn::Member::Unnamed(_), Ty::Tuple(ts)) if ts.len() == 1 => "_0".into(),
+            // `r.0` of a `Reverse(x)`.
+            (syn::Member::Unnamed(_), Ty::Named(n, _)) if n == "RsReverse" => "value".into(),
             (syn::Member::Unnamed(i), _) => i.index.to_string(),
         };
         // `self.count` → `count`, unless a local of that name hides the field.
@@ -1640,7 +1724,9 @@ impl Translator<'_> {
             syn::ReturnType::Default => None,
         };
         let mut ret = declared_ret.clone().unwrap_or(ret_ty);
-        let returns_result = closure_returns_result(&c.body) || ret.is_result();
+        // In a chain collected into a plain collection, the `Result`s are values.
+        let returns_result =
+            closure_returns_result(&c.body) || ret.is_result() && self.result_values == 0;
         let throws = if returns_result {
             Some(match &ret {
                 Ty::Result(_, e) => (**e).clone(),
@@ -1752,11 +1838,7 @@ impl Translator<'_> {
         } else {
             format!("{{ {head}\n{}\n}}", indent_lines(&lines.join("\n")))
         };
-        let mut ex = Ex::primary(code, ty);
-        if throws.is_some() {
-            ex.parsed = false;
-        }
-        ex
+        Ex::primary(code, ty)
     }
 
     /// A closure parameter: a name, `(a, b)`, or `_`.

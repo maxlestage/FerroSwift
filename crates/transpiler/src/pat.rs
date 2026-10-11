@@ -66,6 +66,18 @@ impl Translator<'_> {
             Pat::Wild(_) => "_".into(),
             Pat::Reference(r) => self.binding_pattern(&r.pat, ty),
             Pat::Paren(p) => self.binding_pattern(&p.pat, ty),
+            // `|(x,)|`: the tuple of one element is bound whole, `x` stands for its field.
+            Pat::Tuple(t) if t.elems.len() == 1 => {
+                let elem_ty = match ty {
+                    Ty::Tuple(ts) if ts.len() == 1 => ts[0].clone(),
+                    _ => Ty::Unknown,
+                };
+                let whole = self.fresh("tuple");
+                if let Pat::Ident(id) = &t.elems[0] {
+                    self.declare_alias(&id.ident.to_string(), format!("{whole}._0"), elem_ty);
+                }
+                whole
+            }
             Pat::Tuple(t) => {
                 let tys = match ty {
                     Ty::Tuple(ts) => ts.clone(),
@@ -203,6 +215,21 @@ impl Translator<'_> {
                     })
                     .collect();
                 format!("\u{3}{}\u{4}", parts.join("\u{5}"))
+            }
+            // `(x,)`: the field of the support struct.
+            Pat::Tuple(t) if t.elems.len() == 1 && !matches!(t.elems[0], Pat::Rest(_)) => {
+                let elem_ty = match ty {
+                    Ty::Tuple(ts) if ts.len() == 1 => ts[0].clone(),
+                    _ => Ty::Unknown,
+                };
+                let mut inner = PatCx {
+                    subject: format!("{}._0", cx.subject),
+                    guards: Vec::new(),
+                    lets: Vec::new(),
+                    declare: cx.declare,
+                };
+                self.field_subpattern(&t.elems[0], &elem_ty, &mut inner, cx);
+                "_".into()
             }
             Pat::Tuple(t) => {
                 let tys = match ty {
@@ -397,6 +424,23 @@ impl Translator<'_> {
                 };
                 self.field_subpattern(p, &f.ty, &mut inner, cx);
             }
+            return "_".into();
+        }
+        // `Reverse(x)`: the wrapped value.
+        if last == "Reverse" && ts.elems.len() == 1 {
+            let inner_ty = match ty {
+                Ty::Named(n, args) if n == "RsReverse" => {
+                    args.first().cloned().unwrap_or(Ty::Unknown)
+                }
+                _ => Ty::Unknown,
+            };
+            let mut inner = PatCx {
+                subject: format!("{}.value", cx.subject),
+                guards: Vec::new(),
+                lets: Vec::new(),
+                declare: cx.declare,
+            };
+            self.field_subpattern(&ts.elems[0], &inner_ty, &mut inner, cx);
             return "_".into();
         }
         self.error(

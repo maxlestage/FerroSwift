@@ -165,6 +165,83 @@ fn parse_spec(s: &str) -> Result<Spec, String> {
 
 impl Translator<'_> {
     /// A `format!`-like macro: the format string literal and its arguments.
+    /// Whether a method of this name changes its receiver (`pop`, `push`, a `&mut self`
+    /// method of the crate).
+    pub fn is_mutating_method(&self, name: &str) -> bool {
+        let std = matches!(
+            name,
+            "pop"
+                | "push"
+                | "push_str"
+                | "insert"
+                | "remove"
+                | "truncate"
+                | "clear"
+                | "drain"
+                | "take"
+                | "replace"
+                | "swap"
+                | "sort"
+                | "sort_by"
+                | "sort_by_key"
+                | "sort_unstable"
+                | "reverse"
+                | "retain"
+                | "dedup"
+                | "append"
+                | "extend"
+                | "pop_front"
+                | "pop_back"
+                | "push_front"
+                | "push_back"
+                | "next"
+                | "split_off"
+                | "swap_remove"
+                | "resize"
+                | "fill"
+                | "take_if"
+                | "get_or_insert"
+                | "get_or_insert_with"
+                | "or_insert"
+                | "or_default"
+                | "or_insert_with"
+                | "entry"
+                | "iter_mut"
+                | "as_mut"
+                | "get_mut"
+                | "last_mut"
+                | "first_mut"
+        );
+        std || self.syms.methods.values().any(|ms| {
+            ms.get(name)
+                .is_some_and(|s| s.self_kind == crate::symbols::SelfKind::RefMut)
+        })
+    }
+
+    /// Whether `e` calls a method that changes its receiver (`s.pop()`, `v.push(x)`, a
+    /// `&mut self` method of the crate).
+    fn has_mutating_call(&self, e: &Expr) -> bool {
+        use syn::visit::Visit;
+        struct V<'a, 'b> {
+            t: &'a Translator<'b>,
+            found: bool,
+        }
+        impl<'ast> Visit<'ast> for V<'_, '_> {
+            fn visit_expr_method_call(&mut self, m: &'ast syn::ExprMethodCall) {
+                if self.t.is_mutating_method(&m.method.to_string()) {
+                    self.found = true;
+                }
+                syn::visit::visit_expr_method_call(self, m);
+            }
+        }
+        let mut v = V {
+            t: self,
+            found: false,
+        };
+        v.visit_expr(e);
+        v.found
+    }
+
     pub fn format_args(&mut self, args: &[Expr], span: proc_macro2::Span) -> Ex {
         let Some(Expr::Lit(syn::ExprLit {
             lit: syn::Lit::Str(fmt),
@@ -196,6 +273,29 @@ impl Translator<'_> {
                     positional.push(a.clone());
                 }
                 a => positional.push(a.clone()),
+            }
+        }
+        // `println!("{s:?} {:?}", s.pop())`: Rust evaluates the arguments first, the captured
+        // names after. Arguments that change something are computed before the text.
+        if self.preludes.last().is_some()
+            && positional
+                .iter()
+                .chain(named.iter().map(|(_, e)| e))
+                .any(|e| self.has_mutating_call(e))
+        {
+            for (i, e) in positional
+                .iter_mut()
+                .chain(named.iter_mut().map(|(_, e)| e))
+                .enumerate()
+            {
+                let v = self.expr(e);
+                let v = self.settle(v);
+                let tmp = self.fresh("arg");
+                self.prelude(format!("let {tmp} = {}", v.code));
+                let rust = format!("__format_arg{i}");
+                self.declare_alias(&rust, tmp, v.ty);
+                let ident = syn::Ident::new(&rust, span);
+                *e = syn::parse_quote!(#ident);
             }
         }
         let mut translated: Vec<Option<Ex>> = vec![None; positional.len()];
@@ -347,45 +447,57 @@ impl Translator<'_> {
             }),
             _ => None,
         };
-        let (precision, width) = match (spec.kind.as_str(), user_display, &v.ty) {
-            ("", Some(true), _) => (None, None),
-            ("?" | "x?" | "X?", _, Ty::Int(_) | Ty::Float(_)) => (precision, width),
-            ("?" | "x?" | "X?", _, _) => (precision, None),
+        let (precision, width) = match (spec.kind.as_str(), user_display) {
+            ("", Some(true)) => (None, None),
             _ => (precision, width),
         };
-        let mut s = match spec.kind.as_str() {
-            "?" | "x?" | "X?" => match &v.ty {
-                Ty::Int(_) | Ty::Bool => x.clone(),
-                // `s.parse::<i32>()` is an optional in Swift, a `Result` in Rust.
-                Ty::Option(inner) if v.parsed => {
-                    self.helper("debug");
-                    let error = match &**inner {
-                        Ty::Int(_) => "ParseIntError { kind: InvalidDigit }",
-                        Ty::Float(_) => "ParseFloatError { kind: Invalid }",
-                        Ty::Bool => "ParseBoolError",
-                        Ty::Char => "CharTryFromError(())",
-                        _ => "ParseError",
-                    };
-                    format!("rsDebugParsed({x}, \"{error}\")")
+        let is_debug = matches!(spec.kind.as_str(), "?" | "x?" | "X?");
+        // Rust's derived `Debug` passes the width and precision down to the numbers inside.
+        let debug_style = if is_debug && (width.is_some() || precision.is_some()) {
+            let mut parts = Vec::new();
+            if let Some(w) = &width {
+                parts.push(format!("width: {w}"));
+                if let Some(a) = spec.align {
+                    parts.push(format!("align: \"{a}\""));
                 }
+                if let Some(f) = spec.fill {
+                    if f != ' ' {
+                        parts.push(format!(
+                            "fill: {}",
+                            crate::expr::swift_string(&f.to_string())
+                        ));
+                    }
+                }
+                if spec.zero {
+                    parts.push("zero: true".into());
+                }
+            }
+            if let Some(p) = &precision {
+                parts.push(format!("precision: {p}"));
+            }
+            Some(format!(", style: RsDebugStyle({})", parts.join(", ")))
+        } else {
+            None
+        };
+        let width = if debug_style.is_some() { None } else { width };
+        let mut s = match spec.kind.as_str() {
+            "?" | "x?" | "X?" => match (&v.ty, &debug_style) {
+                (Ty::Int(_) | Ty::Bool, None) => x.clone(),
                 // A `BTreeSet` prints in order; Swift's `Set` has none.
-                Ty::Set(_, true) => {
+                (Ty::Set(_, true), _) => {
                     self.helper("debug");
                     format!(
                         "rsDebugSet({x}.sorted(){})",
                         if spec.alternate { ", pretty: true" } else { "" }
                     )
                 }
-                Ty::Float(_) if precision.is_some() => {
-                    self.helper("fixed");
-                    format!("rsFixed({x}, {})", precision.clone().unwrap_or_default())
-                }
                 _ => {
                     self.helper("debug");
+                    let style = debug_style.clone().unwrap_or_default();
                     if spec.alternate {
-                        format!("rsDebug({x}, pretty: true)")
+                        format!("rsDebug({x}, pretty: true{style})")
                     } else {
-                        format!("rsDebug({x})")
+                        format!("rsDebug({x}{style})")
                     }
                 }
             },

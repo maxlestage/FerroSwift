@@ -79,6 +79,7 @@ pub struct EnumInfo {
     pub swift: String,
     pub variants: Vec<VariantInfo>,
     pub generics: Vec<String>,
+    pub derives: Vec<String>,
 }
 
 impl EnumInfo {
@@ -106,6 +107,8 @@ pub struct FnSig {
     pub property: bool,
     /// `fn add(&mut self, …) -> &mut Self`: a builder method, chained as statements.
     pub returns_self_mut: bool,
+    /// The type parameters, in order (`fn largest<T: PartialOrd>(…)`).
+    pub generics: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -134,6 +137,10 @@ pub struct Symbols {
     pub errors: HashSet<String>,
     /// Types with a `From<…>` implementation, by target.
     pub from_impls: HashMap<String, Vec<Ty>>,
+    /// Associated types of the impls (`type Err = String;`), by (Swift type name, name).
+    pub assoc: HashMap<(String, String), Ty>,
+    /// Associated constants (`const ALL: [Weekday; 7]`), by (Rust type name, name).
+    pub assoc_consts: HashMap<(String, String), Ty>,
     /// The ferroswift UI library is imported somewhere.
     pub ui: bool,
     /// Names brought in by `use` (`PI` → `std::f64::consts::PI`), without the globs.
@@ -215,6 +222,9 @@ impl Symbols {
                 if let Some(m) = clash {
                     m.property = true;
                     field.swift = format!("_{}", field.swift);
+                } else if methods.contains_key(&field.rust) {
+                    // A field `redo` and a method `redo(&mut self)`: the stored field is renamed.
+                    field.swift = format!("_{}", field.swift);
                 }
             }
         }
@@ -236,6 +246,20 @@ impl Symbols {
                         self.ui = true;
                     }
                     collect_imports(&u.tree, &mut Vec::new(), &mut self.imports);
+                }
+                Item::Fn(func) => {
+                    f(self, item);
+                    // Functions declared inside a function body.
+                    let nested: Vec<Item> = func
+                        .block
+                        .stmts
+                        .iter()
+                        .filter_map(|s| match s {
+                            syn::Stmt::Item(it) => Some(it.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    self.walk(&nested, f);
                 }
                 _ => f(self, item),
             }
@@ -328,6 +352,7 @@ impl Symbols {
                         swift: names::upper_camel(&en.ident.to_string()),
                         variants,
                         generics: type_params(&en.generics),
+                        derives: derives(&en.attrs),
                     },
                 );
             }
@@ -422,6 +447,22 @@ impl Symbols {
                 }
             }
             _ => {}
+        }
+        for it in &imp.items {
+            if let syn::ImplItem::Const(c) = it {
+                let ty = self.ty(&c.ty, Some(&self_ty));
+                self.assoc_consts
+                    .insert((type_name.clone(), c.ident.to_string()), ty);
+            }
+        }
+        // `type Err = String;` before the signatures that mention `Self::Err`.
+        for it in &imp.items {
+            if let syn::ImplItem::Type(t) = it {
+                let ty = self.ty(&t.ty, Some(&self_ty));
+                if let Ty::Named(swift, _) = &self_ty {
+                    self.assoc.insert((swift.clone(), t.ident.to_string()), ty);
+                }
+            }
         }
         let observable = self
             .structs
@@ -544,6 +585,7 @@ impl Symbols {
             is_init: false,
             property: false,
             returns_self_mut,
+            generics: type_params(&sig.generics),
         }
     }
 
@@ -562,6 +604,14 @@ impl Symbols {
                     return self_ty
                         .cloned()
                         .unwrap_or_else(|| Ty::Named("Self".into(), vec![]));
+                }
+                // `Self::Err`, `Self::Item`: an associated type of the impl.
+                if p.path.segments.len() == 2 && p.path.segments[0].ident == "Self" {
+                    if let Some(Ty::Named(swift, _)) = self_ty {
+                        if let Some(t) = self.assoc.get(&(swift.clone(), name.clone())) {
+                            return t.clone();
+                        }
+                    }
                 }
                 let mut args = Vec::new();
                 if let syn::PathArguments::AngleBracketed(a) = &last.arguments {

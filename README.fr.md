@@ -122,7 +122,7 @@ La liste complète, et ce qui n'est pas pris en charge, se trouve dans [le guide
 ## Limites
 
 - Pas de sémantique d'emprunt en Swift : les valeurs sont copiées. L'état mutable partagé (`Rc<RefCell<T>>`) n'a pas de traduction ; utilisez un modèle `#[derive(Observable)]`.
-- `i32`, `i64` et `usize` deviennent tous l'`Int` 64 bits de Swift : les dépassements arrivent à 2⁶³, pas à 2³¹.
+- `i32`, `i64` et `usize` deviennent tous l'`Int` 64 bits de Swift : `+` déborde à 2⁶³, pas à 2³¹ (le parsing, les conversions `as` et les méthodes `wrapping_*`/`checked_*` gardent les limites 32 bits).
 - Non traduits : les durées de vie (ignorées), `unsafe` et les pointeurs bruts, `macro_rules!`, les threads, les runtimes `async`, les objets-traits à méthodes génériques, les crates autres que `std` et `ferroswift`.
 
 ## Contenu du dépôt

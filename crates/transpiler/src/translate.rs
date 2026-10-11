@@ -13,7 +13,10 @@ use crate::comments::Comments;
 use crate::diag::{Diagnostic, Severity, position};
 use crate::names;
 use crate::stmt::Sink;
-use crate::symbols::{FieldRole, SelfKind, Symbols, TypeKind, derives, is_test_only, item_attrs};
+use crate::symbols::{
+    EnumInfo, FieldRole, SelfKind, Symbols, TypeKind, VariantShape, derives, is_test_only,
+    item_attrs,
+};
 use crate::ty::Ty;
 
 pub const INDENT: &str = "    ";
@@ -84,6 +87,11 @@ pub struct Translator<'a> {
     pub closure_generics: std::collections::HashMap<String, Ty>,
     /// Labels of the loops being translated, innermost last.
     pub loops: Vec<Option<String>>,
+    /// `switch` statements between the innermost loop and the code being translated: a
+    /// `break` there must name the loop.
+    pub switch_depth: usize,
+    /// Generated loop labels that a `break` names.
+    pub used_labels: std::collections::HashSet<String>,
     /// The type of the branches of the `if`/`switch` expression being translated.
     pub last_branch_ty: Option<Ty>,
     /// Depth of closures whose body is a result builder of views.
@@ -100,6 +108,14 @@ pub struct Translator<'a> {
     pub prelude_body: Vec<String>,
     /// Inside a condition (`if`, `while`, `guard`, `for … in`): no trailing closures there.
     pub no_trailing: usize,
+    /// Inside the receiver of a `collect()` into a plain collection: closures returning a
+    /// `Result` return it as a value (`.map(|s| s.parse::<i32>()).collect::<Vec<_>>()`).
+    pub result_values: usize,
+    /// Inside the arguments of a call to a generic function: an empty array literal is cast
+    /// to its type, which Swift cannot infer otherwise.
+    pub generic_call: usize,
+    /// Parameters of the function being translated that its body uses as values.
+    pub escaping_params: std::collections::HashSet<String>,
     /// Locals being declared (`let max = …`): their initializers already see the shadowing.
     pub pending_locals: Vec<String>,
     /// For each loop being translated, the variable its `break value` assigns.
@@ -128,6 +144,8 @@ impl<'a> Translator<'a> {
             generics: Vec::new(),
             closure_generics: std::collections::HashMap::new(),
             loops: Vec::new(),
+            switch_depth: 0,
+            used_labels: std::collections::HashSet::new(),
             last_branch_ty: None,
             view_closure_depth: 0,
             value_yield: 0,
@@ -136,6 +154,9 @@ impl<'a> Translator<'a> {
             pending_refine: None,
             prelude_body: Vec::new(),
             no_trailing: 0,
+            result_values: 0,
+            generic_call: 0,
+            escaping_params: std::collections::HashSet::new(),
             pending_locals: Vec::new(),
             loop_values: Vec::new(),
             depth: 0,
@@ -256,7 +277,20 @@ impl<'a> Translator<'a> {
     /// Whether a local with this Swift name is visible (then `self.x` keeps its `self.`).
     /// `max`, `abs`, `zip`… of the Swift standard library, qualified when a local hides them.
     pub fn global_fn(&self, name: &str) -> String {
-        if self.swift_local_visible(name) || self.pending_locals.iter().any(|l| l == name) {
+        // A field or method `min` of the type hides the global function in its methods.
+        let member = self.imp.as_ref().is_some_and(|i| {
+            self.syms
+                .structs
+                .get(&i.rust)
+                .is_some_and(|s| s.fields.iter().any(|f| f.swift == name))
+                || self
+                    .syms
+                    .methods
+                    .get(&i.rust)
+                    .is_some_and(|m| m.keys().any(|k| names::lower_camel(k) == name))
+        });
+        if member || self.swift_local_visible(name) || self.pending_locals.iter().any(|l| l == name)
+        {
             format!("Swift.{name}")
         } else {
             name.to_string()
@@ -305,9 +339,14 @@ impl<'a> Translator<'a> {
     }
 
     /// Replaces the type placeholders of `code` with the types learned since.
-    pub fn resolve_slots(&self, code: &str) -> String {
+    pub fn resolve_slots(&mut self, code: &str) -> String {
         if !code.contains('\u{1}') {
             return code.to_string();
+        }
+        // The types written here need their support code too.
+        for i in 0..self.slots.len() {
+            let t = self.slots[i].clone();
+            self.note_types(&t);
         }
         let mut out = String::with_capacity(code.len());
         let mut parts = code.split('\u{1}');
@@ -552,10 +591,7 @@ impl<'a> Translator<'a> {
 
     /// The Swift spelling of a type; unknown parts are reported.
     pub fn swift_ty(&mut self, t: &Ty, span: Span) -> String {
-        // `Result<T, String>` anywhere: `String` must be an `Error`.
-        if mentions_string_error(t) {
-            self.helper("StringError");
-        }
+        self.note_types(t);
         match t.swift() {
             Some(s) => s,
             None => {
@@ -565,6 +601,35 @@ impl<'a> Translator<'a> {
                 );
                 t.swift_lossy().replace('_', "Any")
             }
+        }
+    }
+
+    /// The support code that a type written in Swift needs.
+    pub fn note_types(&mut self, t: &Ty) {
+        // `Result<T, String>` anywhere: `String` must be an `Error`.
+        if mentions_string_error(t) {
+            self.helper("StringError");
+        }
+        self.note_support_types(t);
+    }
+
+    /// The support code behind the library types that `t` mentions (`RsParseIntError`…).
+    pub fn note_support_types(&mut self, t: &Ty) {
+        let mut names = Vec::new();
+        named_types(t, &mut names);
+        for n in names {
+            let helper = match n.as_str() {
+                "RsParseIntError" | "RsParseFloatError" | "RsParseBoolError"
+                | "RsParseCharError" | "RsCharTryFromError" => "parse",
+                "RsTryFromIntError" => "try_from",
+                "RsFromUtf8Error" | "RsUtf8Error" => "utf8",
+                "RsTuple1" => "tuple1",
+                "RsBinaryHeap" => "heap",
+                "RsReverse" => "reverse",
+                "RsTupleKeys" => "tuple_keys",
+                _ => continue,
+            };
+            self.helper(helper);
         }
     }
 
@@ -673,6 +738,14 @@ impl<'a> Translator<'a> {
         let mut conformances = self.derive_conformances(&derives, s.span());
         if info.fields.iter().any(|f| f.rust == "id") && info.kind != TypeKind::App {
             conformances.push("Identifiable".into());
+        }
+        // A `BTreeSet<T>` is a `Set<T>`: an ordered type is hashable too, when its fields are.
+        if derives.iter().any(|d| d == "Ord")
+            && !conformances.iter().any(|c| c == "Hashable")
+            && info.fields.iter().all(|f| self.hashable(&f.ty))
+        {
+            conformances.push("Hashable".into());
+            conformances.retain(|c| c != "Equatable");
         }
         if self.syms.errors.contains(&swift) && !conformances.iter().any(|c| c == "Error") {
             conformances.push("Error".into());
@@ -872,6 +945,11 @@ impl<'a> Translator<'a> {
                         "lhs.{0}.count == rhs.{0}.count && zip(lhs.{0}, rhs.{0}).allSatisfy {{ $0 == $1 }}",
                         f.swift
                     ),
+                    // Nor over optional tuples.
+                    Ty::Option(t) if matches!(**t, Ty::Tuple(_)) => format!(
+                        "(lhs.{0} == nil && rhs.{0} == nil || lhs.{0} != nil && rhs.{0} != nil && lhs.{0}! == rhs.{0}!)",
+                        f.swift
+                    ),
                     _ => format!("lhs.{0} == rhs.{0}", f.swift),
                 })
                 .collect();
@@ -1013,6 +1091,157 @@ impl<'a> Translator<'a> {
     }
 
     /// Protocol conformances from `#[derive(…)]`.
+    /// `==`, `hash(into:)` and `<` for an enum with payloads, when Swift cannot synthesize
+    /// them: arrays of tuples defeat `==` and `hash`, and `<` is never synthesized. Like
+    /// Rust's derives, `<` orders by variant first, then by the payload, field by field.
+    fn payload_conformances(&self, info: &EnumInfo, conformances: &[String]) -> Vec<String> {
+        let payloads: Vec<(String, Vec<Ty>)> = info
+            .variants
+            .iter()
+            .map(|v| {
+                let tys = match &v.shape {
+                    VariantShape::Tuple(tys) => tys.clone(),
+                    VariantShape::Struct(fs) => fs.iter().map(|(_, t)| t.clone()).collect(),
+                    VariantShape::Unit => Vec::new(),
+                };
+                (v.swift.clone(), tys)
+            })
+            .collect();
+        let awkward = payloads
+            .iter()
+            .any(|(_, tys)| tys.iter().any(has_tuple_collection));
+        let has = |c: &str| conformances.iter().any(|x| x == c);
+        let binds = |prefix: &str, n: usize| -> String {
+            (0..n)
+                .map(|i| format!("let {prefix}{i}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut out = Vec::new();
+        if awkward && (has("Equatable") || has("Hashable")) {
+            let mut arms = Vec::new();
+            for (case, tys) in &payloads {
+                if tys.is_empty() {
+                    arms.push(format!("case (.{case}, .{case}): return true"));
+                    continue;
+                }
+                let terms: Vec<String> = tys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| equality_term(&format!("a{i}"), &format!("b{i}"), t))
+                    .collect();
+                arms.push(format!(
+                    "case (.{case}({}), .{case}({})): return {}",
+                    binds("a", tys.len()),
+                    binds("b", tys.len()),
+                    terms.join(" && ")
+                ));
+            }
+            arms.push("default: return false".into());
+            out.push(String::new());
+            out.push(format!(
+                "static func == (lhs: {0}, rhs: {0}) -> Bool {{\n{INDENT}switch (lhs, rhs) {{\n{1}\n{INDENT}}}\n}}",
+                info.swift,
+                indent_lines(&arms.join("\n"))
+            ));
+        }
+        if awkward && has("Hashable") {
+            let mut arms = Vec::new();
+            for (i, (case, tys)) in payloads.iter().enumerate() {
+                let mut lines = vec![format!("hasher.combine({i})")];
+                for (j, t) in tys.iter().enumerate() {
+                    lines.push(hash_term(&format!("a{j}"), t));
+                }
+                let pattern = if tys.is_empty() {
+                    format!(".{case}")
+                } else {
+                    format!(".{case}({})", binds("a", tys.len()))
+                };
+                arms.push(format!(
+                    "case {pattern}:\n{}",
+                    indent_lines(&lines.join("\n"))
+                ));
+            }
+            out.push(String::new());
+            out.push(format!(
+                "func hash(into hasher: inout Hasher) {{\n{INDENT}switch self {{\n{}\n{INDENT}}}\n}}",
+                indent_lines(&arms.join("\n"))
+            ));
+        }
+        if has("Comparable") {
+            let mut arms = Vec::new();
+            for (case, tys) in &payloads {
+                if tys.is_empty() {
+                    continue;
+                }
+                let mut lines = Vec::new();
+                for (i, t) in tys.iter().enumerate() {
+                    let (a, b) = (format!("a{i}"), format!("b{i}"));
+                    if i + 1 == tys.len() {
+                        lines.push(format!("return {}", less_term(&a, &b, t)));
+                    } else {
+                        lines.push(format!(
+                            "if !({}) {{ return {} }}",
+                            equality_term(&a, &b, t),
+                            less_term(&a, &b, t)
+                        ));
+                    }
+                }
+                arms.push(format!(
+                    "case (.{case}({}), .{case}({})):\n{}",
+                    binds("a", tys.len()),
+                    binds("b", tys.len()),
+                    indent_lines(&lines.join("\n"))
+                ));
+            }
+            arms.push("default: return lhs.rsVariantIndex < rhs.rsVariantIndex".into());
+            out.push(String::new());
+            out.push(format!(
+                "static func < (lhs: {0}, rhs: {0}) -> Bool {{\n{INDENT}switch (lhs, rhs) {{\n{1}\n{INDENT}}}\n}}",
+                info.swift,
+                indent_lines(&arms.join("\n"))
+            ));
+            let ordinals: Vec<String> = payloads
+                .iter()
+                .enumerate()
+                .map(|(i, (case, _))| format!("case .{case}: {i}"))
+                .collect();
+            out.push(String::new());
+            out.push(format!(
+                "private var rsVariantIndex: Int {{\n{INDENT}switch self {{\n{}\n{INDENT}}}\n}}",
+                indent_lines(&ordinals.join("\n"))
+            ));
+        }
+        out
+    }
+
+    /// Whether Swift can synthesize `Hashable` for values of this type.
+    fn hashable(&self, t: &Ty) -> bool {
+        match t {
+            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Unit => true,
+            Ty::Vec(i) | Ty::Set(i, _) | Ty::Option(i) | Ty::Range(i) => self.hashable(i),
+            Ty::Map(k, v, _) => self.hashable(k) && self.hashable(v),
+            Ty::Tuple(ts) => ts.iter().all(|t| self.hashable(t)),
+            Ty::Named(n, args) if n == "RsReverse" || n == "RsTuple1" => {
+                args.iter().all(|a| self.hashable(a))
+            }
+            Ty::Named(n, _) => {
+                let Some(rust) = self.rust_name_of_swift(n) else {
+                    return false;
+                };
+                let derives = match self.syms.structs.get(&rust) {
+                    Some(s) => &s.derives,
+                    None => match self.syms.enums.get(&rust) {
+                        Some(e) => &e.derives,
+                        None => return false,
+                    },
+                };
+                derives.iter().any(|d| d == "Hash" || d == "Ord")
+            }
+            _ => false,
+        }
+    }
+
     fn derive_conformances(&mut self, derives: &[String], span: Span) -> Vec<String> {
         let mut out = Vec::new();
         for d in derives {
@@ -1061,13 +1290,6 @@ impl<'a> Translator<'a> {
                 conformances.retain(|c| c != "Hashable");
                 conformances.push("Hashable".into());
             }
-        }
-        if !all_unit && conformances.iter().any(|c| c == "Comparable") {
-            self.warn(
-                e.span(),
-                "ordering enums with payloads is not translated: Comparable dropped",
-            );
-            conformances.retain(|c| c != "Comparable");
         }
         dedup(&mut conformances);
         let conditional: Vec<String> = if info.generics.is_empty() {
@@ -1156,6 +1378,9 @@ impl<'a> Translator<'a> {
                 "static func < (lhs: {0}, rhs: {0}) -> Bool {{\n{INDENT}lhs.rawValue < rhs.rawValue\n}}",
                 info.swift
             ));
+        }
+        if !all_unit {
+            body.extend(self.payload_conformances(&info, &conformances));
         }
         let closing = self.comments.take_between(prev, e.span().end().line);
         body.extend(closing);
@@ -1276,6 +1501,8 @@ impl<'a> Translator<'a> {
         let trait_name = impl_trait_name(imp);
         let info = self.syms.structs.get(&rust_name);
         let kind = info.map_or(TypeKind::Plain, |s| s.kind);
+        // A recursive struct is a class: its methods are never `mutating`.
+        let recursive = info.is_some_and(|s| s.recursive);
         let swift = match &self_ty {
             Ty::Named(n, _) => n.clone(),
             Ty::Vec(_) => "Array".into(),
@@ -1425,7 +1652,11 @@ impl<'a> Translator<'a> {
             }
             Some("Default") | Some("From") | None | Some(_) => {
                 if let Some(t) = &trait_name {
-                    if !matches!(t.as_str(), "Default" | "From") {
+                    // Conversions have no protocol: their functions are called directly.
+                    if !matches!(
+                        t.as_str(),
+                        "Default" | "From" | "Into" | "FromStr" | "TryFrom" | "TryInto"
+                    ) {
                         conformance =
                             Some(protocol_name(t).unwrap_or_else(|| names::upper_camel(t)));
                     }
@@ -1450,7 +1681,7 @@ impl<'a> Translator<'a> {
                                     &f.sig,
                                     &f.block,
                                     Place::Method {
-                                        mutating_allowed: kind == TypeKind::Plain,
+                                        mutating_allowed: kind == TypeKind::Plain && !recursive,
                                     },
                                 )
                             }
@@ -1461,7 +1692,9 @@ impl<'a> Translator<'a> {
                             let v = self.expr_with(&c.expr, &ty);
                             let v = self.settle(v);
                             self.pop_scope();
-                            let annot = if natural_type_matches(&v.ty, &ty) {
+                            // `[.mon, .tue]` needs the type to resolve its cases.
+                            let leading_dots = v.code.starts_with('.') || v.code.contains("[.");
+                            let annot = if natural_type_matches(&v.ty, &ty) && !leading_dots {
                                 String::new()
                             } else {
                                 format!(": {}", self.swift_ty(&ty, c.ty.span()))
@@ -1472,6 +1705,11 @@ impl<'a> Translator<'a> {
                                 names::constant(&c.ident.to_string()),
                                 v.code
                             )
+                        }
+                        // The error type of `FromStr` or `TryFrom` is resolved where it is used.
+                        ImplItem::Type(t) if t.ident == "Err" || t.ident == "Error" => {
+                            members.extend(leading);
+                            continue;
                         }
                         ImplItem::Type(t) => {
                             let ty = self.ty(&t.ty);
@@ -1686,7 +1924,22 @@ impl<'a> Translator<'a> {
         self.generics
             .extend(crate::symbols::type_params(&sig.generics));
         self.push_scope();
+        // Closure parameters the body stores or passes on must be `@escaping`.
+        self.escaping_params = sig
+            .inputs
+            .iter()
+            .filter_map(|a| match a {
+                FnArg::Typed(p) => match &*p.pat {
+                    Pat::Ident(id) if used_as_value(block, &id.ident.to_string()) => {
+                        Some(id.ident.to_string())
+                    }
+                    _ => None,
+                },
+                FnArg::Receiver(_) => None,
+            })
+            .collect();
         let mut s = self.signature(sig, place);
+        self.escaping_params.clear();
         let own_sig = self
             .imp
             .as_ref()
@@ -1857,13 +2110,21 @@ impl<'a> Translator<'a> {
                     }
                     let ty = self.ty(&p.ty);
                     let inout = matches!(&*p.ty, Type::Reference(r) if r.mutability.is_some())
-                        && !matches!(ty, Ty::Fn(..) | Ty::Opaque(_) | Ty::Dyn(_) | Ty::View);
+                        && !matches!(ty, Ty::Fn(..) | Ty::View);
                     let returns_closure = match &sig.output {
                         ReturnType::Type(_, t) => matches!(self.ty(t), Ty::Fn(..)),
                         ReturnType::Default => false,
                     };
-                    let mut swift_ty = self.param_ty(&ty, &p.ty, returns_closure);
+                    // A closure stored somewhere (`self.handlers.push(handler)`) escapes.
+                    let stored = matches!(ty, Ty::Fn(..))
+                        && matches!(&*p.pat, Pat::Ident(id) if self.escaping_params.contains(&id.ident.to_string()));
+                    let mut swift_ty = self.param_ty(&ty, &p.ty, returns_closure || stored);
                     if inout {
+                        // `&mut dyn Visitor`: an existential cannot be passed `inout` from a
+                        // concrete variable; an opaque type (a generic) can.
+                        if matches!(ty, Ty::Dyn(_)) {
+                            swift_ty = swift_ty.replacen("any ", "some ", 1);
+                        }
                         swift_ty = format!("inout {swift_ty}");
                     }
                     match &*p.pat {
@@ -1931,6 +2192,9 @@ impl<'a> Translator<'a> {
         };
         if matches!(throws, Some(Ty::Str)) {
             self.helper("StringError");
+        }
+        if let Some(e) = &throws {
+            self.note_support_types(e);
         }
         let asyncness = if sig.asyncness.is_some() {
             " async"
@@ -2026,6 +2290,7 @@ pub fn protocol_name(name: &str) -> Option<String> {
             "Iterator" => "IteratorProtocol",
             "Default" => return None,
             "Serialize" | "Deserialize" => "Codable",
+            // As a bound only: an `impl FromStr` is a `fromStr` function, called directly.
             "FromStr" => "LosslessStringConvertible",
             "View" => "View",
             "Add" => "AdditiveArithmetic",
@@ -2049,6 +2314,9 @@ fn is_dropped_trait(name: &str) -> bool {
             | "Into"
             | "From"
             | "AsRef"
+            | "FromStr"
+            | "TryFrom"
+            | "TryInto"
     )
 }
 
@@ -2341,6 +2609,127 @@ fn mentions_string_error(t: &Ty) -> bool {
         Ty::Tuple(ts) | Ty::Named(_, ts) => ts.iter().any(mentions_string_error),
         Ty::Fn(ps, r) => ps.iter().any(mentions_string_error) || mentions_string_error(r),
         _ => false,
+    }
+}
+
+/// The names of the library and user types that `t` mentions (`RsTuple1` for `(T,)`).
+fn named_types(t: &Ty, out: &mut Vec<String>) {
+    match t {
+        Ty::Named(n, args) => {
+            out.push(n.clone());
+            for a in args {
+                named_types(a, out);
+            }
+        }
+        Ty::Set(t, _) if matches!(&**t, Ty::Tuple(ts) if ts.len() == 2 || ts.len() == 3) => {
+            out.push("RsTupleKeys".into());
+            named_types(t, out);
+        }
+        Ty::Vec(t) | Ty::Set(t, _) | Ty::Option(t) | Ty::Range(t) | Ty::Iter(t) => {
+            named_types(t, out);
+        }
+        Ty::Map(k, v, _) | Ty::Result(k, v) => {
+            if matches!(&**k, Ty::Tuple(ts) if ts.len() == 2 || ts.len() == 3) {
+                out.push("RsTupleKeys".into());
+            }
+            named_types(k, out);
+            named_types(v, out);
+        }
+        Ty::Tuple(ts) => {
+            if ts.len() == 1 {
+                out.push("RsTuple1".into());
+            }
+            for t in ts {
+                named_types(t, out);
+            }
+        }
+        Ty::Fn(ps, r) => {
+            for p in ps {
+                named_types(p, out);
+            }
+            named_types(r, out);
+        }
+        _ => {}
+    }
+}
+
+/// Whether `name` appears in `block` other than as the function of a call: a closure
+/// parameter passed on or stored escapes.
+fn used_as_value(block: &syn::Block, name: &str) -> bool {
+    use syn::visit::Visit;
+    struct V<'a> {
+        name: &'a str,
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for V<'_> {
+        fn visit_expr_call(&mut self, c: &'ast syn::ExprCall) {
+            // `handler(e)`: a call, not a use as a value.
+            if !matches!(&*c.func, syn::Expr::Path(p) if p.path.is_ident(self.name)) {
+                self.visit_expr(&c.func);
+            }
+            for a in &c.args {
+                self.visit_expr(a);
+            }
+        }
+        fn visit_expr_path(&mut self, p: &'ast syn::ExprPath) {
+            if p.path.is_ident(self.name) {
+                self.found = true;
+            }
+        }
+    }
+    let mut v = V { name, found: false };
+    v.visit_block(block);
+    v.found
+}
+
+/// `a == b` for a payload field, written out where Swift has no `==` (arrays of tuples).
+fn equality_term(a: &str, b: &str, t: &Ty) -> String {
+    match t {
+        Ty::Vec(i) if matches!(**i, Ty::Tuple(_)) => {
+            format!("{a}.count == {b}.count && zip({a}, {b}).allSatisfy {{ $0 == $1 }}")
+        }
+        Ty::Option(i) if matches!(**i, Ty::Tuple(_)) => {
+            format!("({a} == nil && {b} == nil || {a} != nil && {b} != nil && {a}! == {b}!)")
+        }
+        _ => format!("{a} == {b}"),
+    }
+}
+
+/// `hasher.combine(a)` for a payload field, element by element for tuples.
+fn hash_term(a: &str, t: &Ty) -> String {
+    match t {
+        Ty::Vec(i) if matches!(**i, Ty::Tuple(_)) => {
+            let Ty::Tuple(ts) = &**i else { unreachable!() };
+            let parts: Vec<String> = (0..ts.len())
+                .map(|k| format!("hasher.combine(x.{k})"))
+                .collect();
+            format!("for x in {a} {{ {} }}", parts.join("; "))
+        }
+        Ty::Option(i) if matches!(**i, Ty::Tuple(_)) => {
+            let Ty::Tuple(ts) = &**i else { unreachable!() };
+            let parts: Vec<String> = (0..ts.len())
+                .map(|k| format!("hasher.combine(x.{k})"))
+                .collect();
+            format!("if let x = {a} {{ {} }}", parts.join("; "))
+        }
+        _ => format!("hasher.combine({a})"),
+    }
+}
+
+/// `a < b` for a payload field: arrays lexicographically, `None` before `Some`, `false`
+/// before `true`, as Rust orders them.
+fn less_term(a: &str, b: &str, t: &Ty) -> String {
+    match t {
+        Ty::Vec(i) if matches!(**i, Ty::Tuple(_)) => {
+            format!("{a}.lexicographicallyPrecedes({b}, by: {{ $0 < $1 }})")
+        }
+        Ty::Vec(_) => format!("{a}.lexicographicallyPrecedes({b})"),
+        Ty::Option(i) => format!(
+            "({a} == nil ? {b} != nil : ({b} != nil && {}))",
+            less_term(&format!("{a}!"), &format!("{b}!"), i)
+        ),
+        Ty::Bool => format!("(!{a} && {b})"),
+        _ => format!("{a} < {b}"),
     }
 }
 

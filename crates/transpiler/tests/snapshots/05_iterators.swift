@@ -23,8 +23,8 @@ func evensSquared(_ limit: UInt32) -> [UInt32] {
 }
 
 func report(_ names: [String]) -> String {
-    names.enumerated().map { pair1 in
-        let (i, name) = pair1
+    names.enumerated().map { pair2 in
+        let (i, name) = pair2
         return "\(rsPad("\(i + 1)", 2, ">", " ")). \(name)"
     }.joined(separator: "\n")
 }
@@ -149,10 +149,6 @@ extension Array {
         if count > length { removeLast(count - length) } else { append(contentsOf: repeatElement(value, count: length - count)) }
     }
 
-    mutating func fill(_ value: Element) {
-        self = Array(repeating: value, count: count)
-    }
-
     mutating func rotateLeft(_ n: Int) {
         guard !isEmpty else { return }
         let k = n % count
@@ -214,15 +210,8 @@ extension Sequence {
         return nil
     }
 
-    func stepBy(_ step: Int) -> [Element] {
-        var out: [Element] = []
-        var i = 0
-        for x in self {
-            if i % step == 0 { out.append(x) }
-            i += 1
-        }
-        return out
-    }
+    /// `iter.step_by(n)`: lazily, the sequence may be endless.
+    func stepBy(_ step: Int) -> RsStepBy<Self> { RsStepBy(base: makeIterator(), step: step) }
 
     /// `iter.scan(state, f)`: `f` changes the state and gives the next value, `nil` to stop.
     func rsScan<S, T>(_ initial: S, _ f: (inout S, Element) throws -> T?) rethrows -> [T] {
@@ -281,6 +270,29 @@ extension Sequence {
     }
 }
 
+/// `iter.step_by(n)`.
+struct RsStepBy<Base: Sequence>: Sequence, IteratorProtocol {
+    var base: Base.Iterator
+    let step: Int
+    var started = false
+
+    init(base: Base.Iterator, step: Int) {
+        self.base = base
+        self.step = step
+    }
+
+    mutating func next() -> Base.Element? {
+        if !started {
+            started = true
+            return base.next()
+        }
+        for _ in 1..<step {
+            if base.next() == nil { return nil }
+        }
+        return base.next()
+    }
+}
+
 extension Array where Element: Equatable {
     mutating func dedup() {
         var out: [Element] = []
@@ -299,6 +311,30 @@ extension Array where Element: Comparable {
             if self[mid] < x { lo = mid + 1 } else { hi = mid }
         }
         return .failure(RsNotFound(index: lo))
+    }
+}
+
+extension Array {
+    /// `v.binary_search_by(|x| x.cmp(&target))`.
+    func binarySearchBy(_ compare: (Element) -> Ordering) -> Result<Int, RsNotFound> {
+        var lo = 0, hi = count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            switch compare(self[mid]) {
+            case .equal: return .success(mid)
+            case .less: lo = mid + 1
+            case .greater: hi = mid
+            }
+        }
+        return .failure(RsNotFound(index: lo))
+    }
+
+    /// `v.binary_search_by_key(&k, |x| x.key)`.
+    func binarySearchByKey<K: Comparable>(_ key: K, _ of: (Element) -> K) -> Result<Int, RsNotFound> {
+        binarySearchBy { x in
+            let k = of(x)
+            return k == key ? .equal : (k < key ? .less : .greater)
+        }
     }
 }
 

@@ -9,7 +9,7 @@ use crate::expr::{Ex, P_PRIMARY};
 use crate::translate::Translator;
 use crate::ty::Ty;
 
-fn macro_name(mac: &Macro) -> String {
+pub fn macro_name(mac: &Macro) -> String {
     mac.path
         .segments
         .last()
