@@ -106,7 +106,7 @@ pub struct Footer {
     pub ecosystem: &'static str,
     pub ecosystem_text: &'static str,
     pub here: &'static str,
-    pub projects: [&'static str; 6],
+    pub projects: [&'static str; 7],
     /// The signature: "Designed and built by", then where it was made.
     pub by: &'static str,
     pub crafted: &'static str,
@@ -315,7 +315,7 @@ static FR: Dict = Dict {
         made_with: "Site fait avec Active",
         license: "Licence",
         ecosystem: "Écosystème",
-        ecosystem_text: "Six projets Rust d'un même auteur, faits pour travailler ensemble : du front-end à la base de données, et jusqu'aux apps iPhone.",
+        ecosystem_text: "Sept projets Rust d'un même auteur, faits pour travailler ensemble : du front-end à la base de données, du TypeScript aux apps iPhone.",
         here: "Vous êtes ici",
         projects: [
             "Front-end : composants, SSR, îlots WebAssembly",
@@ -324,6 +324,7 @@ static FR: Dict = Dict {
             "ORM asynchrone typé, SQL et NoSQL",
             "Le framework full-stack qui les réunit",
             "Des apps SwiftUI écrites en Rust",
+            "TypeScript et JavaScript traduits en Rust",
         ],
         by: "Conçu et développé par",
         crafted: "Fabriqué en Rust, en France",
@@ -526,7 +527,7 @@ static EN: Dict = Dict {
         made_with: "Site made with Active",
         license: "License",
         ecosystem: "Ecosystem",
-        ecosystem_text: "Six Rust projects by one author, made to work together: from the front end to the database, and even to iPhone apps.",
+        ecosystem_text: "Seven Rust projects by one author, made to work together: from the front end to the database, from TypeScript to iPhone apps.",
         here: "You are here",
         projects: [
             "Front-end: components, SSR, WebAssembly islands",
@@ -535,6 +536,7 @@ static EN: Dict = Dict {
             "Async, type-safe ORM, SQL & NoSQL",
             "The full-stack framework that unites them",
             "SwiftUI apps written in Rust",
+            "TypeScript & JavaScript translated to Rust",
         ],
         by: "Designed & built by",
         crafted: "Crafted in Rust, in France",

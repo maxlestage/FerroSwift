@@ -2239,15 +2239,32 @@ a:hover > .arrow {
   overflow: clip;
 }
 
+/* The last project fills the rest of its row: no empty cell shows the hairlines' color. */
 @media (min-width: 640px) {
   .eco-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .eco-grid > li:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
   }
 }
 
 @media (min-width: 980px) {
   .eco-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .eco-grid > li:last-child:nth-child(odd) {
+    grid-column: auto;
+  }
+
+  .eco-grid > li:last-child:nth-child(3n + 1) {
+    grid-column: 1 / -1;
+  }
+
+  .eco-grid > li:last-child:nth-child(3n + 2) {
+    grid-column: span 2;
   }
 }
 
