@@ -63,6 +63,16 @@ pub fn wrap(ex: &Ex, min: u8) -> String {
     }
 }
 
+/// A value bound in an `if let`, `guard let` or `while let`: a trailing closure is not
+/// allowed there, so `x.map { … }` is parenthesized.
+pub fn condition_value(code: String) -> String {
+    if code.ends_with('}') {
+        format!("({code})")
+    } else {
+        code
+    }
+}
+
 /// `a.b().c()` → `a`.
 pub fn root_receiver(e: &Expr) -> &Expr {
     match e {
@@ -287,8 +297,8 @@ impl Translator<'_> {
                 );
                 return Ex::new(code, P_TRY, Ty::Result(Box::new(ok), Box::new(err)));
             }
-            if matches!(err, Ty::Str) {
-                self.helper("StringError");
+            if let Some(h) = crate::translate::value_error_helper(&err) {
+                self.helper(h);
             }
             self.note_support_types(&err);
             let code = match (ok.swift(), err.swift()) {
@@ -1022,9 +1032,19 @@ impl Translator<'_> {
         let Some(t) = target.swift() else {
             return v;
         };
-        // Same Swift type: nothing to convert (`i32` and `usize` are both `Int`).
+        // `x as i32` from a type of 32 bits or more: Swift's `Int` has 64, the 32 are kept.
+        if let (Ty::Int(from), Ty::Int(IntKind::I32)) = (&v.ty, &target) {
+            if *from != IntKind::I32 && from.rust_bits() >= 32 {
+                return Ex::primary(
+                    format!("Int(Int32(truncatingIfNeeded: {}))", v.code),
+                    target,
+                );
+            }
+        }
+        // Same Swift type: nothing to convert (`i64` and `usize` are both `Int`), but the
+        // value now has the target's type.
         if v.ty.swift().as_deref() == Some(t.as_str()) {
-            return v;
+            return Ex { ty: target, ..v };
         }
         match (&v.ty, &target) {
             (Ty::Bool, Ty::Int(_)) => Ex::new(format!("({} ? 1 : 0)", v.code), P_PRIMARY, target),
@@ -1069,15 +1089,6 @@ impl Translator<'_> {
                 } else {
                     Ex::primary(format!("{t}(rsInt({exact}.self, {}))", v.code), target)
                 }
-            }
-            // `x as i32` from a type of 32 bits or more: Swift's `Int` has 64, the 32 are kept.
-            (Ty::Int(from), Ty::Int(IntKind::I32))
-                if *from != IntKind::I32 && from.rust_bits() >= 32 =>
-            {
-                Ex::primary(
-                    format!("Int(Int32(truncatingIfNeeded: {}))", v.code),
-                    target,
-                )
             }
             // Narrowing, or a negative value made unsigned: Rust's `as` truncates.
             (Ty::Int(from), Ty::Int(to))
@@ -1213,7 +1224,10 @@ impl Translator<'_> {
                 }
             }
         };
-        self.prelude(format!("guard let {tmp} = {} else {{ {exit} }}", v.code));
+        self.prelude(format!(
+            "guard let {tmp} = {} else {{ {exit} }}",
+            condition_value(v.code)
+        ));
         Ex::primary(tmp, item)
     }
 

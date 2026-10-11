@@ -15,6 +15,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("string", &[], STRING),
     ("char", &[], CHAR),
     ("vec", &["Ordering"], VEC),
+    ("binary_search", &["Ordering", "IntError"], BINARY_SEARCH),
     ("reverse", &[], REVERSE),
     ("try_from", &["debug_custom", "int_bounds"], TRY_FROM),
     ("int_bounds", &[], INT_BOUNDS),
@@ -32,9 +33,14 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("result", &[], RESULT),
     ("int", &[], INT),
     ("mem", &[], MEM),
+    ("refcell", &["debug_custom", "mem"], REFCELL),
     ("async_result", &[], ASYNC_RESULT),
     ("eprint", &[], EPRINT),
     ("StringError", &[], STRING_ERROR),
+    ("IntError", &[], INT_ERROR),
+    ("FloatError", &[], FLOAT_ERROR),
+    ("BoolError", &[], BOOL_ERROR),
+    ("CharError", &[], CHAR_ERROR),
     ("ParseError", &[], PARSE_ERROR),
     ("color_hex", &[], COLOR_HEX),
 ];
@@ -425,7 +431,21 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
             out += custom.debugDescription
             return
         }
-        let name = rsTypeName(value)
+        let name = (value as? RsDebugNamed)?.rsDebugName ?? rsTypeName(value)
+        // `Mutex { data: 1, poisoned: false, .. }`.
+        if name == "Mutex" || name == "RwLock", let data = mirror.children.first?.value {
+            out += name
+            if pretty {
+                out += " {\n" + pad + "data: "
+                rsDebugWrite(data, pretty, level + 1, &out, style)
+                out += ",\n" + pad + "poisoned: false,\n" + pad + "..\n" + end + "}"
+            } else {
+                out += " { data: "
+                rsDebugWrite(data, false, level, &out, style)
+                out += ", poisoned: false, .. }"
+            }
+            return
+        }
         let children = mirror.children.filter { !($0.label ?? "").hasPrefix("$") }
         if children.isEmpty {
             out += name
@@ -468,6 +488,8 @@ private func rsDebugFloat<F: BinaryFloatingPoint & LosslessStringConvertible>(_ 
 const DEBUG_CUSTOM: &str = r#"
 /// Support types with their own `{:?}` text.
 protocol RsDebugCustom { var rsDebugText: String { get } }
+/// Support types printed by `{:?}` under Rust's name (`RefCell { value: 1 }`).
+protocol RsDebugNamed { var rsDebugName: String { get } }
 "#;
 
 const PAD: &str = r#"
@@ -550,6 +572,16 @@ extension String {
         return String(decoding: bytes[start..<end], as: UTF8.self)
     }
 
+    /// `s.get(a..b)`: the slice when both byte offsets fall on character boundaries.
+    func rsGet(_ r: some RangeExpression<Int>) -> String? {
+        let bytes = Array(utf8)
+        let range = r.relative(to: bytes)
+        guard range.lowerBound >= 0, range.upperBound <= bytes.count else { return nil }
+        func boundary(_ i: Int) -> Bool { i == bytes.count || bytes[i] & 0xC0 != 0x80 }
+        guard boundary(range.lowerBound), boundary(range.upperBound) else { return nil }
+        return String(decoding: bytes[range], as: UTF8.self)
+    }
+
     /// `s.find(p)`: the byte offset of the first occurrence.
     func find(_ pattern: String) -> Int? {
         guard let r = range(of: pattern) else { return nil }
@@ -578,6 +610,73 @@ extension String {
     }
 
     func trimMatches(_ p: String) -> String { trimStartMatches(p).trimEndMatches(p) }
+
+    /// `s.match_indices(p)`: the byte offset of each match with the matched text.
+    func matchIndices(_ p: String) -> [(Int, String)] {
+        var out: [(Int, String)] = []
+        guard !p.isEmpty else { return out }
+        var from = startIndex
+        while from < endIndex, let r = range(of: p, range: from..<endIndex) {
+            out.append((utf8.distance(from: startIndex, to: r.lowerBound), p))
+            from = r.upperBound
+        }
+        return out
+    }
+
+    /// `s.match_indices(char::is_numeric)`.
+    func matchIndices(where p: (Character) -> Bool) -> [(Int, String)] {
+        var out: [(Int, String)] = []
+        var offset = 0
+        for s in unicodeScalars {
+            if p(Character(s)) { out.append((offset, String(s))) }
+            offset += s.utf8.count
+        }
+        return out
+    }
+
+    /// `s.retain(|c| …)`: keeps the characters the predicate accepts.
+    mutating func retain(_ keep: (Character) -> Bool) {
+        self = String(String.UnicodeScalarView(unicodeScalars.filter { keep(Character($0)) }))
+    }
+
+    /// `s.drain(a..b)`: removes and returns the text between two byte offsets.
+    mutating func drain(_ r: some RangeExpression<Int>) -> String {
+        let bytes = Array(utf8)
+        let range = r.relative(to: bytes)
+        let removed = String(decoding: bytes[range], as: UTF8.self)
+        self = String(decoding: bytes[..<range.lowerBound] + bytes[range.upperBound...], as: UTF8.self)
+        return removed
+    }
+
+    /// `s.drain(..)`.
+    mutating func drain(_ r: UnboundedRange) -> String {
+        defer { removeAll() }
+        return self
+    }
+
+    /// `s.split_off(n)`: the text from a byte offset, removed from `s`.
+    mutating func splitOff(_ at: Int) -> String {
+        let tail = rsSlice(at, utf8.count)
+        self = rsSlice(0, at)
+        return tail
+    }
+
+    /// `s.to_ascii_uppercase()`: only the ASCII letters change.
+    func toAsciiUppercase() -> String {
+        String(String.UnicodeScalarView(unicodeScalars.map { s in
+            s.value >= 97 && s.value <= 122 ? UnicodeScalar(s.value - 32)! : s
+        }))
+    }
+
+    /// `s.to_ascii_lowercase()`.
+    func toAsciiLowercase() -> String {
+        String(String.UnicodeScalarView(unicodeScalars.map { s in
+            s.value >= 65 && s.value <= 90 ? UnicodeScalar(s.value + 32)! : s
+        }))
+    }
+
+    mutating func makeAsciiUppercase() { self = toAsciiUppercase() }
+    mutating func makeAsciiLowercase() { self = toAsciiLowercase() }
 
     /// `s.replacen(from, to, n)`: the first `n` occurrences.
     func replacen(_ from: String, _ to: String, _ n: Int) -> String {
@@ -896,12 +995,51 @@ extension Array {
         stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
     }
 
+    /// `v.rchunks(n)`: the chunks from the end.
+    func rchunks(_ size: Int) -> [[Element]] {
+        var out: [[Element]] = []
+        var end = count
+        while end > 0 {
+            let start = Swift.max(0, end - size)
+            out.append(Array(self[start..<end]))
+            end = start
+        }
+        return out
+    }
+
+    /// `v.partition_point(|x| …)`: the first index whose element fails the predicate, by
+    /// binary search.
+    func partitionPoint(_ belongsToFirst: (Element) throws -> Bool) rethrows -> Int {
+        var lo = 0
+        var hi = count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if try belongsToFirst(self[mid]) { lo = mid + 1 } else { hi = mid }
+        }
+        return lo
+    }
+
     mutating func sortBy(_ compare: (Element, Element) throws -> Ordering) rethrows {
         try sort { try compare($0, $1) == .less }
     }
 
     mutating func sortByKey<K: Comparable>(_ key: (Element) throws -> K) rethrows {
         try sort { try key($0) < key($1) }
+    }
+}
+
+extension MutableCollection {
+    /// `v[..n].copy_from_slice(&src)`.
+    mutating func copyFromSlice(_ source: [Element]) {
+        precondition(
+            source.count == count,
+            "source slice length (\(source.count)) does not match destination slice length (\(count))"
+        )
+        var i = startIndex
+        for x in source {
+            self[i] = x
+            formIndex(after: &i)
+        }
     }
 }
 
@@ -1028,36 +1166,29 @@ extension Array where Element: Equatable {
     }
 }
 
-extension Array where Element: Comparable {
-    /// `v.binary_search(&x)`: `.success(index)` or `.failure(insertion point)`.
-    func binarySearch(_ x: Element) -> Result<Int, RsNotFound> {
-        var lo = 0, hi = count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            if self[mid] == x { return .success(mid) }
-            if self[mid] < x { lo = mid + 1 } else { hi = mid }
-        }
-        return .failure(RsNotFound(index: lo))
-    }
-}
+"#;
 
+const BINARY_SEARCH: &str = r#"
 extension Array {
-    /// `v.binary_search_by(|x| x.cmp(&target))`.
-    func binarySearchBy(_ compare: (Element) -> Ordering) -> Result<Int, RsNotFound> {
-        var lo = 0, hi = count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            switch compare(self[mid]) {
-            case .equal: return .success(mid)
-            case .less: lo = mid + 1
-            case .greater: hi = mid
-            }
+    /// `v.binary_search_by(|x| x.cmp(&target))`: Rust's own search, so that the same match
+    /// is found among equal elements; `.failure` carries the insertion point.
+    func binarySearchBy(_ compare: (Element) -> Ordering) -> Result<Int, Int> {
+        var size = count
+        if size == 0 { return .failure(0) }
+        var base = 0
+        while size > 1 {
+            let half = size / 2
+            let mid = base + half
+            if compare(self[mid]) != .greater { base = mid }
+            size -= half
         }
-        return .failure(RsNotFound(index: lo))
+        let cmp = compare(self[base])
+        if cmp == .equal { return .success(base) }
+        return .failure(base + (cmp == .less ? 1 : 0))
     }
 
     /// `v.binary_search_by_key(&k, |x| x.key)`.
-    func binarySearchByKey<K: Comparable>(_ key: K, _ of: (Element) -> K) -> Result<Int, RsNotFound> {
+    func binarySearchByKey<K: Comparable>(_ key: K, _ of: (Element) -> K) -> Result<Int, Int> {
         binarySearchBy { x in
             let k = of(x)
             return k == key ? .equal : (k < key ? .less : .greater)
@@ -1065,7 +1196,12 @@ extension Array {
     }
 }
 
-struct RsNotFound: Error { let index: Int }
+extension Array where Element: Comparable {
+    /// `v.binary_search(&x)`: `.success(index)` or `.failure(insertion point)`.
+    func binarySearch(_ x: Element) -> Result<Int, Int> {
+        binarySearchBy { $0 == x ? .equal : ($0 < x ? .less : .greater) }
+    }
+}
 "#;
 
 const ITER: &str = r#"
@@ -1422,6 +1558,37 @@ func rsReplace<T>(_ place: inout T, _ value: T) -> T {
 }
 "#;
 
+const REFCELL: &str = r#"
+/// `RefCell<T>`, `Cell<T>`, `Mutex<T>`, `RwLock<T>`: a value shared by reference and changed
+/// in place, as the clones of an `Rc` see it.
+final class RsRefCell<T> {
+    var value: T
+    /// The Rust type, for `{:?}`.
+    let kind: String
+
+    init(_ value: T, kind: String = "RefCell") {
+        self.value = value
+        self.kind = kind
+    }
+
+    /// `cell.replace(x)`, `cell.take()`.
+    func replace(_ newValue: T) -> T { rsReplace(&value, newValue) }
+}
+
+extension RsRefCell: Equatable where T: Equatable {
+    static func == (lhs: RsRefCell, rhs: RsRefCell) -> Bool { lhs.value == rhs.value }
+}
+
+extension RsRefCell: Comparable where T: Comparable {
+    static func < (lhs: RsRefCell, rhs: RsRefCell) -> Bool { lhs.value < rhs.value }
+}
+
+extension RsRefCell: RsDebugNamed, CustomReflectable {
+    var rsDebugName: String { kind }
+    var customMirror: Mirror { Mirror(self, children: ["value": value], displayStyle: .struct) }
+}
+"#;
+
 const EPRINT: &str = r#"
 /// `eprintln!`: a line on the standard error.
 func rsEprint(_ text: String, terminator: String = "\n") {
@@ -1432,6 +1599,34 @@ func rsEprint(_ text: String, terminator: String = "\n") {
 const STRING_ERROR: &str = r#"
 /// Rust functions returning `Result<T, String>` throw their message.
 extension String: @retroactive Error {}
+"#;
+
+const INT_ERROR: &str = r#"
+/// Rust functions returning `Result<T, i32>` throw the number.
+extension Int: @retroactive Error {}
+extension Int8: @retroactive Error {}
+extension Int16: @retroactive Error {}
+extension Int32: @retroactive Error {}
+extension UInt: @retroactive Error {}
+extension UInt8: @retroactive Error {}
+extension UInt16: @retroactive Error {}
+extension UInt32: @retroactive Error {}
+"#;
+
+const FLOAT_ERROR: &str = r#"
+/// Rust functions returning `Result<T, f64>` throw the number.
+extension Double: @retroactive Error {}
+extension Float: @retroactive Error {}
+"#;
+
+const BOOL_ERROR: &str = r#"
+/// Rust functions returning `Result<T, bool>` throw the flag.
+extension Bool: @retroactive Error {}
+"#;
+
+const CHAR_ERROR: &str = r#"
+/// Rust functions returning `Result<T, char>` throw the character.
+extension Character: @retroactive Error {}
 "#;
 
 const PARSE_ERROR: &str = r#"

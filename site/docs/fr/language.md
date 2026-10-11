@@ -25,6 +25,7 @@ FerroSwift traduit du Rust ordinaire — le code que vous écrivez pour le modè
 | `(A,)` | `RsTuple1<A>`, une struct du fichier de support (Swift n’a pas de tuple à un élément) |
 | `BinaryHeap<T>` | `RsBinaryHeap<T>`, un tas du fichier de support, disposé comme celui de Rust ; un tuple dans le tas, ou dans un `Reverse`, est rangé en `RsOrd2` et rendu comme tuple |
 | `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<T>` | `T` |
+| `RefCell<T>`, `Cell<T>`, `Mutex<T>`, `RwLock<T>` | `RsRefCell<T>`, une classe qui porte la valeur : les clones d’un `Rc` la partagent |
 | `&T`, `&mut T` | `T` (`inout T` pour un paramètre `&mut`) |
 | `impl Trait`, `dyn Trait` | `some Proto`, `any Proto` |
 | `fn(A) -> B`, closures | `(A) -> B` |
@@ -65,7 +66,7 @@ Les closures deviennent des closures Swift (`|x| x * 2` → `{ x in x * 2 }`), e
 
 ## Les erreurs
 
-Une fonction qui renvoie `Result<T, E>` devient une fonction qui `throws(E)` ; `?` devient `try`, `Err(e)` un `throw`, et un `match` sur un `Result` attrape l’erreur :
+Une fonction qui renvoie `Result<T, E>` devient une fonction qui `throws(E)` ; `?` devient `try`, `Err(e)` un `throw`, et un `match` sur un `Result` attrape l’erreur. Une erreur qui est une `String`, un nombre, un `bool` ou un `char` est levée telle quelle (le fichier de support fait du type une `Error`) :
 
 ```rust
 fn check(name: &str) -> Result<&str, LoginError> {
@@ -93,7 +94,7 @@ Les enums d’erreur se conforment à `Error`. Le `throws` typé demande Swift 6
 
 ## Chaînes et formatage
 
-`format!`, `println!`, `eprintln!` et `write!` deviennent de l’interpolation de chaînes. Les valeurs s’affichent exactement comme en Rust grâce à de petites fonctions du fichier de support : `{}` de `1.0` donne `1`, `{:.2}` arrondit de la même façon, `{:?}` écrit `Some(Point { x: 1.0, y: 2.5 })`, et largeurs, alignements et remplissages (`{:>8}`, `{:05}`) sont conservés — dans `{:>7?}` ils atteignent les nombres à l’intérieur de la valeur, comme avec le `Debug` dérivé de Rust. Les méthodes de chaînes courantes ont leur équivalent Swift (`trim` → `trimmingCharacters(in:)`, `split` → `components(separatedBy:)`, `to_uppercase` → `uppercased()`, `starts_with` → `hasPrefix`…). `s.chars()` parcourt les scalaires Unicode, comme Rust (`s.rsChars`) : `chars().count()`, `rev()` et `nth()` donnent le résultat de Rust sur les accents combinants et les séquences d’emojis, que le parcours propre à Swift regroupe en un seul caractère.
+`format!`, `println!`, `eprintln!` et `write!` deviennent de l’interpolation de chaînes. Les valeurs s’affichent exactement comme en Rust grâce à de petites fonctions du fichier de support : `{}` de `1.0` donne `1`, `{:.2}` arrondit de la même façon, `{:?}` écrit `Some(Point { x: 1.0, y: 2.5 })`, et largeurs, alignements et remplissages (`{:>8}`, `{:05}`) sont conservés — dans `{:>7?}` ils atteignent les nombres à l’intérieur de la valeur, comme avec le `Debug` dérivé de Rust. Les méthodes de chaînes courantes ont leur équivalent Swift (`trim` → `trimmingCharacters(in:)`, `split` → `components(separatedBy:)`, `to_uppercase` → `uppercased()`, `starts_with` → `hasPrefix`…). `s.chars()` parcourt les scalaires Unicode, comme Rust (`s.rsChars`) : `chars().count()`, `rev()` et `nth()` donnent le résultat de Rust sur les accents combinants et les séquences d’emojis, que le parcours propre à Swift regroupe en un seul caractère. Le motif de `starts_with`, `split`, `find`, `trim_matches`… peut être un texte, un caractère, une fermeture ou un tableau de caractères ; `s.get(a..b)` vaut `None` hors d’une frontière de caractère ; `to_ascii_uppercase` ne change que les lettres ASCII, comme en Rust.
 
 ## Les commentaires
 

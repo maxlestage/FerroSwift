@@ -19,7 +19,7 @@ Write the model with values (structs, enums, `Vec`, `HashMap`) and pass `&mut` t
 
 ## Shared mutability
 
-`Rc<RefCell<T>>`, `Arc<Mutex<T>>`, `Cell<T>` and `Box<T>` become plain `T`. The sharing is lost: two `Rc` clones of the same value become two independent copies, and FerroSwift warns at each `RefCell::new`, `Cell::new`, `Mutex::new` and `RwLock::new`. For state shared between screens, use a model with `#[derive(Observable)]`, which becomes an `@Observable` class (a reference type) — see [SwiftUI in Rust](../swiftui/#state-and-bindings).
+`Box<T>` and `Rc<T>` become plain `T`: an `Rc` of a value is copied, which changes nothing as long as the value is not mutated through the `Rc`. `RefCell<T>`, `Cell<T>`, `Mutex<T>` and `RwLock<T>` become `RsRefCell<T>`, a class of the support file holding the value: `Rc::clone`, `borrow_mut()`, `set()`, `lock().unwrap()`, `Rc::ptr_eq` and `{:?}` (`RefCell { value: 1 }`) behave as in Rust, and a `let mut guard = cell.borrow_mut();` stands for the value itself. What is not modelled: the locks never block (the program is single-threaded), a `Mutex` is never poisoned, `Rc::strong_count` and `Weak` have no equivalent, and cloning a struct that holds a `RefCell` shares the cell rather than copying it. For state shared between screens, a model with `#[derive(Observable)]` becomes an `@Observable` class — see [SwiftUI in Rust](../swiftui/#state-and-bindings).
 
 ## Concurrency and async
 

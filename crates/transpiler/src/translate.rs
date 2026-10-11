@@ -612,9 +612,11 @@ impl<'a> Translator<'a> {
 
     /// The support code that a type written in Swift needs.
     pub fn note_types(&mut self, t: &Ty) {
-        // `Result<T, String>` anywhere: `String` must be an `Error`.
-        if mentions_string_error(t) {
-            self.helper("StringError");
+        // `Result<T, String>`, `Result<T, i32>` anywhere: the value type must be an `Error`.
+        let mut helpers = Vec::new();
+        value_error_helpers(t, &mut helpers);
+        for h in helpers {
+            self.helper(h);
         }
         self.note_support_types(t);
     }
@@ -634,6 +636,7 @@ impl<'a> Translator<'a> {
                 "RsReverse" => "reverse",
                 "RsTupleKeys" => "tuple_keys",
                 "RsOrdTuple" => "ord_tuple",
+                "RsRefCell" => "refcell",
                 _ => continue,
             };
             self.helper(helper);
@@ -2273,12 +2276,14 @@ impl<'a> Translator<'a> {
             Some(_) => "",
         };
         let typed_throws = match &throws {
-            Some(e @ Ty::Named(..)) | Some(e @ Ty::Str) => format!(" throws({})", e.swift_lossy()),
+            Some(e @ (Ty::Named(..) | Ty::Str | Ty::Float(_) | Ty::Bool | Ty::Char)) => {
+                format!(" throws({})", e.swift_lossy())
+            }
             Some(Ty::Int(k)) => format!(" throws({})", k.swift()),
             _ => String::new(),
         };
-        if matches!(throws, Some(Ty::Str)) {
-            self.helper("StringError");
+        if let Some(h) = throws.as_ref().and_then(value_error_helper) {
+            self.helper(h);
         }
         if let Some(e) = &throws {
             self.note_support_types(e);
@@ -2684,18 +2689,48 @@ fn lexicographic_less(swift: &str, fields: &[String]) -> String {
 }
 
 /// Whether a `Result<_, String>` appears in the type.
-fn mentions_string_error(t: &Ty) -> bool {
+/// The support code making a plain value type an `Error`: `Result<T, String>`,
+/// `Result<T, i32>`, `Result<T, f64>`, `Result<T, bool>`, `Result<T, char>`.
+pub fn value_error_helper(err: &Ty) -> Option<&'static str> {
+    Some(match err {
+        Ty::Str => "StringError",
+        Ty::Int(_) => "IntError",
+        Ty::Float(_) => "FloatError",
+        Ty::Bool => "BoolError",
+        Ty::Char => "CharError",
+        _ => return None,
+    })
+}
+
+/// The value-error helpers that the `Result`s mentioned by `t` need.
+fn value_error_helpers(t: &Ty, out: &mut Vec<&'static str>) {
     match t {
         Ty::Result(ok, err) => {
-            matches!(**err, Ty::Str) || mentions_string_error(ok) || mentions_string_error(err)
+            if let Some(h) = value_error_helper(err) {
+                out.push(h);
+            }
+            value_error_helpers(ok, out);
+            value_error_helpers(err, out);
         }
         Ty::Vec(t) | Ty::Set(t, _) | Ty::Option(t) | Ty::Range(t) | Ty::Iter(t) => {
-            mentions_string_error(t)
+            value_error_helpers(t, out)
         }
-        Ty::Map(k, v, _) => mentions_string_error(k) || mentions_string_error(v),
-        Ty::Tuple(ts) | Ty::Named(_, ts) => ts.iter().any(mentions_string_error),
-        Ty::Fn(ps, r) => ps.iter().any(mentions_string_error) || mentions_string_error(r),
-        _ => false,
+        Ty::Map(k, v, _) => {
+            value_error_helpers(k, out);
+            value_error_helpers(v, out);
+        }
+        Ty::Tuple(ts) | Ty::Named(_, ts) => {
+            for t in ts {
+                value_error_helpers(t, out);
+            }
+        }
+        Ty::Fn(ps, r) => {
+            for p in ps {
+                value_error_helpers(p, out);
+            }
+            value_error_helpers(r, out);
+        }
+        _ => {}
     }
 }
 
@@ -2792,6 +2827,10 @@ fn equality_term(a: &str, b: &str, t: &Ty) -> String {
 /// `hasher.combine(a)` for a payload field, element by element for tuples.
 fn hash_term(a: &str, t: &Ty) -> String {
     match t {
+        Ty::Tuple(ts) => (0..ts.len())
+            .map(|k| format!("hasher.combine({a}.{k})"))
+            .collect::<Vec<_>>()
+            .join("; "),
         Ty::Vec(i) if matches!(**i, Ty::Tuple(_)) => {
             let Ty::Tuple(ts) = &**i else { unreachable!() };
             let parts: Vec<String> = (0..ts.len())
@@ -2830,6 +2869,8 @@ fn less_term(a: &str, b: &str, t: &Ty) -> String {
 /// `Vec<(A, B)>`: Swift cannot synthesize `==` or `hash` for it.
 fn has_tuple_collection(t: &Ty) -> bool {
     match t {
+        // Swift synthesizes nothing for a tuple payload.
+        Ty::Tuple(_) => true,
         Ty::Vec(i) | Ty::Option(i) | Ty::Set(i, _) => {
             matches!(**i, Ty::Tuple(_)) || has_tuple_collection(i)
         }
