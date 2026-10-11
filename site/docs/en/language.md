@@ -27,6 +27,7 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 | `Box<T>`, `Rc<T>`, `Arc<T>`, `Cow<T>` | `T` |
 | `RefCell<T>`, `Cell<T>`, `Mutex<T>`, `RwLock<T>` | `RsRefCell<T>`, a class holding the value: `Rc` clones share it |
 | `&T`, `&mut T` | `T` (`inout T` for a `&mut` parameter; a method returning `&mut T` returns a `WritableKeyPath<Self, T>`) |
+| `std::time::Duration` | `RsDuration` of the support file: seconds and nanoseconds, with Rust's constructors, accessors, operators and `{:?}` (`1.5s`, `250ms`) |
 | `&mut v[a..b]` | a copy of the part, written back after the call; `chunks_mut` and `split_at_mut` work the same way, their parts written back when the loop iteration ends or after their last use |
 | `impl Trait`, `dyn Trait` | `some Proto`, `any Proto` |
 | `fn(A) -> B`, closures | `(A) -> B` |
@@ -41,13 +42,13 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 - **`impl` blocks** become `extension`s. `fn new(…) -> Self` becomes an `init`, `&mut self` methods become `mutating func`, associated `const`s become `static let`. A method returning `&mut Self` (a builder) is called as a statement, so `a.b().c()` becomes `a.b()` then `a.c()`. A method with the name of a field (`fn count(&self)` next to `count`) becomes a computed property, the field being stored as `_count`.
 - **`impl Iterator for Type`** makes the type a `Sequence`: `for x in Counter { … }`, `.filter`, `.sum()` work on it. Its adapters are lazy, like `(1..)`'s, so an endless iterator ends with `take(5)`; `let mut it = …` keeps an iterator that `next()`, `peek()` and `nth()` advance.
 - **Traits** become `protocol`s; default methods go into a protocol extension, associated types into `associatedtype`. `impl Trait for Type` adds the conformance.
-- **Operator traits** (`Add`, `Sub`, `Mul`, `Neg`…) become operator functions, `impl Index` a `subscript` (with a `set` when `IndexMut` is implemented too); `impl Display` becomes `CustomStringConvertible`. A `fmt` that asks its formatter for the spec (`f.pad(…)`, `f.precision()`, `f.alternate()`, `self.0.fmt(f)`) or lays out a `Debug` with `f.debug_struct(…)` and the other builders is written with a small `RsFormatter` of the support file, so that `{:>8.2}` and `{:#?}` reach it as in Rust.
+- **Operator traits** (`Add`, `Sub`, `Mul`, `Neg`, `BitOr`, `Shl`, the `…Assign` forms…) become operator functions, `impl fmt::Binary` (`LowerHex`, `UpperHex`, `Octal`) the text `{:b}` (`{:x}`, `{:X}`, `{:o}`) writes, `impl Index` a `subscript` (with a `set` when `IndexMut` is implemented too); `impl Display` becomes `CustomStringConvertible`; `impl IntoIterator` makes the type a `Sequence`, `impl FromIterator` its `fromIter` (called by `collect`), `impl Hash` its `hash(into:)`, `impl Extend` and `impl AsRef<str>` plain functions. An argument given to an `impl Into<T>` parameter is converted at the call as `From` gives it (`Value(1)`, `Value([1, 2].map { Value($0) })` for an `impl From<Vec<T>>`). A `fmt` that asks its formatter for the spec (`f.pad(…)`, `f.precision()`, `f.alternate()`, `self.0.fmt(f)`) or lays out a `Debug` with `f.debug_struct(…)` and the other builders is written with a small `RsFormatter` of the support file, so that `{:>8.2}` and `{:#?}` reach it as in Rust.
 - **Generic bounds** become protocol constraints (`T: Display` → `T: CustomStringConvertible`, `T: PartialOrd` → `T: Comparable`); `T: Default` and `T: Into<f64>` use two small protocols of the support file (`RsDefault`, `RsIntoDouble`), which the standard types adopt, and a generic struct deriving `Default` gets its `init()` under `where T: RsDefault`.
 - **Names** follow Swift's conventions (`my_field` → `myField`, `MAX_SIZE` → `maxSize`); a type named like one of Swift's own (`enum Error`, `struct Task`) gets a `Type` suffix (`ErrorType`), and `type Result<T> = std::result::Result<T, Error>` becomes a generic `typealias`.
 - **Conversions:** `impl From<A> for B` becomes an `init`; `impl FromStr for B` and `impl TryFrom<A> for B` become the static functions `fromStr` and `tryFrom`, which `s.parse::<B>()`, `B::from_str(s)`, `B::try_from(x)` and `x.try_into()` call.
 - **Generics** keep their bounds: `fn largest<T: Describe>(items: &[T])` → `func largest<T: Describe>(_ items: [T])`. `where` clauses are kept.
 - **Functions** take unlabeled parameters (`_ name: Type`), so calls look like Rust's.
-- `const` and `static` become global `let`s, `type` aliases become `typealias`es, `mod` blocks are flattened.
+- `const` and `static` become global `let`s (local constants when declared inside a function), `type` aliases become `typealias`es, `mod` blocks are flattened.
 
 ## Expressions and control flow
 
@@ -62,6 +63,8 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 | `for i in 0..n`, `0..=n`, `(0..n).rev()` | `for i in 0..<n`, `0...n`, `(0..<n).reversed()`; a range with computed bounds (`a..b`, `1..=n`) is `a..<max(a, b)`, empty when its end comes first as in Rust, where Swift's range would trap |
 | `if c { a } else { b }` as a value | `c ? a : b` |
 | `v.push(match op { '+' => a + b, … })` | `v.append({ () -> Int in switch op { … } }())` |
+| `[Token::Word(cmd), rest @ ..] if cmd == "set"` | `case _ where tokens.count >= 1 && { if case .word(_) = tokens[0] … }()`, the bindings taken at the start of the arm (`guard case .word(let cmd) = tokens[0]`), the guard evaluated once they are bound |
+| `let f = \|out: &mut Vec<T>\| …; f(&mut v)` | `{ (out: inout [T]) in … }`, `f(&v)` |
 | `Ok(match e { … => return Err(…) })`, `let (a, b) = match op { … => break }` | the value is computed by statements before its use (`let value: Int` then a `switch` assigning it): a `return`, `break` or `?` in a branch acts on the function or the loop |
 | `x as f64`, `n as u8` | `Double(x)`, `UInt8(truncatingIfNeeded: n)` |
 | `matches!(x, Some(1..=5))` | a `switch` that returns a `Bool` |

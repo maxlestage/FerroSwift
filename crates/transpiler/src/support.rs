@@ -33,6 +33,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("utf8", &["debug"], UTF8),
     ("tuple1", &[], TUPLE1),
     ("heap", &[], HEAP),
+    ("duration", &["debug_custom", "display"], DURATION),
     ("tuple_keys", &[], TUPLE_KEYS),
     ("ord_tuple", &[], ORD_TUPLE),
     ("chars", &[], CHARS),
@@ -613,7 +614,7 @@ final class RsFormatter {
     /// `f.pad(s)`: the text cut to the precision and padded to the width.
     func pad(_ s: String) {
         var s = s
-        if let precision = style.precision { s = String(s.prefix(precision)) }
+        if let precision = style.precision { s = String(s.unicodeScalars.prefix(precision)) }
         if let width = style.width { s = rsPad(s, width, style.align ?? "<", style.fill) }
         out += s
     }
@@ -823,9 +824,10 @@ final class RsDebugBuilder {
 "#;
 
 const PAD: &str = r#"
-/// `{:>8}`, `{:<8}`, `{:^8}`: a text padded to a width.
+/// `{:>8}`, `{:<8}`, `{:^8}`: a text padded to a width, counted in scalars as Rust counts
+/// `char`s (a combining mark is one).
 func rsPad(_ s: String, _ width: Int, _ align: Character, _ fill: Character) -> String {
-    let missing = width - s.count
+    let missing = width - s.unicodeScalars.count
     if missing <= 0 { return s }
     let fill = String(fill)
     switch align {
@@ -946,6 +948,19 @@ extension String {
             }
         }
         return out
+    }
+
+    /// `c.escape_unicode()`: every scalar as `\u{…}`.
+    func escapeUnicode() -> String {
+        unicodeScalars.map { "\\u{" + String($0.value, radix: 16) + "}" }.joined()
+    }
+
+    /// `s.replace_range(a..b, "x")`: the bytes of the range replaced.
+    mutating func replaceRange(_ r: some RangeExpression<Int>, _ with: String) {
+        var bytes = Array(utf8)
+        let range = r.relative(to: bytes)
+        bytes.replaceSubrange(range, with: Array(with.utf8))
+        self = String(decoding: bytes, as: UTF8.self)
     }
 
     /// `s.get(a..b)`: the slice when both byte offsets fall on character boundaries.
@@ -1803,6 +1818,50 @@ struct RsIter<Element>: Sequence, IteratorProtocol {
         return out
     }
 
+    /// `it.by_ref().take(n)`: the next `n` items, the others left to the iterator.
+    mutating func takeFirst(_ n: Int) -> [Element] {
+        var out: [Element] = []
+        while out.count < n, let x = next() { out.append(x) }
+        return out
+    }
+
+    /// `it.by_ref().take_while(p)`: the items up to the first refused, which is consumed.
+    mutating func takeWhile(_ keep: (Element) throws -> Bool) rethrows -> [Element] {
+        var out: [Element] = []
+        while let x = next() {
+            if try !keep(x) { break }
+            out.append(x)
+        }
+        return out
+    }
+
+    /// `it.find(p)`: the first item accepted, the following ones left to the iterator.
+    mutating func findFirst(_ test: (Element) throws -> Bool) rethrows -> Element? {
+        while let x = next() {
+            if try test(x) { return x }
+        }
+        return nil
+    }
+
+    /// `it.position(p)`: the rank of the first item accepted.
+    mutating func findPosition(_ test: (Element) throws -> Bool) rethrows -> Int? {
+        var i = 0
+        while let x = next() {
+            if try test(x) { return i }
+            i += 1
+        }
+        return nil
+    }
+
+    /// `it.any(p)`, `it.all(p)`: stop at the first decisive item.
+    mutating func anyItem(_ test: (Element) throws -> Bool) rethrows -> Bool {
+        try findFirst(test) != nil
+    }
+
+    mutating func allItems(_ test: (Element) throws -> Bool) rethrows -> Bool {
+        try findFirst { try !test($0) } == nil
+    }
+
     func makeIterator() -> RsIter<Element> { self }
 }
 "#;
@@ -2580,6 +2639,140 @@ extension RsTuple1: Equatable where T: Equatable {}
 extension RsTuple1: Hashable where T: Hashable {}
 extension RsTuple1: Comparable where T: Comparable {
     static func < (lhs: Self, rhs: Self) -> Bool { lhs._0 < rhs._0 }
+}
+"#;
+
+const DURATION: &str = r#"
+/// `std::time::Duration`: whole seconds and nanoseconds, printed by `{:?}` as Rust does
+/// (`1.5s`, `250ms`, `5ns`).
+struct RsDuration: Equatable, Hashable, Comparable {
+    var secs: UInt64
+    var nanos: UInt32
+
+    static let zero = RsDuration(secs: 0, nanos: 0)
+    static let max = RsDuration(secs: UInt64.max, nanos: 999_999_999)
+
+    init() {
+        secs = 0
+        nanos = 0
+    }
+
+    init(secs: UInt64, nanos: UInt32) {
+        self.secs = secs + UInt64(nanos / 1_000_000_000)
+        self.nanos = nanos % 1_000_000_000
+    }
+
+    static func fromSecs(_ s: UInt64) -> RsDuration { RsDuration(secs: s, nanos: 0) }
+    static func fromMillis(_ ms: UInt64) -> RsDuration { RsDuration(secs: ms / 1000, nanos: UInt32(ms % 1000) * 1_000_000) }
+    static func fromMicros(_ us: UInt64) -> RsDuration { RsDuration(secs: us / 1_000_000, nanos: UInt32(us % 1_000_000) * 1000) }
+    static func fromNanos(_ ns: UInt64) -> RsDuration { RsDuration(secs: ns / 1_000_000_000, nanos: UInt32(ns % 1_000_000_000)) }
+    static func fromSecsF64(_ s: Double) -> RsDuration {
+        precondition(s >= 0 && s.isFinite, "cannot convert float seconds to Duration: value is negative or not finite")
+        let whole = s.rounded(.down)
+        let nanos = ((s - whole) * 1e9).rounded()
+        return RsDuration(secs: UInt64(whole), nanos: UInt32(nanos))
+    }
+    static func fromSecsF32(_ s: Float) -> RsDuration { fromSecsF64(Double(s)) }
+
+    func asSecs() -> UInt64 { secs }
+    func asMillis() -> UInt64 { secs * 1000 + UInt64(nanos / 1_000_000) }
+    func asMicros() -> UInt64 { secs * 1_000_000 + UInt64(nanos / 1000) }
+    func asNanos() -> UInt64 { secs * 1_000_000_000 + UInt64(nanos) }
+    func asSecsF64() -> Double { Double(secs) + Double(nanos) / 1e9 }
+    func asSecsF32() -> Float { Float(asSecsF64()) }
+    func subsecMillis() -> UInt32 { nanos / 1_000_000 }
+    func subsecMicros() -> UInt32 { nanos / 1000 }
+    func subsecNanos() -> UInt32 { nanos }
+    func isZero() -> Bool { secs == 0 && nanos == 0 }
+
+    func checkedAdd(_ o: RsDuration) -> RsDuration? {
+        let (s, overflow) = secs.addingReportingOverflow(o.secs)
+        if overflow { return nil }
+        var total = RsDuration(secs: s, nanos: 0)
+        let n = nanos + o.nanos
+        if n >= 1_000_000_000 {
+            if total.secs == UInt64.max { return nil }
+            total.secs += 1
+            total.nanos = n - 1_000_000_000
+        } else {
+            total.nanos = n
+        }
+        return total
+    }
+    func checkedSub(_ o: RsDuration) -> RsDuration? {
+        if self < o { return nil }
+        var s = secs - o.secs
+        var n: UInt32
+        if nanos >= o.nanos {
+            n = nanos - o.nanos
+        } else {
+            s -= 1
+            n = nanos + 1_000_000_000 - o.nanos
+        }
+        return RsDuration(secs: s, nanos: n)
+    }
+    func saturatingAdd(_ o: RsDuration) -> RsDuration { checkedAdd(o) ?? .max }
+    func saturatingSub(_ o: RsDuration) -> RsDuration { checkedSub(o) ?? .zero }
+    func checkedMul(_ k: UInt32) -> RsDuration? {
+        let totalNanos = UInt64(nanos) * UInt64(k)
+        let extra = totalNanos / 1_000_000_000
+        let (s1, o1) = secs.multipliedReportingOverflow(by: UInt64(k))
+        if o1 { return nil }
+        let (s2, o2) = s1.addingReportingOverflow(extra)
+        if o2 { return nil }
+        return RsDuration(secs: s2, nanos: UInt32(totalNanos % 1_000_000_000))
+    }
+    func mulF64(_ k: Double) -> RsDuration { RsDuration.fromSecsF64(asSecsF64() * k) }
+    func divF64(_ k: Double) -> RsDuration { RsDuration.fromSecsF64(asSecsF64() / k) }
+
+    static func + (a: RsDuration, b: RsDuration) -> RsDuration {
+        guard let r = a.checkedAdd(b) else { fatalError("overflow when adding durations") }
+        return r
+    }
+    static func - (a: RsDuration, b: RsDuration) -> RsDuration {
+        guard let r = a.checkedSub(b) else { fatalError("overflow when subtracting durations") }
+        return r
+    }
+    static func * (a: RsDuration, k: Int) -> RsDuration {
+        guard let r = a.checkedMul(UInt32(k)) else { fatalError("overflow when multiplying duration by scalar") }
+        return r
+    }
+    static func * (k: Int, a: RsDuration) -> RsDuration { a * k }
+    static func / (a: RsDuration, k: Int) -> RsDuration {
+        precondition(k != 0, "divide by zero error when dividing duration by scalar")
+        let s = a.secs / UInt64(k)
+        let carry = a.secs - s * UInt64(k)
+        let extra = carry * 1_000_000_000 / UInt64(k)
+        let n = UInt64(a.nanos) / UInt64(k) + extra
+        return RsDuration(secs: s, nanos: UInt32(n))
+    }
+    static func += (a: inout RsDuration, b: RsDuration) { a = a + b }
+    static func -= (a: inout RsDuration, b: RsDuration) { a = a - b }
+    static func *= (a: inout RsDuration, k: Int) { a = a * k }
+    static func /= (a: inout RsDuration, k: Int) { a = a / k }
+    static func < (a: RsDuration, b: RsDuration) -> Bool {
+        a.secs != b.secs ? a.secs < b.secs : a.nanos < b.nanos
+    }
+}
+
+extension RsDuration: RsDebugCustom {
+    /// `1.5s`, `1.000001s`, `250ms`, `1.5µs`, `5ns`: Rust's `{:?}`.
+    var rsDebugText: String {
+        func decimal(_ whole: UInt64, _ frac: UInt32, _ digits: Int, _ unit: String) -> String {
+            var text = "\(whole)"
+            if frac > 0 {
+                var f = String(frac)
+                f = String(repeating: "0", count: digits - f.count) + f
+                while f.hasSuffix("0") { f.removeLast() }
+                text += "." + f
+            }
+            return text + unit
+        }
+        if secs > 0 { return decimal(secs, nanos, 9, "s") }
+        if nanos >= 1_000_000 { return decimal(UInt64(nanos / 1_000_000), nanos % 1_000_000, 6, "ms") }
+        if nanos >= 1_000 { return decimal(UInt64(nanos / 1_000), nanos % 1_000, 3, "µs") }
+        return "\(nanos)ns"
+    }
 }
 "#;
 

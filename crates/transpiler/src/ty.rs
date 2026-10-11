@@ -450,6 +450,7 @@ pub fn from_name(name: &str, args: Vec<Ty>) -> Ty {
         "f64" => Ty::Float(FloatKind::F64),
         "Vec" | "VecDeque" | "LinkedList" => Ty::Vec(Box::new(arg(0))),
         "BinaryHeap" => Ty::Named("RsBinaryHeap".into(), vec![arg(0)]),
+        "Duration" => Ty::Named("RsDuration".into(), vec![]),
         // `Reverse<T>` written as a type: the support wrapper (its value is `RsReverse(x)`).
         "Reverse" => Ty::Named("RsReverse".into(), args),
         "HashMap" | "IndexMap" => Ty::Map(Box::new(arg(0)), Box::new(arg(1)), false),

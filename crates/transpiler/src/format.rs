@@ -561,6 +561,21 @@ impl Translator<'_> {
                 } else {
                     ""
                 };
+                let trait_name = match spec.kind.as_str() {
+                    "x" => "LowerHex",
+                    "X" => "UpperHex",
+                    "b" => "Binary",
+                    _ => "Octal",
+                };
+                // `impl fmt::Binary for Flags`: the type's own text.
+                let own = match &v.ty {
+                    Ty::Named(n, _) => self.rust_name_of_swift(n).filter(|rust| {
+                        self.syms
+                            .radix_fmt
+                            .contains(&(rust.clone(), trait_name.to_string()))
+                    }),
+                    _ => None,
+                };
                 // A negative number prints its two's complement, in the width of its type.
                 let bits = match &v.ty {
                     Ty::Int(k) if k.signed() => {
@@ -569,7 +584,11 @@ impl Translator<'_> {
                     }
                     _ => x.clone(),
                 };
-                let base = format!("String({bits}, radix: {radix}{upper})");
+                let base = if own.is_some() {
+                    format!("{}.rs{trait_name}", wrap(v, P_PRIMARY))
+                } else {
+                    format!("String({bits}, radix: {radix}{upper})")
+                };
                 if spec.alternate {
                     let prefix = match radix {
                         16 => "0x",
@@ -607,7 +626,10 @@ impl Translator<'_> {
                     self.helper("fixed");
                     format!("rsFixed(Double({x}), {p})")
                 }
-                (Ty::Str, Some(p)) => format!("String({}.prefix({p}))", wrap(v, P_PRIMARY)),
+                // `{:.2}` of a text: its first scalars, as Rust counts `char`s.
+                (Ty::Str, Some(p)) => {
+                    format!("String({}.unicodeScalars.prefix({p}))", wrap(v, P_PRIMARY))
+                }
                 (Ty::Float(_), None) => {
                     self.helper("display");
                     format!("rsDisplay({x})")

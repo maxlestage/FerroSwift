@@ -20,6 +20,9 @@ pub struct CasePats {
     pub lets: Vec<String>,
     /// The pattern matches everything (`_`): the arm can be `default:`.
     pub wildcard: bool,
+    /// Variant patterns with bindings inside a slice (`[Token::Word(cmd), ..]`), with the
+    /// element they match: a guard using the bindings is evaluated after them.
+    pub binding_cases: Vec<(String, String)>,
 }
 
 impl Translator<'_> {
@@ -38,6 +41,7 @@ impl Translator<'_> {
                 guards: Vec::new(),
                 lets: Vec::new(),
                 declare: !declared,
+                binding_cases: Vec::new(),
             };
             let code = self.pat(alt, ty, &mut ctx, true);
             declared = true;
@@ -48,6 +52,7 @@ impl Translator<'_> {
             codes.extend(expand_alternatives(&code));
             out.guards.extend(ctx.guards);
             out.lets.extend(ctx.lets);
+            out.binding_cases.extend(ctx.binding_cases);
         }
         out.code = codes.join(", ");
         out
@@ -139,6 +144,7 @@ impl Translator<'_> {
                             guards: Vec::new(),
                             lets: Vec::new(),
                             declare: cx.declare,
+                            binding_cases: Vec::new(),
                         };
                         let sub_code = self.pat(sub, ty, &mut inner, false);
                         if sub_code != "_" {
@@ -223,6 +229,7 @@ impl Translator<'_> {
                     _ => Ty::Unknown,
                 };
                 let mut inner = PatCx {
+                    binding_cases: Vec::new(),
                     subject: format!("{}._0", cx.subject),
                     guards: Vec::new(),
                     lets: Vec::new(),
@@ -417,6 +424,7 @@ impl Translator<'_> {
             for (i, p) in ts.elems.iter().enumerate() {
                 let Some(f) = st.fields.get(i) else { break };
                 let mut inner = PatCx {
+                    binding_cases: Vec::new(),
                     subject: format!("{subject}.{}", f.swift),
                     guards: Vec::new(),
                     lets: Vec::new(),
@@ -440,6 +448,7 @@ impl Translator<'_> {
                 "value"
             };
             let mut inner = PatCx {
+                binding_cases: Vec::new(),
                 subject: format!("{}.{field}", cx.subject),
                 guards: Vec::new(),
                 lets: Vec::new(),
@@ -481,6 +490,7 @@ impl Translator<'_> {
             guards: Vec::new(),
             lets: Vec::new(),
             declare: cx.declare,
+            binding_cases: Vec::new(),
         };
         let code = self.pat(p, ty, &mut inner, false);
         cx.guards.append(&mut inner.guards);
@@ -549,6 +559,7 @@ impl Translator<'_> {
             let name = crate::expr::member_name(&fp.member);
             let Some(f) = st.field(&name) else { continue };
             let mut inner = PatCx {
+                binding_cases: Vec::new(),
                 subject: format!("{subject}.{}", f.swift),
                 guards: Vec::new(),
                 lets: Vec::new(),
@@ -598,6 +609,7 @@ impl Translator<'_> {
                         i.to_string()
                     };
                     let mut sub = PatCx {
+                        binding_cases: Vec::new(),
                         subject: format!("{}.{member}", inner.subject),
                         guards: Vec::new(),
                         lets: Vec::new(),
@@ -628,10 +640,18 @@ impl Translator<'_> {
                     if is_value_pattern(&code) {
                         cx.guards.push(format!("{code} ~= {}", inner.subject));
                     } else if code.contains("let ") || code.contains("var ") {
-                        self.error(
-                            other.span(),
-                            "bindings nested inside a struct pattern are not supported",
-                        );
+                        // `[Token::Word(cmd), ..]`: the shape is checked in the guard, the
+                        // bindings taken at the start of the arm.
+                        cx.guards.push(format!(
+                            "{{ if case {} = {} {{ return true }}; return false }}()",
+                            wildcard_bindings(&code),
+                            inner.subject
+                        ));
+                        cx.lets.push(format!(
+                            "guard case {code} = {} else {{ fatalError() }}",
+                            inner.subject
+                        ));
+                        cx.binding_cases.push((code.clone(), inner.subject.clone()));
                     } else {
                         cx.guards.push(format!(
                             "{{ if case {code} = {} {{ return true }}; return false }}()",
@@ -696,6 +716,7 @@ impl Translator<'_> {
                 guards: Vec::new(),
                 lets: Vec::new(),
                 declare: cx.declare,
+                binding_cases: Vec::new(),
             };
             self.field_subpattern(p, &item, &mut inner, cx);
         }
@@ -710,6 +731,8 @@ struct PatCx {
     lets: Vec<String>,
     /// Declare the bindings (false for the second alternative of `A(x) | B(x)`).
     declare: bool,
+    /// Variant patterns with bindings on an element, with the element.
+    binding_cases: Vec<(String, String)>,
 }
 
 fn is_rest(p: &Pat) -> bool {
@@ -782,6 +805,23 @@ fn expand_alternatives(code: &str) -> Vec<String> {
             out.push(expanded);
         }
     }
+    out
+}
+
+/// `.word(let cmd)` → `.word(_)`: the pattern with its bindings replaced by wildcards.
+fn wildcard_bindings(code: &str) -> String {
+    let mut out = String::new();
+    let mut rest = code;
+    while let Some(pos) = rest.find("let ").or_else(|| rest.find("var ")) {
+        let (before, after) = rest.split_at(pos);
+        out.push_str(before);
+        let name_end = after[4..]
+            .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '`'))
+            .map_or(after.len(), |i| 4 + i);
+        out.push('_');
+        rest = &after[name_end..];
+    }
+    out.push_str(rest);
     out
 }
 

@@ -31,9 +31,10 @@ func report(_ names: [String]) -> String {
 
 // MARK: - FerroSwift support
 
-/// `{:>8}`, `{:<8}`, `{:^8}`: a text padded to a width.
+/// `{:>8}`, `{:<8}`, `{:^8}`: a text padded to a width, counted in scalars as Rust counts
+/// `char`s (a combining mark is one).
 func rsPad(_ s: String, _ width: Int, _ align: Character, _ fill: Character) -> String {
-    let missing = width - s.count
+    let missing = width - s.unicodeScalars.count
     if missing <= 0 { return s }
     let fill = String(fill)
     switch align {
