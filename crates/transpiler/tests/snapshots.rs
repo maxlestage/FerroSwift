@@ -15,6 +15,7 @@ fn translations_match_their_snapshots() {
         entry_point: false,
         previews: true,
         source_path: None,
+        overflow_checks: false,
     };
     let mut inputs: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()

@@ -1223,6 +1223,21 @@ impl Translator<'_> {
             if op == "+=" && lhs_ty == Ty::Str && rhs.ty == Ty::Char {
                 return Ex::new(format!("{lhs}.append({})", rhs.code), P_PRIMARY, Ty::Unit);
             }
+            // `x += 100` with overflow checks: Rust's panic past the type's limits.
+            if let Some(f) = self.overflow_fn(op.trim_end_matches('='), &lhs_ty) {
+                let loc = swift_string(&self.panic_location(b.span()));
+                let Ty::Int(k) = lhs_ty else { unreachable!() };
+                return Ex::new(
+                    format!(
+                        "{lhs} = {f}({lhs}, {}, {}, {}, {loc})",
+                        rhs.code,
+                        k.rust_bits(),
+                        k.rust_signed()
+                    ),
+                    P_ASSIGN,
+                    Ty::Unit,
+                );
+            }
             return Ex::new(format!("{lhs} {op} {}", rhs.code), P_ASSIGN, Ty::Unit);
         }
         let comparison = prec == P_CMP;
@@ -1294,6 +1309,25 @@ impl Translator<'_> {
                 operand_ty,
             );
         }
+        // `a + b` with overflow checks: Rust's panic past the type's limits.
+        if !(left.weak && right.weak) {
+            if let Some(f) = self.overflow_fn(op, &operand_ty) {
+                let loc = swift_string(&self.panic_location(b.span()));
+                let Ty::Int(k) = operand_ty else {
+                    unreachable!()
+                };
+                return Ex::primary(
+                    format!(
+                        "{f}({}, {}, {}, {}, {loc})",
+                        left.code,
+                        right.code,
+                        k.rust_bits(),
+                        k.rust_signed()
+                    ),
+                    operand_ty,
+                );
+            }
+        }
         let op = match (op, &operand_ty) {
             ("&", Ty::Bool) => "&&",
             ("|", Ty::Bool) => "||",
@@ -1323,6 +1357,21 @@ impl Translator<'_> {
         );
         ex.weak = left.weak && right.weak && !comparison;
         ex
+    }
+
+    /// With `overflow_checks`, the support function of an integer `+`, `-` or `*`.
+    fn overflow_fn(&mut self, op: &str, ty: &Ty) -> Option<&'static str> {
+        if !self.opts.overflow_checks || !matches!(ty, Ty::Int(_)) {
+            return None;
+        }
+        let f = match op {
+            "+" => "rsAdd",
+            "-" => "rsSub",
+            "*" => "rsMul",
+            _ => return None,
+        };
+        self.helper("overflow");
+        Some(f)
     }
 
     /// A reference, by what declared it: `&x`, a `&T` parameter, `let r = &x;`, the item of
@@ -1373,6 +1422,17 @@ impl Translator<'_> {
                 // `-128i8` is `Int8(128)` negated: the literal must carry the sign itself.
                 if let Some((ty_name, digits)) = typed_literal(&v.code) {
                     return Ex::primary(format!("{ty_name}(-{digits})"), v.ty);
+                }
+                // `-m` with overflow checks: `-i32::MIN` panics.
+                if let (true, false, Ty::Int(k)) = (self.opts.overflow_checks, weak, &v.ty) {
+                    if k.rust_signed() {
+                        self.helper("overflow");
+                        let loc = swift_string(&self.panic_location(u.span()));
+                        return Ex::primary(
+                            format!("rsNeg({}, {}, {loc})", v.code, k.rust_bits()),
+                            v.ty.clone(),
+                        );
+                    }
                 }
                 let mut ex = Ex::new(format!("-{}", wrap(&v, P_PREFIX)), P_PREFIX, v.ty);
                 ex.weak = weak;

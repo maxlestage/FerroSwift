@@ -25,6 +25,7 @@ Options:
                       (default: <crate>/swift/Sources/<Name> when <crate>/swift/Package.swift
                       exists, <crate>/swift otherwise)
   --no-previews       Leave out #[preview] functions (#Preview needs Xcode)
+  --overflow-checks   Integer arithmetic panics on overflow, as Rust's debug builds do
   -h, --help          Show this help
   -V, --version       Show the version
 ";
@@ -34,6 +35,7 @@ struct Args {
     path: Option<PathBuf>,
     out: Option<PathBuf>,
     previews: bool,
+    overflow_checks: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -42,6 +44,7 @@ fn parse_args() -> Result<Args, String> {
     let mut path = None;
     let mut out = None;
     let mut previews = true;
+    let mut overflow_checks = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "-h" | "--help" => {
@@ -54,6 +57,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "-o" | "--out" => out = Some(PathBuf::from(args.next().ok_or("-o needs a directory")?)),
             "--no-previews" => previews = false,
+            "--overflow-checks" => overflow_checks = true,
             s if s.starts_with('-') => return Err(format!("unknown option {s}")),
             s if command.is_none() => command = Some(s.to_string()),
             s if path.is_none() => path = Some(PathBuf::from(s)),
@@ -68,6 +72,7 @@ fn parse_args() -> Result<Args, String> {
             path: Some(PathBuf::from(command)),
             out,
             previews,
+            overflow_checks,
         });
     }
     Ok(Args {
@@ -75,6 +80,7 @@ fn parse_args() -> Result<Args, String> {
         path,
         out,
         previews,
+        overflow_checks,
     })
 }
 
@@ -88,6 +94,7 @@ fn main() -> ExitCode {
     };
     let options = Options {
         previews: args.previews,
+        overflow_checks: args.overflow_checks,
         ..Options::default()
     };
     let result = match args.command.as_str() {
@@ -98,6 +105,7 @@ fn main() -> ExitCode {
                     path: Some(p.clone()),
                     out: None,
                     previews: args.previews,
+                    overflow_checks: args.overflow_checks,
                 };
                 build(&created, &options, false).and_then(succeeded)?;
                 eprintln!("\nNext:\n  cd {0}\n  ferroswift watch        # translate on every save\n  open swift/Package.swift  # or: cd swift && swift run (macOS)", p.display());

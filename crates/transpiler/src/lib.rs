@@ -54,6 +54,9 @@ pub struct Options {
     /// The path of the Rust file as its panics name it (`src/main.rs:3:9`): the one given
     /// to rustc. In a crate, each file's own path.
     pub source_path: Option<String>,
+    /// Integer arithmetic panics on overflow, as in Rust's debug builds (`i32` beyond 2³¹,
+    /// `usize` below zero), through functions of the support file: exact, but less idiomatic.
+    pub overflow_checks: bool,
 }
 
 impl Default for Options {
@@ -63,6 +66,7 @@ impl Default for Options {
             previews: true,
             header: true,
             source_path: None,
+            overflow_checks: false,
         }
     }
 }
