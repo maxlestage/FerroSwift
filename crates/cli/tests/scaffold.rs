@@ -68,7 +68,10 @@ fn a_new_app_checks_builds_and_translates() {
         .lines()
         .find(|l| l.starts_with("ferroswift = "))
         .expect("the ferroswift dependency");
-    assert_eq!(dep, "ferroswift = \"0.1\"");
+    assert_eq!(
+        dep,
+        "ferroswift = { git = \"https://github.com/maxlestage/FerroSwift\" }"
+    );
     let local = format!(
         "ferroswift = {{ path = {:?} }}",
         workspace.join("crates/ferroswift").canonicalize().unwrap()

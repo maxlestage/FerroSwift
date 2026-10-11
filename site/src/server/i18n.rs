@@ -253,7 +253,7 @@ static FR: Dict = Dict {
             Item {
                 title: "Installez la CLI",
                 text: "Depuis crates.io, avec cargo.",
-                code: "cargo install ferroswift-cli",
+                code: "cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli",
             },
             Item {
                 title: "Créez une app",
@@ -464,7 +464,7 @@ static EN: Dict = Dict {
             Item {
                 title: "Install the CLI",
                 text: "From crates.io, with cargo.",
-                code: "cargo install ferroswift-cli",
+                code: "cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli",
             },
             Item {
                 title: "Create an app",

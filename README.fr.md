@@ -58,7 +58,7 @@ Les vues s'écrivent avec des fonctions Rust ordinaires (`vstack()`, `text()`, `
 ## Installation
 
 ```sh
-cargo install ferroswift-cli
+cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli
 ```
 
 ## Démarrage rapide

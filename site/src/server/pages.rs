@@ -248,10 +248,10 @@ fn footer(route: &Route, site: &Site) -> Element {
                 .class("foot-install")
                 .attr(
                     "aria-label",
-                    format!("{}: cargo install ferroswift-cli", f.install),
+                    format!("{}: cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli", f.install),
                 )
                 .attr("title", f.install)
-                .text("cargo install ferroswift-cli"),
+                .text("cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli"),
         );
     let brand = div()
         .class("foot-brand")
@@ -267,8 +267,8 @@ fn footer(route: &Route, site: &Site) -> Element {
                 .child(li().text(f.rust_only))
                 .child(
                     li().child(external(
-                        a().href("https://crates.io/crates/ferroswift")
-                            .text("crates.io"),
+                        a().href("https://github.com/maxlestage/FerroSwift")
+                            .text("GitHub"),
                     )),
                 ),
         );
@@ -345,8 +345,8 @@ fn footer(route: &Route, site: &Site) -> Element {
                     f.project,
                     vec![
                         external(
-                            a().href("https://crates.io/crates/ferroswift")
-                                .text("crates.io"),
+                            a().href("https://github.com/maxlestage/FerroSwift")
+                                .text("GitHub"),
                         ),
                         external(a().href("https://docs.rs/ferroswift").text("docs.rs")),
                         external(a().href(link(LICENSE_PATH)).text(f.license)),

@@ -60,7 +60,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-ferroswift = "0.1"
+ferroswift = { git = "https://github.com/maxlestage/FerroSwift" }
 "#;
 
 const LIB: &str = r#"//! The app, in Rust. `ferroswift build` (or `ferroswift watch`) writes its Swift

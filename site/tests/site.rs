@@ -34,7 +34,12 @@ fn every_page_ends_with_the_signature_footer() {
         assert!(footer.contains(r#"href="/static/LICENSE.txt""#), "{lang}");
         assert!(!footer.contains("MIT"), "{lang}");
         // The install command and the version of the crates.
-        assert!(footer.contains("cargo install ferroswift-cli"), "{lang}");
+        assert!(
+            footer.contains(
+                "cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli"
+            ),
+            "{lang}"
+        );
         assert!(
             footer.contains(&format!("v{}", ferroswift_transpiler::VERSION)),
             "{lang}"
@@ -119,8 +124,11 @@ fn every_route_renders_with_its_seo_tags() {
             "{path}: made with active"
         );
         assert!(!html.contains("data-base"), "{path}");
-        // No link to GitHub anywhere: the project is not open source.
-        assert!(!html.contains("github.com"), "{path}");
+        // The source is on GitHub, the only way to get the crate until it is on crates.io.
+        assert!(
+            html.contains("https://github.com/maxlestage/FerroSwift"),
+            "{path}"
+        );
     }
 }
 
@@ -142,7 +150,9 @@ fn home_pages_have_the_pitch_the_playground_and_build_time_comparisons() {
                 r#"<span class="h-k">throws</span>(<span class="h-t">LoginError</span>)"#
             )
         );
-        assert!(html.contains("cargo install ferroswift-cli"));
+        assert!(html.contains(
+            "cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli"
+        ));
         assert!(html.contains("ferroswift watch"));
         assert!(html.contains("SoftwareSourceCode"));
     }
