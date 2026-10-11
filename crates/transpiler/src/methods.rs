@@ -381,16 +381,18 @@ impl Translator<'_> {
         sig: &FnSig,
         args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
     ) -> Ex {
-        let (codes, _) = self.call_args_typed(args, Some(&sig.params));
-        let mut ex = Ex::primary(format!("{callee}({})", codes.join(", ")), sig.ret.clone());
-        if let Ty::Result(ok, err) = &sig.ret {
+        let (codes, _, bound) = self.call_args_generic(args, Some(&sig.params), &sig.generics);
+        // `group_by(&words, |w| w.len())`: the result's type parameters, from the arguments.
+        let ret = crate::symbols::substitute(&sig.ret, &bound);
+        let mut ex = Ex::primary(format!("{callee}({})", codes.join(", ")), ret.clone());
+        if let Ty::Result(ok, err) = &ret {
             if !sig.is_init {
                 ex.throws = Some(Box::new(((**ok).clone(), (**err).clone())));
                 ex.ty = (**ok).clone();
             }
         }
-        if matches!(sig.ret, Ty::Iter(_)) {
-            ex.ty = Ty::Vec(Box::new(sig.ret.item()));
+        if matches!(ret, Ty::Iter(_)) {
+            ex.ty = Ty::Vec(Box::new(ret.item()));
         }
         ex
     }
@@ -426,12 +428,32 @@ impl Translator<'_> {
         args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
         params: Option<&[ParamInfo]>,
     ) -> (Vec<String>, Vec<Ty>) {
+        let (codes, tys, _) = self.call_args_generic(args, params, &[]);
+        (codes, tys)
+    }
+
+    /// Like [`call_args_typed`](Self::call_args_typed) for a generic function: what the
+    /// earlier arguments tell of the type parameters types the later ones (the closure of
+    /// `group_by(&words, |w| w.len())` takes a `&str`), and is given back.
+    pub fn call_args_generic(
+        &mut self,
+        args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+        params: Option<&[ParamInfo]>,
+        generics: &[String],
+    ) -> (Vec<String>, Vec<Ty>, std::collections::HashMap<String, Ty>) {
         let mut out = Vec::new();
         let mut tys = Vec::new();
+        let mut bound = std::collections::HashMap::new();
         for (i, a) in args.iter().enumerate() {
             let param = params.and_then(|p| p.get(i));
             let inout = param.is_some_and(|p| p.inout);
-            let expected = param.map_or(Ty::Unknown, |p| p.ty.clone());
+            let expected = param.map_or(Ty::Unknown, |p| {
+                if bound.is_empty() {
+                    p.ty.clone()
+                } else {
+                    crate::symbols::substitute(&p.ty, &bound)
+                }
+            });
             // `generic_max::<u8>(&[])`: Swift cannot infer `T` from an empty literal.
             let cast_empty = self.generic_call > 0
                 && matches!(expected, Ty::Vec(_))
@@ -442,6 +464,28 @@ impl Translator<'_> {
                     Expr::Reference(r) => &*r.expr,
                     e => e,
                 };
+                // `f(&mut v[a..b])`: the part is copied out and written back after the call.
+                if let Expr::Index(idx) = inner {
+                    if let Expr::Range(range) = &*idx.index {
+                        if (range.start.is_some() || range.end.is_some())
+                            && crate::stmt::simple_place(&idx.expr)
+                        {
+                            let ty = self.place_ty(&idx.expr);
+                            let base = self.place(&idx.expr);
+                            let r = self.expr(&idx.index);
+                            let r = self.settle(r);
+                            let part = self.fresh("part");
+                            self.prelude(format!("var {part} = Array({base}[{}])", r.code));
+                            self.postlude(format!(
+                                "{base}.replaceSubrange({}, with: {part})",
+                                r.code
+                            ));
+                            out.push(format!("&{part}"));
+                            tys.push(ty);
+                            continue;
+                        }
+                    }
+                }
                 let ty = self.place_ty(inner);
                 let place = self.place(inner);
                 // `let mut out = Vec::new(); fill(&mut out)`: the parameter tells the type.
@@ -453,19 +497,31 @@ impl Translator<'_> {
                     }
                 }
                 out.push(format!("&{place}"));
+                if let Some(p) = param {
+                    unify(&p.ty, &ty, generics, &mut bound);
+                }
                 tys.push(ty);
                 continue;
             }
             let v = self.expr_with(a, &expected);
             let v = self.settle(v);
+            if let Some(p) = param {
+                unify(&p.ty, &v.ty, generics, &mut bound);
+            }
+            // `total(Countdown { from: 5 })` for an `impl Iterator` parameter, which is an
+            // array: the sequence collected.
+            let user_iterator =
+                matches!(&v.ty, Ty::Named(n, _) if self.syms.iterators.contains_key(n));
             if cast_empty && v.code == "[]" {
                 out.push(format!("[] as {}", expected.swift_lossy()));
+            } else if matches!(expected, Ty::Iter(_)) && user_iterator {
+                out.push(format!("Array({})", v.code));
             } else {
                 out.push(v.code);
             }
             tys.push(v.ty);
         }
-        (out, tys)
+        (out, tys, bound)
     }
 
     /// `max(a, b)`, `drop(x)`… called without a path.
@@ -1350,6 +1406,12 @@ impl Translator<'_> {
                     let v = self.expr_with(&f.body, &value_ty);
                     self.settle(v).code
                 }
+                // `or_insert_with(Vec::new)`: the function called.
+                Expr::Path(p) => {
+                    let call: Expr = syn::parse_quote!(#p());
+                    let v = self.expr_with(&call, &value_ty);
+                    self.settle(v).code
+                }
                 f => {
                     let v = self.expr(f);
                     format!("{}()", wrap(&v, P_PRIMARY))
@@ -1545,6 +1607,12 @@ impl Translator<'_> {
                         ("filter_map", Ty::Iter(t) | Ty::Vec(t)) if !t.is_unknown() => {
                             Ty::Option(t.clone())
                         }
+                        // `opt.map(|s| s.iter().collect())` into a `String`: the closure's
+                        // result is the option's content.
+                        ("map", Ty::Option(t)) if !t.is_unknown() && recv.ty.is_option() => {
+                            (**t).clone()
+                        }
+                        ("and_then", Ty::Option(_)) if recv.ty.is_option() => call_expected.clone(),
                         _ => Ty::Unknown,
                     };
                     if name == "map_or" && i == 0 {
@@ -3247,8 +3315,12 @@ impl Translator<'_> {
         // Maps.
         if let Ty::Map(k, v, ordered) = &rty {
             let (k, v, ordered) = ((**k).clone(), (**v).clone(), *ordered);
+            // Tuple keys compare with `<` without being `Comparable`.
+            let tuple_keys = matches!(k, Ty::Tuple(_));
             let sorted = |s: &str| {
-                if ordered {
+                if ordered && tuple_keys {
+                    format!("{s}.sorted(by: <)")
+                } else if ordered {
                     format!("{s}.sorted()")
                 } else {
                     s.to_string()
@@ -3473,6 +3545,12 @@ impl Translator<'_> {
             }
         }
         // Comparisons on any type.
+        // `a.due.cmp(&b.due)` of two options: `None` first, as Rust orders them.
+        if matches!(name, "cmp" | "partial_cmp" | "max" | "min" | "clamp")
+            && (matches!(rty, Ty::Option(_)) || args.iter().any(|a| matches!(a.ty, Ty::Option(_))))
+        {
+            self.helper("option_cmp");
+        }
         match name {
             // `a.max(b)`, `x.clamp(lo, hi)` of a comparable struct or enum.
             "max" | "min" if args.len() == 1 => {
@@ -3689,7 +3767,8 @@ impl Translator<'_> {
                 prim(format!("{r}.swapRemove({})", a(0)), item)
             }
             "truncate" | "dedup" | "resize" | "fill" | "rotate_left" | "rotate_right"
-            | "split_off" | "drain" | "retain_mut" | "dedup_by_key" | "dedup_by" => {
+            | "split_off" | "drain" | "retain_mut" | "dedup_by_key" | "dedup_by"
+            | "copy_within" => {
                 self.helper("vec");
                 let codes: Vec<String> = args.iter().map(|a| a.code.clone()).collect();
                 let ret = match name {
@@ -3705,6 +3784,11 @@ impl Translator<'_> {
             }
             "clear" => prim(format!("{r}.removeAll()"), Ty::Unit),
             "contains" => prim(format!("{r}.contains({})", a(0)), Ty::Bool),
+            // `v[1..3].swap(0, 1)`: the indices of a slice count from its start.
+            "swap" if args.len() == 2 && is_subslice_place(&recv.code) => {
+                self.helper("vec");
+                prim(format!("{r}.rsSwap({}, {})", a(0), a(1)), Ty::Unit)
+            }
             "swap" if args.len() == 2 => prim(format!("{r}.swapAt({}, {})", a(0), a(1)), Ty::Unit),
             "reverse" => prim(format!("{r}.reverse()"), Ty::Unit),
             // Elements Swift cannot compare with `<` (tuples holding optionals or arrays,
@@ -3762,6 +3846,14 @@ impl Translator<'_> {
             ),
             "last" | "back" => prim(format!("{r}.last"), Ty::Option(Box::new(item))),
             "next" => prim(format!("{r}.first"), Ty::Option(Box::new(item))),
+            // `v.get(a..b)`: the part, when within bounds.
+            "get" if !matches!(rty, Ty::Map(..)) && matches!(ty_a(0), Ty::Range(_)) => {
+                self.helper("vec");
+                prim(
+                    format!("{r}.get({})", a(0)),
+                    Ty::Option(Box::new(Ty::Vec(Box::new(item)))),
+                )
+            }
             "get" if !matches!(rty, Ty::Map(..)) => {
                 self.helper("vec");
                 prim(format!("{r}.get({})", a(0)), Ty::Option(Box::new(item)))
@@ -3961,19 +4053,34 @@ impl Translator<'_> {
             }
             "inspect" => recv.clone(),
             "sum" | "product" => {
+                // The type asked for (`let n: u32 = …sum()`) wins over the items' type, which
+                // a literal range may have left to `Int`.
                 let mut t = turbofish
                     .first()
                     .cloned()
                     .filter(|t| !t.is_unknown())
-                    .or_else(|| (!item.is_unknown()).then(|| item.clone()))
-                    .unwrap_or_else(|| expected.clone());
+                    .or_else(|| expected.swift().is_some().then(|| expected.clone()))
+                    .unwrap_or_else(|| item.clone());
                 t.merge(expected);
+                t.merge(&item);
                 let scalar = match &t {
                     Ty::Option(inner) | Ty::Result(inner, _) => (**inner).clone(),
                     t => t.clone(),
                 };
+                // `impl Sum for Vec2`: the type's own `sum`.
+                if let Ty::Named(n, _) = &scalar {
+                    if self.user_method(&scalar, name).is_some() {
+                        let items = if array_valued(&recv.code) {
+                            r.clone()
+                        } else {
+                            format!("Array({r})")
+                        };
+                        return Some(prim(format!("{n}.{name}({items})"), scalar.clone()));
+                    }
+                }
+                // Rust sums floats from `-0.0`: an empty sum is `-0.0`.
                 let (zero, op) = match (name, &scalar) {
-                    ("sum", Ty::Float(_)) => ("0.0", "+"),
+                    ("sum", Ty::Float(_)) => ("-0.0", "+"),
                     ("sum", _) => ("0", "+"),
                     (_, Ty::Float(_)) => ("1.0", "*"),
                     _ => ("1", "*"),
@@ -3996,6 +4103,22 @@ impl Translator<'_> {
                         prim(
                             format!(
                                 "{r}.reduce({start}) {{ acc, x in acc.flatMap {{ a in x.map {{ a {op} $0 }} }} }}"
+                            ),
+                            t,
+                        )
+                    }
+                    // `let n: u32 = (1..=5).map(…).sum()`: the chain counts in `Int`, the
+                    // sum in the type asked for.
+                    _ if scalar.is_numeric()
+                        && item.is_numeric()
+                        && scalar.swift() != item.swift() =>
+                    {
+                        // Typed closure parameters: untyped literals in the chain would make
+                        // Swift's type checker give up.
+                        let (target, from) = (scalar.swift_lossy(), item.swift_lossy());
+                        prim(
+                            format!(
+                                "{r}.reduce({zero}) {{ (acc: {target}, x: {from}) in acc {op} {target}(x) }}"
                             ),
                             t,
                         )
@@ -4381,6 +4504,15 @@ fn unify(
                 unify(p, a, generics, out);
             }
         }
+        (Ty::Fn(ps, pr), Ty::Fn(as_, ar)) => {
+            for (p, a) in ps.iter().zip(as_) {
+                unify(p, a, generics, out);
+            }
+            unify(pr, ar, generics, out);
+        }
+        (Ty::Iter(p), Ty::Iter(a)) | (Ty::Iter(p), Ty::Vec(a)) | (Ty::Vec(p), Ty::Iter(a)) => {
+            unify(p, a, generics, out);
+        }
         (Ty::Named(n, ps), Ty::Named(m, as_)) if n == m => {
             for (p, a) in ps.iter().zip(as_) {
                 unify(p, a, generics, out);
@@ -4519,4 +4651,12 @@ fn swift_comparable(t: &Ty) -> bool {
             .all(|t| !matches!(t, Ty::Option(_) | Ty::Vec(_) | Ty::Tuple(_))),
         _ => true,
     }
+}
+
+/// `v[1..<3]`, `v[2...]`: a part of an array kept as a place.
+fn is_subslice_place(code: &str) -> bool {
+    let Some(open) = code.rfind('[') else {
+        return false;
+    };
+    code.ends_with(']') && code[open..].contains("..")
 }

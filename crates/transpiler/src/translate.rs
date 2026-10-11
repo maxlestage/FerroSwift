@@ -76,6 +76,9 @@ pub struct Translator<'a> {
     pub scopes: Vec<Scope>,
     pub fns: Vec<FnCx>,
     pub preludes: Vec<Vec<String>>,
+    /// Statements to write after the statement being translated (a part of an array
+    /// written back after a call changed it).
+    pub postludes: Vec<Vec<String>>,
     pub slots: Vec<Ty>,
     pub tmp: usize,
     pub imp: Option<ImplCx>,
@@ -91,6 +94,11 @@ pub struct Translator<'a> {
     pub into_double_params: std::collections::HashSet<String>,
     /// Inside the `fmt` of a `Debug` written with a formatter: `x.fmt(f)` is `f.debug(x)`.
     pub fmt_debug: bool,
+    /// The function being translated takes `&mut self`: `self` can be assigned.
+    pub self_mutable: bool,
+    /// The variables being assigned by the branches of a `let x = match …` (Swift names),
+    /// with the slot of their type: a binding of a branch must not take their name.
+    pub assign_slots: std::collections::HashMap<String, usize>,
     /// Labels of the loops being translated, innermost last.
     pub loops: Vec<Option<String>>,
     /// `switch` statements between the innermost loop and the code being translated: a
@@ -145,6 +153,7 @@ impl<'a> Translator<'a> {
             scopes: Vec::new(),
             fns: Vec::new(),
             preludes: Vec::new(),
+            postludes: Vec::new(),
             slots: Vec::new(),
             tmp: 0,
             imp: None,
@@ -154,6 +163,8 @@ impl<'a> Translator<'a> {
             closure_generics: std::collections::HashMap::new(),
             into_double_params: std::collections::HashSet::new(),
             fmt_debug: false,
+            self_mutable: false,
+            assign_slots: std::collections::HashMap::new(),
             loops: Vec::new(),
             switch_depth: 0,
             used_labels: std::collections::HashSet::new(),
@@ -236,11 +247,15 @@ impl<'a> Translator<'a> {
             .syms
             .consts
             .keys()
-            .any(|k| k != rust && names::constant(k) == base);
+            .any(|k| k != rust && self.const_name(k) == base);
+        let assigned: Vec<String> = self.assign_slots.keys().cloned().collect();
         let scope = self.scopes.last_mut().expect("scope");
         let mut swift = base.clone();
         let mut n = 2;
-        while scope.declared.contains(&swift) || (hides_constant && swift == base) {
+        while scope.declared.contains(&swift)
+            || (hides_constant && swift == base)
+            || assigned.contains(&swift)
+        {
             let bare = base.trim_matches('`');
             swift = format!("{bare}{n}");
             n += 1;
@@ -256,6 +271,24 @@ impl<'a> Translator<'a> {
             },
         ));
         swift
+    }
+
+    /// The default of a field: that of its type, or `[false, false]` for a `[bool; 2]`.
+    pub fn field_default_value(&self, field: &crate::symbols::FieldInfo) -> Option<String> {
+        if let (Some(n), Ty::Vec(elem)) = (field.array_len, &field.ty) {
+            let value = elem.default_value()?;
+            return Some(format!("Array(repeating: {value}, count: {n})"));
+        }
+        field.ty.default_value()
+    }
+
+    /// The Swift name of a global constant (`MAX_SIZE` → `maxSize`).
+    pub fn const_name(&self, rust: &str) -> String {
+        self.syms
+            .const_names
+            .get(rust)
+            .cloned()
+            .unwrap_or_else(|| names::constant(rust))
     }
 
     /// Declares a local standing for a Swift expression (`items[i]`).
@@ -296,7 +329,8 @@ impl<'a> Translator<'a> {
     /// Whether a local with this Swift name is visible (then `self.x` keeps its `self.`).
     /// `max`, `abs`, `zip`… of the Swift standard library, qualified when a local hides them.
     pub fn global_fn(&self, name: &str) -> String {
-        // A field or method `min` of the type hides the global function in its methods.
+        // A field or method `min` of the type hides the global function in its methods, as
+        // do the `min()` and `max()` of a `Sequence` (a type implementing `Iterator`).
         let member = self.imp.as_ref().is_some_and(|i| {
             self.syms
                 .structs
@@ -307,6 +341,7 @@ impl<'a> Translator<'a> {
                     .methods
                     .get(&i.rust)
                     .is_some_and(|m| m.keys().any(|k| names::lower_camel(k) == name))
+                || self.syms.iterators.contains_key(&i.rust)
         });
         if member || self.swift_local_visible(name) || self.pending_locals.iter().any(|l| l == name)
         {
@@ -449,6 +484,13 @@ impl<'a> Translator<'a> {
     /// an `Option`, temporaries).
     pub fn prelude(&mut self, line: String) {
         if let Some(p) = self.preludes.last_mut() {
+            p.push(line);
+        }
+    }
+
+    /// A statement to write after the statement being translated.
+    pub fn postlude(&mut self, line: String) {
+        if let Some(p) = self.postludes.last_mut() {
             p.push(line);
         }
     }
@@ -660,7 +702,7 @@ impl<'a> Translator<'a> {
             "{}{} {}{annot} = {}",
             docs(attrs),
             if mutable { "var" } else { "let" },
-            names::constant(&ident.to_string()),
+            self.const_name(&ident.to_string()),
             value.code
         )
     }
@@ -765,10 +807,23 @@ impl<'a> Translator<'a> {
         for pred in &w.predicates {
             if let syn::WherePredicate::Type(pt) = pred {
                 let ty = self.ty(&pt.bounded_ty);
-                if matches!(ty, Ty::Fn(..)) {
+                // A parameter standing for a closure or a sequence: no protocol to require.
+                if matches!(ty, Ty::Fn(..) | Ty::Iter(_)) {
                     continue;
                 }
-                let name = ty.swift_lossy();
+                // `where C::Item: Display` → `where C.Item: CustomStringConvertible`.
+                let name = match &pt.bounded_ty {
+                    Type::Path(tp) if tp.path.segments.len() == 2 => {
+                        let segs: Vec<String> = tp
+                            .path
+                            .segments
+                            .iter()
+                            .map(|s| s.ident.to_string())
+                            .collect();
+                        segs.join(".")
+                    }
+                    _ => ty.swift_lossy(),
+                };
                 for b in self.bounds(&pt.bounds) {
                     parts.push(format!("{name}: {b}"));
                 }
@@ -850,7 +905,15 @@ impl<'a> Translator<'a> {
             .cloned()
             .expect("collected struct");
         let swift = info.swift.clone();
-        let generics = self.generic_params(&s.generics);
+        let mut generics = self.generic_params(&s.generics);
+        // `map: HashMap<K, V>`: Swift wants `K: Hashable` on the struct itself.
+        let mut keyed = Vec::new();
+        for f in &info.fields {
+            key_generics(&f.ty, &info.generics, &mut keyed);
+        }
+        for g in keyed {
+            generics = with_bound(&generics, &g, "Hashable");
+        }
         let where_clause = self.where_clause(&s.generics);
         self.generics = info.generics.clone();
         let derives = derives(&s.attrs);
@@ -957,7 +1020,7 @@ impl<'a> Translator<'a> {
                             (v.code, v.ty)
                         }
                         None => {
-                            match field.ty.default_value() {
+                            match self.field_default_value(field) {
                                 Some(v) => (v, field.ty.clone()),
                                 None => {
                                     self.error(*span, "give this #[state] field an initial value: #[state(value)]");
@@ -1201,7 +1264,7 @@ impl<'a> Translator<'a> {
                     format!(
                         "{}: {}",
                         f.swift,
-                        f.ty.default_value()
+                        self.field_default_value(f)
                             .unwrap_or_else(|| "fatalError()".into())
                     )
                 })
@@ -1240,9 +1303,7 @@ impl<'a> Translator<'a> {
         if !wanted {
             return String::new();
         }
-        field
-            .ty
-            .default_value()
+        self.field_default_value(field)
             .map(|v| format!(" = {v}"))
             .unwrap_or_default()
     }
@@ -1844,7 +1905,14 @@ impl<'a> Translator<'a> {
                     // Conversions have no protocol: their functions are called directly.
                     if !matches!(
                         t.as_str(),
-                        "Default" | "From" | "Into" | "FromStr" | "TryFrom" | "TryInto"
+                        "Default"
+                            | "From"
+                            | "Into"
+                            | "FromStr"
+                            | "TryFrom"
+                            | "TryInto"
+                            | "Sum"
+                            | "Product"
                     ) {
                         conformance =
                             Some(protocol_name(t).unwrap_or_else(|| names::upper_camel(t)));
@@ -1910,6 +1978,9 @@ impl<'a> Translator<'a> {
                         }
                         other => self.unsupported(other.span(), "this impl item"),
                     };
+                    if code.is_empty() && leading.is_empty() {
+                        continue;
+                    }
                     if !leading.is_empty() {
                         code = format!("{}\n{code}", leading.join("\n"));
                     }
@@ -2300,6 +2371,16 @@ impl<'a> Translator<'a> {
 
     /// `fn new(…) -> Self` (or `default`, `from`) as an initializer.
     fn init_fn(&mut self, f: &syn::ImplItemFn) -> String {
+        // `impl Default for Unit { fn default() -> Self { Unit } }`: Swift synthesizes the
+        // `init()` of a struct without fields already.
+        let fieldless = self
+            .imp
+            .as_ref()
+            .and_then(|i| self.syms.structs.get(&i.rust))
+            .is_some_and(|s| s.fields.is_empty());
+        if fieldless && f.sig.inputs.is_empty() {
+            return String::new();
+        }
         self.push_scope();
         let mut s = self.signature(
             &f.sig,
@@ -2559,6 +2640,7 @@ impl<'a> Translator<'a> {
         };
         let imp_kind = self.imp.as_ref().map(|i| i.kind);
         let in_value_type = matches!(imp_kind, Some(TypeKind::Plain));
+        self.self_mutable = self_kind == SelfKind::RefMut;
         let mut modifiers = String::new();
         let allowed = match place {
             Place::Free => None,
@@ -3153,4 +3235,51 @@ pub fn placeholder_slot(t: &Ty) -> Option<usize> {
             .and_then(|r| r.parse().ok()),
         _ => None,
     }
+}
+
+/// The type parameters used as the keys of a dictionary or the elements of a set.
+fn key_generics(ty: &Ty, generics: &[String], out: &mut Vec<String>) {
+    let param = |t: &Ty| match t {
+        Ty::Named(n, a) if a.is_empty() && generics.contains(n) => Some(n.clone()),
+        _ => None,
+    };
+    match ty {
+        Ty::Map(k, v, _) => {
+            out.extend(param(k));
+            key_generics(k, generics, out);
+            key_generics(v, generics, out);
+        }
+        Ty::Set(e, _) => {
+            out.extend(param(e));
+            key_generics(e, generics, out);
+        }
+        Ty::Vec(t) | Ty::Option(t) | Ty::Iter(t) => key_generics(t, generics, out),
+        Ty::Tuple(ts) | Ty::Named(_, ts) => {
+            for t in ts {
+                key_generics(t, generics, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `<K, V>` with `K: Hashable` added (`<K: Hashable, V>`, `<K: Equatable & Hashable, V>`).
+fn with_bound(generics: &str, name: &str, bound: &str) -> String {
+    let Some(inner) = generics.strip_prefix('<').and_then(|g| g.strip_suffix('>')) else {
+        return generics.to_string();
+    };
+    let parts: Vec<String> = inner
+        .split(", ")
+        .map(|p| {
+            let (n, bounds) = p.split_once(": ").unwrap_or((p, ""));
+            if n != name || bounds.split(" & ").any(|b| b == bound) {
+                p.to_string()
+            } else if bounds.is_empty() {
+                format!("{n}: {bound}")
+            } else {
+                format!("{n}: {bounds} & {bound}")
+            }
+        })
+        .collect();
+    format!("<{}>", parts.join(", "))
 }

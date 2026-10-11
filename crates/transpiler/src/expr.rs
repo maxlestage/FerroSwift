@@ -546,7 +546,7 @@ impl Translator<'_> {
                 return Ex::primary(local.swift, ty);
             }
             if let Some(ty) = self.syms.consts.get(n) {
-                return Ex::primary(names::constant(n), ty.clone());
+                return Ex::primary(self.const_name(n), ty.clone());
             }
             // `use std::f64::consts::PI;` then `PI`.
             if let Some(full) = self.syms.imports.get(n).cloned() {
@@ -872,8 +872,23 @@ impl Translator<'_> {
                 "E" => return Some(Ex::primary(format!("{t}(M_E)"), ty)),
                 "TAU" => return Some(Ex::new(format!("2 * {t}.pi"), P_MUL, ty)),
                 "SQRT_2" => return Some(Ex::primary(format!("{t}(2).squareRoot()"), ty)),
+                "FRAC_1_SQRT_2" => return Some(Ex::primary(format!("{t}(0.5).squareRoot()"), ty)),
                 "FRAC_PI_2" => return Some(Ex::new(format!("{t}.pi / 2"), P_MUL, ty)),
+                "FRAC_PI_3" => return Some(Ex::new(format!("{t}.pi / 3"), P_MUL, ty)),
+                "FRAC_PI_4" => return Some(Ex::new(format!("{t}.pi / 4"), P_MUL, ty)),
+                "FRAC_PI_6" => return Some(Ex::new(format!("{t}.pi / 6"), P_MUL, ty)),
+                "FRAC_PI_8" => return Some(Ex::new(format!("{t}.pi / 8"), P_MUL, ty)),
+                "FRAC_1_PI" => return Some(Ex::new(format!("1 / {t}.pi"), P_MUL, ty)),
+                "FRAC_2_PI" => return Some(Ex::new(format!("2 / {t}.pi"), P_MUL, ty)),
+                "FRAC_2_SQRT_PI" => {
+                    return Some(Ex::new(format!("2 / {t}.pi.squareRoot()"), P_MUL, ty));
+                }
                 "LN_2" => return Some(Ex::primary(format!("{t}(M_LN2)"), ty)),
+                "LN_10" => return Some(Ex::primary(format!("{t}(M_LN10)"), ty)),
+                "LOG2_E" => return Some(Ex::primary(format!("{t}(M_LOG2E)"), ty)),
+                "LOG10_E" => return Some(Ex::primary(format!("{t}(M_LOG10E)"), ty)),
+                "LOG2_10" => return Some(Ex::primary(format!("{t}(M_LN10 / M_LN2)"), ty)),
+                "LOG10_2" => return Some(Ex::primary(format!("{t}(M_LN2 / M_LN10)"), ty)),
                 _ => return None,
             };
             if self.implicit_member && member == "infinity" {
@@ -956,16 +971,25 @@ impl Translator<'_> {
         };
         let left = self.expr_with(&b.left, &left_expected);
         let left = self.settle(left);
+        // `1.0 / len` with `len: f32`: a literal takes the type of the other operand.
         let right_expected = if matches!(op, "&&" | "||") {
             Ty::Bool
-        } else if matches!(op, "<<" | ">>") {
+        } else if matches!(op, "<<" | ">>") || left.weak && left.ty.is_numeric() {
             Ty::Unknown
         } else {
             left.ty.clone()
         };
         let right = self.expr_with(&b.right, &right_expected);
         let right_tries = right.throws.is_some() || right.code.contains("try ");
-        let right = self.settle(right);
+        let mut right = self.settle(right);
+        let mut left = left;
+        if left.weak && left.ty.is_numeric() && !matches!(op, "<<" | ">>") {
+            if right.weak || !right.ty.is_numeric() {
+                right = self.coerce(right, &left.ty.clone());
+            } else {
+                left = self.coerce(left, &right.ty.clone());
+            }
+        }
         // When the left side's type was unknown, the right side may tell it.
         let mut operand_ty = left.ty.clone();
         operand_ty.merge(&right.ty);
@@ -1172,6 +1196,37 @@ impl Translator<'_> {
                 );
             }
         }
+        // `start..end` with `end < start` is empty in Rust, where Swift's range traps: the end
+        // is raised to the start when the bounds could be in that order.
+        if let (Some(s), Some(e)) = (&start, &end) {
+            let closed = matches!(r.limits, syn::RangeLimits::Closed(_));
+            let literals = match (s.code.parse::<i128>(), e.code.parse::<i128>()) {
+                (Ok(lo), Ok(hi)) => lo <= hi,
+                _ => false,
+            };
+            let from_zero = s.code == "0" && matches!(item_ty, Ty::Int(k) if !k.signed());
+            let integer = item_ty.is_int() || (item_ty.is_unknown() && !closed);
+            if !literals && !from_zero && integer {
+                let lo = if is_simple_code(&s.code) {
+                    s.code.clone()
+                } else {
+                    let tmp = self.fresh("from");
+                    self.prelude(format!("let {tmp} = {}", s.code));
+                    tmp
+                };
+                let max = self.global_fn("max");
+                let hi = if closed {
+                    format!("{} + 1", wrap(e, P_ADD + 1))
+                } else {
+                    e.code.clone()
+                };
+                return Ex::new(
+                    format!("{lo}..<{max}({lo}, {hi})"),
+                    P_RANGE,
+                    Ty::Range(Box::new(item_ty)),
+                );
+            }
+        }
         let code = match (&start, &end) {
             (Some(s), Some(e)) if e.code.starts_with('-') => {
                 format!("{} {op} {}", wrap(s, P_RANGE + 1), wrap(e, P_RANGE + 1))
@@ -1215,8 +1270,8 @@ impl Translator<'_> {
         self.no_trailing += 1;
         let v = self.expr_with(&t.expr, &inner_expected);
         self.no_trailing -= 1;
-        if v.ty == Ty::Unit {
-            // `write!(f, …)?`
+        if v.ty == Ty::Unit && v.throws.is_none() {
+            // `write!(f, …)?`: writing to a text cannot fail.
             return v;
         }
         // `f()?` whose error converts into the function's (`impl From<E> for F`).
@@ -2025,8 +2080,28 @@ impl Translator<'_> {
                 return ex;
             }
         }
+        // `Ok(match e { … => return Err(…) })`: a `return`, `break` or `?` cannot leave a
+        // closure; the value is computed by statements before, into a variable.
         if crate::stmt::has_jump(e) {
-            self.error(e.span(), "a `return`, `break`, `continue` or `?` inside an expression used as a value is not supported: bind it with `let x: T = …;` first");
+            let (slot, placeholder) = self.new_slot(expected.clone());
+            let rust = self.fresh("value");
+            let swift = self.declare(&rust, expected.clone());
+            self.attach_slot(&rust, slot);
+            self.assign_slots.insert(swift.clone(), slot);
+            let lines = self.tail(e, &Sink::Assign(swift.clone()));
+            self.assign_slots.remove(&swift);
+            self.prelude(format!("let {swift}{placeholder}"));
+            for l in lines {
+                self.prelude(l);
+            }
+            let ty = self.slots[slot].clone();
+            if ty.swift().is_none() {
+                self.error(
+                    e.span(),
+                    "the type of this value, computed by statements, is not known: bind it with `let x: T = …;` first",
+                );
+            }
+            return Ex::primary(swift, ty);
         }
         let ret = expected.clone();
         self.fns.push(FnCx {
@@ -2196,4 +2271,12 @@ fn body_is_closure(e: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// A name, a literal or a member path: evaluating it twice costs nothing.
+fn is_simple_code(code: &str) -> bool {
+    !code.is_empty()
+        && code
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-')
 }

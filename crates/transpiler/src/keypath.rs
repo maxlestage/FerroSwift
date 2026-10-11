@@ -2,7 +2,7 @@
 //! returns a `WritableKeyPath` from its type to the value, and the caller reads and writes
 //! `receiver[keyPath: path]`.
 
-use syn::{Expr, spanned::Spanned};
+use syn::{Expr, Pat, spanned::Spanned};
 
 use crate::expr::{Ex, is_self};
 use crate::stmt::result_ctor;
@@ -195,6 +195,35 @@ impl Translator<'_> {
                 let coll = self.place(&m.receiver);
                 let kp = key_path_of_place(&coll, root);
                 Some((vec![], format!("{coll} != nil"), format!("{kp}!")))
+            }
+            // `self.rows.get_mut(y).and_then(|row| row.get_mut(x))`: the second lookup in
+            // the place the first one found.
+            "and_then" if m.args.len() == 1 => {
+                let (pre, cond, kp) = self.optional_key_path(&m.receiver, root)?;
+                let Expr::Closure(c) = &m.args[0] else {
+                    return None;
+                };
+                let param = match c.inputs.first()? {
+                    Pat::Ident(id) => id.ident.to_string(),
+                    Pat::Type(pt) => match &*pt.pat {
+                        Pat::Ident(id) => id.ident.to_string(),
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                let found = kp.strip_prefix(&format!("\\{root}."))?.to_string();
+                let found_ty = match strip(&m.receiver) {
+                    Expr::MethodCall(inner) => self.place_ty(&inner.receiver).item(),
+                    _ => Ty::Unknown,
+                };
+                self.push_scope();
+                self.declare_alias(&param, found, found_ty);
+                let inner = self.optional_key_path(&c.body, root);
+                self.pop_scope();
+                let (mut inner_pre, inner_cond, inner_kp) = inner?;
+                let mut all = pre;
+                all.append(&mut inner_pre);
+                Some((all, format!("{cond} && {inner_cond}"), inner_kp))
             }
             "find" if m.args.len() == 1 => {
                 let Expr::MethodCall(inner) = &*m.receiver else {

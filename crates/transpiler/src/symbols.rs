@@ -27,6 +27,8 @@ pub struct FieldInfo {
     pub swift: String,
     pub ty: Ty,
     pub role: FieldRole,
+    /// `[bool; 2]`: the length of an array field, whose default has that many elements.
+    pub array_len: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +134,9 @@ pub struct Symbols {
     /// Methods and associated functions by type (Rust name) then method name.
     pub methods: HashMap<String, HashMap<String, FnSig>>,
     pub consts: HashMap<String, Ty>,
+    /// The Swift names of the constants that would clash with a function or method when
+    /// written in lower camel case (`UNIT` next to `Square::unit()`): they keep their name.
+    pub const_names: HashMap<String, String>,
     pub aliases: HashMap<String, Ty>,
     /// The type parameters of the generic aliases (`type Result<T> = …`).
     pub alias_params: HashMap<String, Vec<String>>,
@@ -233,7 +238,25 @@ impl Symbols {
             s.walk(&file.items, &mut |s, item| s.declare_impl(item));
         }
         s.properties_for_clashes();
+        s.name_constants();
         s
+    }
+
+    /// A constant `UNIT` is `unit` in Swift, unless a function or method is called `unit`
+    /// too: within that type, the method would hide it.
+    fn name_constants(&mut self) {
+        let taken: HashSet<String> = self
+            .fns
+            .keys()
+            .chain(self.methods.values().flat_map(|m| m.keys()))
+            .map(|n| names::lower_camel(n))
+            .collect();
+        for k in self.consts.keys() {
+            let swift = names::constant(k);
+            if taken.contains(&swift) {
+                self.const_names.insert(k.clone(), k.clone());
+            }
+        }
     }
 
     /// A field `count` and a method `count(&self)` cannot share a name in Swift: the method
@@ -329,6 +352,7 @@ impl Symbols {
                             swift,
                             ty: self.ty(&f.ty, None),
                             role: field_role(&f.attrs),
+                            array_len: array_length(&f.ty),
                         }
                     })
                     .collect();
@@ -561,11 +585,17 @@ impl Symbols {
     /// Generic parameters bounded by a closure trait (`F: Fn(i32) -> i32`), with the closure
     /// type that replaces them.
     pub fn closure_generics(&self, g: &syn::Generics, self_ty: Option<&Ty>) -> HashMap<String, Ty> {
+        // `F: Fn(i32) -> i32` and `I: Iterator<Item = u32>`: the parameter stands for the
+        // closure or the sequence itself.
+        let replaced = |t: Ty| match t {
+            Ty::Fn(..) | Ty::Iter(_) => Some(t),
+            _ => None,
+        };
         let mut out = HashMap::new();
         for p in &g.params {
             if let GenericParam::Type(t) = p {
-                if let Ty::Fn(a, r) = self.bounds_ty(&t.bounds, self_ty, true) {
-                    out.insert(t.ident.to_string(), Ty::Fn(a, r));
+                if let Some(ty) = replaced(self.bounds_ty(&t.bounds, self_ty, true)) {
+                    out.insert(t.ident.to_string(), ty);
                 }
             }
         }
@@ -574,8 +604,8 @@ impl Symbols {
                 if let syn::WherePredicate::Type(pt) = pred {
                     if let Type::Path(tp) = &pt.bounded_ty {
                         if let Some(id) = tp.path.get_ident() {
-                            if let Ty::Fn(a, r) = self.bounds_ty(&pt.bounds, self_ty, true) {
-                                out.insert(id.to_string(), Ty::Fn(a, r));
+                            if let Some(ty) = replaced(self.bounds_ty(&pt.bounds, self_ty, true)) {
+                                out.insert(id.to_string(), ty);
                             }
                         }
                     }
@@ -1040,5 +1070,17 @@ fn directly_contains(t: &Ty, name: &str) -> bool {
         Ty::Tuple(ts) => ts.iter().any(|t| directly_contains(t, name)),
         Ty::Result(a, b) => directly_contains(a, name) || directly_contains(b, name),
         _ => false,
+    }
+}
+
+/// The literal length of an array type (`[u8; 4]`).
+fn array_length(t: &Type) -> Option<usize> {
+    let Type::Array(a) = t else { return None };
+    match &a.len {
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(n),
+            ..
+        }) => n.base10_parse().ok(),
+        _ => None,
     }
 }
