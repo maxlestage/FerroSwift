@@ -16,6 +16,11 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
         DEBUG,
     ),
     ("pad", &[], PAD),
+    (
+        "formatter",
+        &["debug", "pad", "fixed", "display"],
+        FORMATTER,
+    ),
     ("Ordering", &[], ORDERING),
     ("string", &[], STRING),
     ("char", &[], CHAR),
@@ -109,6 +114,15 @@ func rsDisplay<F: BinaryFloatingPoint & LosslessStringConvertible>(_ x: F) -> St
     while whole.count > 1 && whole.hasPrefix("0") { whole.removeFirst() }
     return (negative ? "-" : "") + whole + (decimals.isEmpty ? "" : "." + decimals)
 }
+
+/// `{}` of a value of a generic type: a float as Rust writes it, anything else as itself.
+func rsDisplay<T>(_ value: T) -> String {
+    switch value {
+    case let d as Double: return rsDisplay(d)
+    case let f as Float: return rsDisplay(f)
+    default: return "\(value)"
+    }
+}
 "#;
 
 const FIXED: &str = r#"
@@ -180,6 +194,8 @@ struct RsDebugStyle {
     var fill: Character = " "
     var zero = false
     var precision: Int? = nil
+    /// `{:x?}` or `{:X?}`: the integers inside in hexadecimal.
+    var hex: Character? = nil
 
     func pad(_ s: String, numeric: Bool = true) -> String {
         guard let width else { return s }
@@ -192,6 +208,32 @@ func rsDebug<T>(_ value: T, pretty: Bool = false, style: RsDebugStyle = RsDebugS
     var out = ""
     rsDebugWrite(value as Any, pretty, 0, &out, style)
     return out
+}
+
+/// A type whose `{:?}` is written by its own `fmt` with a formatter (`f.debug_struct(…)`).
+protocol RsDebugText {
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String
+}
+
+/// An integer in `{:?}`; in `{:x?}`, its two's complement in the width of its type.
+private func rsDebugInt(_ value: Any, _ hex: Character?, prefix: Bool) -> String {
+    guard let hex else { return "\(value)" }
+    let upper = hex == "X"
+    let digits: String
+    switch value {
+    case let v as Int: digits = String(UInt(bitPattern: v), radix: 16, uppercase: upper)
+    case let v as Int8: digits = String(UInt8(bitPattern: v), radix: 16, uppercase: upper)
+    case let v as Int16: digits = String(UInt16(bitPattern: v), radix: 16, uppercase: upper)
+    case let v as Int32: digits = String(UInt32(bitPattern: v), radix: 16, uppercase: upper)
+    case let v as Int64: digits = String(UInt64(bitPattern: v), radix: 16, uppercase: upper)
+    case let v as UInt: digits = String(v, radix: 16, uppercase: upper)
+    case let v as UInt8: digits = String(v, radix: 16, uppercase: upper)
+    case let v as UInt16: digits = String(v, radix: 16, uppercase: upper)
+    case let v as UInt32: digits = String(v, radix: 16, uppercase: upper)
+    case let v as UInt64: digits = String(v, radix: 16, uppercase: upper)
+    default: digits = "\(value)"
+    }
+    return prefix ? "0x" + digits : digits
 }
 
 private func rsSnake(_ name: String) -> String {
@@ -297,11 +339,8 @@ private func rsEscapeDebug(_ c: Unicode.Scalar, quote: Unicode.Scalar, graphemeE
 }
 
 private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: inout String, _ style: RsDebugStyle = RsDebugStyle()) {
-    if let custom = value as? RsDebugCustom {
-        out += custom.rsDebugText
-        return
-    }
     let mirror = Mirror(reflecting: value)
+    // Before the casts below, which look through an optional.
     if mirror.displayStyle == .optional {
         if let some = mirror.children.first {
             out += "Some("
@@ -316,6 +355,16 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
         } else {
             out += "None"
         }
+        return
+    }
+    if let custom = value as? RsDebugCustom {
+        out += custom.rsDebugText
+        return
+    }
+    if let custom = value as? RsDebugText {
+        let text = custom.rsDebugText(pretty: pretty, style: style)
+        let indent = "\n" + String(repeating: "    ", count: level)
+        out += level == 0 ? text : text.split(separator: "\n", omittingEmptySubsequences: false).joined(separator: indent)
         return
     }
     let pad = String(repeating: "    ", count: level + 1)
@@ -390,7 +439,11 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
         out += style.pad("\(value)", numeric: false)
         return
     case is Int, is Int8, is Int16, is Int32, is Int64, is UInt, is UInt8, is UInt16, is UInt32, is UInt64:
-        out += style.pad("\(value)")
+        if style.hex != nil && pretty && style.zero, let width = style.width {
+            out += "0x" + rsPadZero(rsDebugInt(value, style.hex, prefix: false), width - 2)
+        } else {
+            out += style.pad(rsDebugInt(value, style.hex, prefix: pretty))
+        }
         return
     default:
         break
@@ -425,6 +478,10 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
         }
         out += "}"
     case .tuple:
+        if mirror.children.isEmpty {
+            out += style.pad("()", numeric: false)
+            return
+        }
         list("(", ")", mirror.children.map { (nil, $0.value) })
     case .enum:
         // Payloads are laid out here when pretty; the type's own text otherwise.
@@ -519,6 +576,248 @@ const DEBUG_CUSTOM: &str = r#"
 protocol RsDebugCustom { var rsDebugText: String { get } }
 /// Support types printed by `{:?}` under Rust's name (`RefCell { value: 1 }`).
 protocol RsDebugNamed { var rsDebugName: String { get } }
+"#;
+
+const FORMATTER: &str = r#"
+/// `fmt::Formatter`: the text being written and the spec of the placeholder being filled
+/// (`{:>8.2}`), for a `Display` or `Debug` that asks for them.
+final class RsFormatter {
+    var out = ""
+    var style: RsDebugStyle
+    var alternate: Bool
+    var signPlus: Bool
+
+    init(width: Int? = nil, precision: Int? = nil, align: Character? = nil, fill: Character = " ", zero: Bool = false, alternate: Bool = false, signPlus: Bool = false) {
+        style = RsDebugStyle(width: width, align: align, fill: fill, zero: zero, precision: precision)
+        self.alternate = alternate
+        self.signPlus = signPlus
+    }
+
+    init(style: RsDebugStyle, alternate: Bool) {
+        self.style = style
+        self.alternate = alternate
+        signPlus = false
+    }
+
+    var width: Int? { style.width }
+    var precision: Int? { style.precision }
+    var fill: Character { style.fill }
+    var zero: Bool { style.zero }
+    var signMinus: Bool { false }
+
+    /// `write!(f, …)`, `f.write_str(s)`.
+    func write(_ s: String) { out += s }
+
+    /// `f.pad(s)`: the text cut to the precision and padded to the width.
+    func pad(_ s: String) {
+        var s = s
+        if let precision = style.precision { s = String(s.prefix(precision)) }
+        if let width = style.width { s = rsPad(s, width, style.align ?? "<", style.fill) }
+        out += s
+    }
+
+    /// `f.pad_integral(is_nonnegative, prefix, digits)`: a number with its sign and, for `#`,
+    /// its prefix, the zeros of `0` after them.
+    func padIntegral(_ nonNegative: Bool, _ prefix: String, _ digits: String) {
+        var head = nonNegative ? (signPlus ? "+" : "") : "-"
+        if alternate { head += prefix }
+        guard let width = style.width, head.count + digits.count < width else {
+            out += head + digits
+            return
+        }
+        if style.zero {
+            out += head + String(repeating: "0", count: width - head.count - digits.count) + digits
+        } else {
+            out += rsPad(head + digits, width, style.align ?? ">", style.fill)
+        }
+    }
+
+    /// `value.fmt(f)` of a `Display`: the value written with this spec.
+    func display(_ value: Any) {
+        switch value {
+        case let v as RsFormat: v.rsFormat(self)
+        case let s as String: pad(s)
+        case let s as Substring: pad(String(s))
+        case let c as Character: pad(String(c))
+        case let b as Bool: pad(b ? "true" : "false")
+        case let d as Double: number(style.precision.map { rsFixed(d, $0) } ?? rsDisplay(d))
+        case let x as Float: number(style.precision.map { rsFixed(x, $0) } ?? rsDisplay(x))
+        case is Int, is Int8, is Int16, is Int32, is Int64, is UInt, is UInt8, is UInt16, is UInt32, is UInt64:
+            number("\(value)")
+        default: out += "\(value)"
+        }
+    }
+
+    /// `value.fmt(f)` of a `Debug`.
+    func debug(_ value: Any) { out += rsDebug(value, pretty: alternate, style: style) }
+
+    private func number(_ s: String) {
+        var s = s
+        if signPlus { s = rsSign(s) }
+        if let width = style.width { s = style.zero ? rsPadZero(s, width) : rsPad(s, width, style.align ?? ">", style.fill) }
+        out += s
+    }
+
+    func debugStruct(_ name: String) -> RsDebugBuilder { RsDebugBuilder(self, .structure, name) }
+    func debugTuple(_ name: String) -> RsDebugBuilder { RsDebugBuilder(self, .tuple, name) }
+    func debugList() -> RsDebugBuilder { RsDebugBuilder(self, .list, "[") }
+    func debugSet() -> RsDebugBuilder { RsDebugBuilder(self, .set, "{") }
+    func debugMap() -> RsDebugBuilder { RsDebugBuilder(self, .map, "{") }
+}
+
+/// A `Display` written with its formatter: `description` is its text with no spec.
+protocol RsFormat: CustomStringConvertible {
+    func rsFormat(_ f: RsFormatter)
+}
+
+extension RsFormat {
+    var description: String { rsFormatted(RsFormatter()) }
+
+    /// The text of a placeholder with a spec (`{:>8}`).
+    func rsFormatted(_ f: RsFormatter) -> String {
+        rsFormat(f)
+        return f.out
+    }
+}
+
+/// A `Debug` written with its formatter (`f.debug_struct(…)`).
+protocol RsDebugFormat: RsDebugText, CustomDebugStringConvertible {
+    func rsDebugFormat(_ f: RsFormatter)
+}
+
+extension RsDebugFormat {
+    var debugDescription: String { rsDebugText(pretty: false, style: RsDebugStyle()) }
+
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        let f = RsFormatter(style: style, alternate: pretty)
+        rsDebugFormat(f)
+        return f.out
+    }
+}
+
+/// `f.debug_struct("Name")`, `f.debug_tuple`, `f.debug_list`, `f.debug_set`, `f.debug_map`:
+/// Rust's layout of the fields, on one line or, for `{:#?}`, one per line.
+final class RsDebugBuilder {
+    enum Kind { case structure, tuple, list, set, map }
+
+    private let f: RsFormatter
+    private let kind: Kind
+    private let name: String
+    private var fields = 0
+
+    init(_ f: RsFormatter, _ kind: Kind, _ name: String) {
+        self.f = f
+        self.kind = kind
+        self.name = name
+        f.out += name
+    }
+
+    /// The `{:?}` of a value inside, its lines indented when pretty.
+    private func text(_ value: Any) -> String {
+        let s = rsDebug(value, pretty: f.alternate, style: f.style)
+        return f.alternate ? s.split(separator: "\n", omittingEmptySubsequences: false).joined(separator: "\n    ") : s
+    }
+
+    @discardableResult
+    func field(_ name: String, _ value: Any) -> RsDebugBuilder {
+        if f.alternate {
+            f.out += (fields == 0 ? " {\n" : "") + "    " + name + ": " + text(value) + ",\n"
+        } else {
+            f.out += (fields == 0 ? " { " : ", ") + name + ": " + text(value)
+        }
+        fields += 1
+        return self
+    }
+
+    @discardableResult
+    func field(_ value: Any) -> RsDebugBuilder {
+        if f.alternate {
+            f.out += (fields == 0 ? "(\n" : "") + "    " + text(value) + ",\n"
+        } else {
+            f.out += (fields == 0 ? "(" : ", ") + text(value)
+        }
+        fields += 1
+        return self
+    }
+
+    @discardableResult
+    func entry(_ value: Any) -> RsDebugBuilder {
+        if f.alternate {
+            f.out += (fields == 0 ? "\n" : "") + "    " + text(value) + ",\n"
+        } else {
+            f.out += (fields == 0 ? "" : ", ") + text(value)
+        }
+        fields += 1
+        return self
+    }
+
+    @discardableResult
+    func entry(_ key: Any, _ value: Any) -> RsDebugBuilder {
+        self.key(key)
+        return self.value(value)
+    }
+
+    @discardableResult
+    func key(_ key: Any) -> RsDebugBuilder {
+        if f.alternate {
+            f.out += (fields == 0 ? "\n" : "") + "    " + text(key) + ": "
+        } else {
+            f.out += (fields == 0 ? "" : ", ") + text(key) + ": "
+        }
+        return self
+    }
+
+    @discardableResult
+    func value(_ value: Any) -> RsDebugBuilder {
+        f.out += text(value) + (f.alternate ? ",\n" : "")
+        fields += 1
+        return self
+    }
+
+    @discardableResult
+    func entries<S: Sequence>(_ items: S) -> RsDebugBuilder {
+        for item in items {
+            let parts = Mirror(reflecting: item).children.map(\.value)
+            if kind == .map && parts.count == 2 {
+                entry(parts[0], parts[1])
+            } else {
+                entry(item)
+            }
+        }
+        return self
+    }
+
+    func finish() {
+        switch kind {
+        case .structure:
+            if fields > 0 { f.out += f.alternate ? "}" : " }" }
+        case .tuple:
+            if fields > 0 { f.out += f.alternate ? ")" : (fields == 1 && name.isEmpty ? ",)" : ")") }
+        case .list:
+            f.out += "]"
+        case .set, .map:
+            f.out += "}"
+        }
+    }
+
+    /// `finish_non_exhaustive()`: `..` after the fields.
+    func finishNonExhaustive() {
+        let close: String
+        switch kind {
+        case .structure: close = "}"
+        case .tuple: close = ")"
+        case .list: close = "]"
+        case .set, .map: close = "}"
+        }
+        if fields == 0 {
+            f.out += kind == .structure ? " { .. }" : (kind == .tuple ? "(..)" : ".." + close)
+        } else if f.alternate {
+            f.out += "    ..\n" + close
+        } else {
+            f.out += kind == .structure ? ", .. }" : ", .." + close
+        }
+    }
+}
 "#;
 
 const PAD: &str = r#"

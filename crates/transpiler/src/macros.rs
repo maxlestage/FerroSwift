@@ -148,6 +148,12 @@ impl Translator<'_> {
                 } else {
                     "\"\\n\"".into()
                 };
+                // `write!(f, …)` in a `fmt` written with its formatter.
+                if target.ty == Ty::Named("Formatter".into(), vec![])
+                    && !target.code.contains("fmt:")
+                {
+                    return vec![format!("{target_code}.write({text})")];
+                }
                 vec![format!("{target_code} += {text}")]
             }
             "panic" | "unreachable" | "todo" | "unimplemented" => {

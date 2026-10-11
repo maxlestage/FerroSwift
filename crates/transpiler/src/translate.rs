@@ -89,6 +89,8 @@ pub struct Translator<'a> {
     pub closure_generics: std::collections::HashMap<String, Ty>,
     /// Generic parameters bounded by `Into<f64>`: `.into()` on them is `.rsDouble`.
     pub into_double_params: std::collections::HashSet<String>,
+    /// Inside the `fmt` of a `Debug` written with a formatter: `x.fmt(f)` is `f.debug(x)`.
+    pub fmt_debug: bool,
     /// Labels of the loops being translated, innermost last.
     pub loops: Vec<Option<String>>,
     /// `switch` statements between the innermost loop and the code being translated: a
@@ -151,6 +153,7 @@ impl<'a> Translator<'a> {
             generics: Vec::new(),
             closure_generics: std::collections::HashMap::new(),
             into_double_params: std::collections::HashSet::new(),
+            fmt_debug: false,
             loops: Vec::new(),
             switch_depth: 0,
             used_labels: std::collections::HashSet::new(),
@@ -1701,18 +1704,42 @@ impl<'a> Translator<'a> {
         let mut prev = imp.span().start().line;
         match trait_name.as_deref() {
             Some("Display") => {
-                conformance = Some("CustomStringConvertible".into());
+                let formatter = self.syms.fmt_queries.contains(&rust_name);
+                conformance = Some(
+                    if formatter {
+                        "RsFormat"
+                    } else {
+                        "CustomStringConvertible"
+                    }
+                    .into(),
+                );
                 for it in &imp.items {
                     if let ImplItem::Fn(f) = it {
-                        members.push(self.fmt_impl(f, "description"));
+                        members.push(if formatter {
+                            self.fmt_function(f, "rsFormat", false)
+                        } else {
+                            self.fmt_impl(f, "description")
+                        });
                     }
                 }
             }
             Some("Debug") => {
-                conformance = Some("CustomDebugStringConvertible".into());
+                let formatter = self.syms.debug_queries.contains(&rust_name);
+                conformance = Some(
+                    if formatter {
+                        "RsDebugFormat"
+                    } else {
+                        "CustomDebugStringConvertible"
+                    }
+                    .into(),
+                );
                 for it in &imp.items {
                     if let ImplItem::Fn(f) = it {
-                        members.push(self.fmt_impl(f, "debugDescription"));
+                        members.push(if formatter {
+                            self.fmt_function(f, "rsDebugFormat", true)
+                        } else {
+                            self.fmt_impl(f, "debugDescription")
+                        });
                     }
                 }
             }
@@ -1915,15 +1942,37 @@ impl<'a> Translator<'a> {
         }
     }
 
+    /// A `fmt` that asks its formatter for the spec (`f.pad`, `f.precision()`,
+    /// `f.debug_struct`): `func rsFormat(_ f: RsFormatter)`, the text written through `f`.
+    fn fmt_function(&mut self, f: &syn::ImplItemFn, name: &str, debug: bool) -> String {
+        self.helper("formatter");
+        let param = crate::symbols::formatter_param(f).unwrap_or_else(|| "f".into());
+        self.push_scope();
+        self.fns.push(FnCx {
+            ret: Ty::Unit,
+            throws: None,
+            init: false,
+            closure: false,
+            self_name: None,
+            key_path: None,
+        });
+        let swift_param = self.declare(&param, Ty::Named("Formatter".into(), vec![]));
+        let was_debug = std::mem::replace(&mut self.fmt_debug, debug);
+        let body = self.block_lines(&f.block, Sink::Discard);
+        self.fmt_debug = was_debug;
+        self.fns.pop();
+        self.pop_scope();
+        let body = self.resolve_slots(&body.join("\n"));
+        format!(
+            "{}func {name}(_ {swift_param}: RsFormatter) {{\n{}\n}}",
+            docs(&f.attrs),
+            indent_lines(&body)
+        )
+    }
+
     /// `fn fmt(&self, f: &mut Formatter) -> fmt::Result` → `var description: String`.
     fn fmt_impl(&mut self, f: &syn::ImplItemFn, property: &str) -> String {
-        let param = f.sig.inputs.iter().find_map(|a| match a {
-            FnArg::Typed(p) => match &*p.pat {
-                Pat::Ident(i) => Some(i.ident.to_string()),
-                _ => None,
-            },
-            _ => None,
-        });
+        let param = crate::symbols::formatter_param(f);
         self.push_scope();
         self.fns.push(FnCx {
             ret: Ty::Unit,
