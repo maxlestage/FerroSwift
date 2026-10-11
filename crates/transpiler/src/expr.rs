@@ -987,6 +987,10 @@ impl Translator<'_> {
                 let v = self.expr_with(&u.expr, expected);
                 let v = self.settle(v);
                 let weak = v.weak;
+                // `-128i8` is `Int8(128)` negated: the literal must carry the sign itself.
+                if let Some((ty_name, digits)) = typed_literal(&v.code) {
+                    return Ex::primary(format!("{ty_name}(-{digits})"), v.ty);
+                }
                 let mut ex = Ex::new(format!("-{}", wrap(&v, P_PREFIX)), P_PREFIX, v.ty);
                 ex.weak = weak;
                 ex
@@ -2000,6 +2004,20 @@ fn single_expr(b: &syn::Block) -> Option<&Expr> {
 }
 
 /// A variable, a field or an element: something Swift can mutate in place.
+/// `Int8(128)`: a number literal wrapped in its type, as the type and the digits.
+fn typed_literal(code: &str) -> Option<(&str, &str)> {
+    let open = code.find('(')?;
+    let (ty, rest) = code.split_at(open);
+    let digits = rest.strip_prefix('(')?.strip_suffix(')')?;
+    let typed = !ty.is_empty()
+        && ty.chars().all(|c| c.is_ascii_alphanumeric())
+        && ty.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+    let number = !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && digits.chars().next().is_some_and(|c| c.is_ascii_digit());
+    (typed && number).then_some((ty, digits))
+}
+
 pub fn is_place(e: &Expr) -> bool {
     match e {
         Expr::Path(_) | Expr::Field(_) | Expr::Index(_) => true,

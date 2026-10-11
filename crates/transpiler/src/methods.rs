@@ -1883,6 +1883,16 @@ impl Translator<'_> {
                     );
                 }
                 "iter" | "into_iter" => {
+                    // A bare `None.iter()` has nothing to map: an empty array, typed when
+                    // the element type is known.
+                    if r == "nil" {
+                        let code = if inner.is_complete() {
+                            format!("[{}]()", inner.swift_lossy())
+                        } else {
+                            "[]".into()
+                        };
+                        return prim(code, Ty::Vec(Box::new(inner)));
+                    }
                     return prim(
                         format!("({r}.map {{ [$0] }} ?? [])"),
                         Ty::Vec(Box::new(inner)),
@@ -2039,11 +2049,10 @@ impl Translator<'_> {
                 "push" => return prim(format!("{r}.append({})", a(0)), Ty::Unit),
                 "pop" => return prim(format!("{r}.popLast()"), Ty::Option(Box::new(Ty::Char))),
                 "clear" => return prim(format!("{r}.removeAll()"), Ty::Unit),
+                // Rust's `char`s are Unicode scalars; Swift's characters are grapheme clusters.
                 "chars" => {
-                    return Ex {
-                        ty: Ty::Iter(Box::new(Ty::Char)),
-                        ..recv
-                    };
+                    self.helper("chars");
+                    return prim(format!("{r}.rsChars"), Ty::Iter(Box::new(Ty::Char)));
                 }
                 "bytes" => {
                     return prim(
@@ -2573,6 +2582,29 @@ impl Translator<'_> {
                         return prim(code, ret);
                     }
                     return prim(format!("{r}.{}({})", names::lower_camel(name), a(0)), ret);
+                }
+                // `x.checked_abs()`, `x.wrapping_neg()`: within the 32-bit limits of `i32`.
+                "checked_abs" | "checked_neg" | "wrapping_neg" | "wrapping_abs"
+                | "saturating_neg" | "saturating_abs"
+                    if t.is_int() =>
+                {
+                    self.helper("int");
+                    let f = names::lower_camel(name);
+                    let ret = if name.starts_with("checked") {
+                        Ty::Option(Box::new(t.clone()))
+                    } else {
+                        t.clone()
+                    };
+                    if t == Ty::Int(IntKind::I32) {
+                        let call = format!("Int32(truncatingIfNeeded: {}).{f}()", recv.code);
+                        let code = if name.starts_with("checked") {
+                            format!("{call}.map {{ Int($0) }}")
+                        } else {
+                            format!("Int({call})")
+                        };
+                        return prim(code, ret);
+                    }
+                    return prim(format!("{r}.{f}()"), ret);
                 }
                 "cmp" => {
                     self.helper("Ordering");
@@ -3229,11 +3261,18 @@ impl Translator<'_> {
                 self.helper("vec");
                 prim(format!("{r}.stepBy({})", a(0)), iter(item))
             }
-            "chain" => Ex::new(
-                format!("Array({}) + Array({})", recv.code, a(0)),
-                P_ADD,
-                iter(item),
-            ),
+            "chain" => {
+                let other = a(0);
+                // Chaining an untyped empty array (`None.iter()`) adds nothing.
+                if other == "[]" {
+                    return Some(prim(format!("Array({})", recv.code), iter(item)));
+                }
+                Ex::new(
+                    format!("Array({}) + Array({other})", recv.code),
+                    P_ADD,
+                    iter(item),
+                )
+            }
             "cycle" => {
                 self.helper("iter");
                 prim(format!("rsCycle({})", recv.code), iter(item))
@@ -3355,6 +3394,21 @@ impl Translator<'_> {
                     Ty::Option(Box::new(ret)),
                 )
             }
+            // Characters and lazy sequences have no integer index: count instead.
+            "position" | "rposition"
+                if recv.code.contains(".rsChars") || recv.code.contains(".lazy") =>
+            {
+                self.helper("vec");
+                let f = if name == "position" {
+                    "rsPosition"
+                } else {
+                    "rsRposition"
+                };
+                prim(
+                    format!("{r}.{f}(where: {})", a(0)),
+                    Ty::Option(Box::new(usize_ty)),
+                )
+            }
             "position" => prim(
                 format!("{r}.firstIndex(where: {})", a(0)),
                 Ty::Option(Box::new(usize_ty)),
@@ -3407,19 +3461,22 @@ impl Translator<'_> {
         let item = recv.ty.item();
         let code = recv.code.clone();
         // These methods already return an `Array`.
-        let is_array_chain = code.starts_with('[')
-            || matches!(
-                last_member(&code).as_deref(),
-                Some(
-                    "map"
-                        | "filter"
-                        | "compactMap"
-                        | "flatMap"
-                        | "sorted"
-                        | "components"
-                        | "shuffled"
-                )
-            );
+        // A lazy sequence (`s.rsChars`, `.lazy`) is not an array, whatever its last call.
+        let lazy = code.contains(".rsChars") || code.contains(".lazy");
+        let is_array_chain = !lazy
+            && ((code.starts_with('[') && code.ends_with(']'))
+                || matches!(
+                    last_member(&code).as_deref(),
+                    Some(
+                        "map"
+                            | "filter"
+                            | "compactMap"
+                            | "flatMap"
+                            | "sorted"
+                            | "components"
+                            | "shuffled"
+                    )
+                ));
         match &target {
             // Pieces of text are joined; characters make a string.
             Ty::Str if item == Ty::Str => Ex::primary(format!("{code}.joined()"), Ty::Str),
