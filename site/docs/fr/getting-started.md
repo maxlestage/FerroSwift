@@ -16,7 +16,7 @@ La traduction elle-même fonctionne partout où Rust fonctionne : vous pouvez é
 ## Installer la CLI
 
 ```sh
-cargo install ferroswift-cli
+cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli
 ferroswift --version
 ```
 

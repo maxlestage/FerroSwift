@@ -7,7 +7,7 @@ crate directly.
 
 ```toml
 [dependencies]
-ferroswift = "0.1"
+ferroswift = { git = "https://github.com/maxlestage/FerroSwift" }
 ```
 
 Proprietary software: © 2026 Maxime Nathan Lestage, all rights reserved. Free to use as a

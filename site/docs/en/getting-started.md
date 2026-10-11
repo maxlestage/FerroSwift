@@ -16,7 +16,7 @@ The translation itself runs anywhere Rust runs: you can write and check the Rust
 ## Install the CLI
 
 ```sh
-cargo install ferroswift-cli
+cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli
 ferroswift --version
 ```
 

@@ -7,7 +7,7 @@ order: 4
 `ferroswift` traduit un crate Rust en fichiers Swift. Installez-la avec cargo :
 
 ```sh
-cargo install ferroswift-cli
+cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli
 ```
 
 ## Les commandes

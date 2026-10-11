@@ -18,6 +18,7 @@ edition = "2024"
 rust-version = "1.85"
 license-file = "LICENSE"
 homepage = "https://maxlestage.github.io/FerroSwift/"
+repository = "https://github.com/maxlestage/FerroSwift"
 authors = ["Maxime Nathan Lestage"]
 
 [profile.release]
