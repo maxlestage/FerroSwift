@@ -288,6 +288,9 @@ impl Translator<'_> {
                         self.helper("Ordering");
                         return format!(".{}", names::case_name(&last));
                     }
+                    if segs[segs.len() - 2] == "IntErrorKind" {
+                        return format!("RsParseIntError.Kind.{}", names::case_name(&last));
+                    }
                     if let Some(c) = self.ui_case(&segs[segs.len() - 2], &last) {
                         return c;
                     }
@@ -486,6 +489,9 @@ impl Translator<'_> {
                 })
             }
             Pat::Slice(_) => true,
+            // `Some((c,))`: the support struct of a tuple of one element, bound whole.
+            Pat::Tuple(t) => t.elems.len() == 1 && !matches!(t.elems[0], Pat::Rest(_)),
+            Pat::Paren(p) => matches!(&*p.pat, Pat::Tuple(t) if t.elems.len() == 1),
             _ => false,
         };
         if !nested {

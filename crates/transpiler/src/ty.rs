@@ -117,6 +117,8 @@ pub enum Ty {
     Tuple(Vec<Ty>),
     /// Closures and function pointers: parameters, result.
     Fn(Vec<Ty>, Box<Ty>),
+    /// A `&mut T` parameter of a closure type (`dyn Fn(&mut State)`): `inout T`.
+    Inout(Box<Ty>),
     /// `a..b`, `a..=b`.
     Range(Box<Ty>),
     /// A lazy iterator over items of this type.
@@ -188,6 +190,7 @@ impl Ty {
             Ty::Map(k, v, _) | Ty::Result(k, v) => k.is_complete() && v.is_complete(),
             Ty::Tuple(ts) => ts.iter().all(Ty::is_complete),
             Ty::Fn(ps, r) => ps.iter().all(Ty::is_complete) && r.is_complete(),
+            Ty::Inout(t) => t.is_complete(),
             Ty::Named(_, args) => args.iter().all(Ty::is_complete),
             _ => true,
         }
@@ -333,6 +336,10 @@ impl Ty {
                 out.push_str(") -> ");
                 r.write_swift(out);
             }
+            Ty::Inout(t) => {
+                out.push_str("inout ");
+                t.write_swift(out);
+            }
             Ty::Range(t) => {
                 out.push_str("Range<");
                 t.write_swift(out);
@@ -451,6 +458,7 @@ pub fn from_name(name: &str, args: Vec<Ty>) -> Ty {
         "Vec" | "VecDeque" | "LinkedList" => Ty::Vec(Box::new(arg(0))),
         "BinaryHeap" => Ty::Named("RsBinaryHeap".into(), vec![arg(0)]),
         "Duration" => Ty::Named("RsDuration".into(), vec![]),
+        "IntErrorKind" => Ty::Named("RsParseIntError.Kind".into(), vec![]),
         // Ranges kept in a field or a variable: Swift's own range types.
         "RangeInclusive" => Ty::Named("ClosedRange".into(), vec![arg(0)]),
         // `Reverse<T>` written as a type: the support wrapper (its value is `RsReverse(x)`).

@@ -91,8 +91,11 @@ impl Translator<'_> {
                 "Ok" | "Err" if c.args.len() == 1 => {
                     let (ok, err) = match expected {
                         Ty::Result(o, e) => ((**o).clone(), (**e).clone()),
+                        // `Err::<i32, _>(e)`: the types written, the other from the value.
+                        _ if turbofish.len() == 2 => (turbofish[0].clone(), turbofish[1].clone()),
                         _ => (Ty::Unknown, Ty::Unknown),
                     };
+                    let spelled = !matches!(expected, Ty::Result(..)) && turbofish.len() == 2;
                     let (case, arg_ty) = if last == "Ok" {
                         ("success", &ok)
                     } else {
@@ -110,6 +113,12 @@ impl Translator<'_> {
                     } else {
                         format!(".{case}({})", v.code)
                     };
+                    // Nothing else tells the type: `Result<Int, RsParseIntError>.failure(e)`.
+                    if spelled {
+                        if let Some(t) = ty.swift() {
+                            return Ex::primary(format!("{t}{code}"), ty);
+                        }
+                    }
                     return Ex::primary(code, ty);
                 }
                 _ => {}
@@ -127,8 +136,12 @@ impl Translator<'_> {
                         ps.iter()
                             .enumerate()
                             .map(|(i, t)| ParamInfo {
-                                ty: t.clone(),
-                                inout: inouts.get(i).copied().unwrap_or(false),
+                                ty: match t {
+                                    Ty::Inout(inner) => (**inner).clone(),
+                                    t => t.clone(),
+                                },
+                                inout: inouts.get(i).copied().unwrap_or(false)
+                                    || matches!(t, Ty::Inout(_)),
                                 into: false,
                             })
                             .collect(),
@@ -170,10 +183,23 @@ impl Translator<'_> {
                 }
             }
             if let Some(mut sig) = self.syms.fns.get(&last).cloned() {
+                // `read::<i32>(…)`, `let n: i32 = read(…)`: the bindings of the type
+                // parameters known before the arguments.
+                let mut known: std::collections::HashMap<String, Ty> = sig
+                    .generics
+                    .iter()
+                    .cloned()
+                    .zip(turbofish.iter().cloned())
+                    .filter(|(_, t)| t.is_complete())
+                    .collect();
+                unify(&sig.ret, expected, &sig.generics, &mut known);
+                self.pending_bindings = known;
                 // A result that is a bare type parameter (`fn make<T: Animal>() -> T`).
-                let generic_ret = match &sig.ret {
-                    Ty::Named(n, a) if a.is_empty() && sig.generics.contains(n) => sig.ret.clone(),
-                    _ => Ty::Unknown,
+                // A result that mentions a type parameter (`-> T`, `-> Option<T>`).
+                let generic_ret = if mentions_generic(&sig.ret, &sig.generics) {
+                    sig.ret.clone()
+                } else {
+                    Ty::Unknown
                 };
                 // `generic_max::<u8>(&[])`: the turbofish fixes the type parameters.
                 if !turbofish.is_empty() && turbofish.len() == sig.generics.len() {
@@ -476,6 +502,9 @@ impl Translator<'_> {
     ) -> Ex {
         let (mut codes, _, bound) = self.call_args_generic(args, Some(&sig.params), &sig.generics);
         codes.extend(extra.iter().cloned());
+        let mut known = std::mem::take(&mut self.pending_bindings);
+        known.extend(bound.clone());
+        codes.extend(parse_bits_args(sig, &known));
         // `group_by(&words, |w| w.len())`: the result's type parameters, from the arguments.
         let ret = crate::symbols::substitute(&sig.ret, &bound);
         let mut ex = Ex::primary(format!("{callee}({})", codes.join(", ")), ret.clone());
@@ -781,6 +810,16 @@ impl Translator<'_> {
                     crate::ty::from_name(owner, vec![]),
                 ))
             }
+            // `i32::from_str(s)`: `s.parse::<i32>()`.
+            (o, "from_str")
+                if args.len() == 1
+                    && (IntKind::parse(o).is_some()
+                        || matches!(o, "f64" | "f32" | "bool" | "char")) =>
+            {
+                let v = arg(self, 0, &Ty::Str);
+                let target = crate::ty::from_name(o, vec![]);
+                Some(self.parse_call(v, target, args.span()))
+            }
             ("String", "from" | "from_str") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Str);
                 if v.ty == Ty::Char {
@@ -796,6 +835,18 @@ impl Translator<'_> {
                     Ty::Result(
                         Box::new(Ty::Str),
                         Box::new(Ty::Named("RsFromUtf8Error".into(), vec![])),
+                    ),
+                ))
+            }
+            // `std::str::from_utf8(&bytes)`: the text, or Rust's `Utf8Error`.
+            ("str", "from_utf8") if args.len() == 1 => {
+                self.helper("utf8");
+                let v = arg(self, 0, &Ty::Vec(Box::new(Ty::Int(IntKind::U8))));
+                Some(Ex::primary(
+                    format!("rsStrFromUtf8({})", v.code),
+                    Ty::Result(
+                        Box::new(Ty::Str),
+                        Box::new(Ty::Named("RsUtf8Error".into(), vec![])),
                     ),
                 ))
             }
@@ -926,7 +977,8 @@ impl Translator<'_> {
                 let a = arg(self, 0, &Ty::Unknown);
                 let b = arg(self, 1, &a.ty);
                 let shared = matches!(&a.ty, Ty::Named(n, _) if n == "RsRefCell")
-                    || self.is_recursive_class(&a.ty);
+                    || self.is_recursive_class(&a.ty)
+                    || matches!(&a.ty, Ty::Dyn(_));
                 if !shared {
                     self.warn(
                         args.span(),
@@ -1201,6 +1253,23 @@ impl Translator<'_> {
     // ----- Method calls -----
 
     pub fn method_call(&mut self, m: &ExprMethodCall, expected: &Ty) -> Ex {
+        // `cur.take()` on a cursor local: the link emptied.
+        if m.method == "take" && m.args.is_empty() {
+            if let Expr::Path(p) = &*m.receiver {
+                let link = p
+                    .path
+                    .get_ident()
+                    .and_then(|id| self.lookup(&id.to_string()))
+                    .and_then(|l| {
+                        l.link_root
+                            .clone()
+                            .map(|r| (l.swift.clone(), r, self.local_ty(l)))
+                    });
+                if let Some((swift, root, ty)) = link {
+                    return Ex::primary(format!("{swift}.take(&{root})"), ty);
+                }
+            }
+        }
         let name = m.method.to_string();
         if let Some(ex) = self.ui_method_chain(m, expected) {
             return ex;
@@ -1423,7 +1492,23 @@ impl Translator<'_> {
             } else {
                 format!("{}.{}", wrap(&recv, P_PRIMARY), names::lower_camel(&name))
             };
-            let (codes, arg_tys) = self.call_args_typed(&m.args, Some(&sig.params));
+            let (mut codes, arg_tys) = self.call_args_typed(&m.args, Some(&sig.params));
+            // The method's own type parameters: from the turbofish, the arguments and the
+            // expected result (`let x: i32 = r.get(s)`).
+            let method_turbofish = self.method_turbofish(m);
+            let mut method_bound = std::collections::HashMap::new();
+            if !sig.generics.is_empty() {
+                for (g, t) in sig.generics.iter().zip(method_turbofish.iter()) {
+                    if t.is_complete() {
+                        method_bound.insert(g.clone(), t.clone());
+                    }
+                }
+                for (param, arg) in sig.params.iter().zip(&arg_tys) {
+                    unify(&param.ty, arg, &sig.generics, &mut method_bound);
+                }
+                unify(&sig.ret, expected, &sig.generics, &mut method_bound);
+                codes.extend(parse_bits_args(&sig, &method_bound));
+            }
             if sig.property {
                 return Ex::primary(callee, sig.ret.clone());
             }
@@ -1439,6 +1524,16 @@ impl Translator<'_> {
             let mut ex = self.sig_result(format!("{callee}({})", codes.join(", ")), &sig);
             if sig.returns_self_mut {
                 ex.ty = Ty::Unit;
+            }
+            // `r.get::<i32>(s)`: a result that only the turbofish tells.
+            if !method_turbofish.is_empty()
+                && mentions_generic(&sig.ret, &sig.generics)
+                && ex.throws.is_none()
+            {
+                let ret = crate::symbols::substitute(&ex.ty, &method_bound);
+                if let Some(t) = ret.swift().filter(|_| ret.is_complete()) {
+                    ex = Ex::new(format!("{} as {t}", ex.code), P_CMP, ret);
+                }
             }
             let returns_self = ex.ty == Ty::Named("Self".into(), vec![]);
             if returns_self {
@@ -2105,9 +2200,13 @@ impl Translator<'_> {
             // Rust reads the type `T` stands for.
             Ty::Named(n, _) if self.generics.contains(n) => {
                 self.helper("parse_any");
+                let bits = match self.parse_bits.get(n) {
+                    Some(var) => format!(", bits: {var}"),
+                    None => String::new(),
+                };
                 Ex::primary(
-                    format!("rsParseAny({s}, {n}.self)"),
-                    result(&target, "RsParseError"),
+                    format!("rsParseAny({s}, {n}.self{bits})"),
+                    result(&target, "RsAnyParseError"),
                 )
             }
             Ty::Named(n, _) => match self.user_method(&target, "from_str") {
@@ -2236,6 +2335,29 @@ impl Translator<'_> {
             },
             _ => recv,
         };
+        // `e.kind()` of a `ParseIntError`: its `IntErrorKind`.
+        if name == "kind" && args.is_empty() && recv.ty.named() == Some("RsParseIntError") {
+            return Ex::primary(
+                format!("{}.kind", wrap(&recv, P_PRIMARY)),
+                Ty::Named("RsParseIntError.Kind".into(), vec![]),
+            );
+        }
+        // `any.downcast_ref::<Circle>()`, `any.is::<Circle>()`: Swift's casts.
+        if matches!(name, "downcast_ref" | "downcast_mut" | "downcast" | "is") && args.is_empty() {
+            if let Some(t) = turbofish.first().filter(|t| t.is_complete()) {
+                let target = t.swift_lossy();
+                let r = wrap(&recv, P_CMP + 1);
+                return if name == "is" {
+                    Ex::new(format!("{r} is {target}"), P_CMP, Ty::Bool)
+                } else {
+                    Ex::new(
+                        format!("{r} as? {target}"),
+                        P_CMP,
+                        Ty::Option(Box::new(t.clone())),
+                    )
+                };
+            }
+        }
         if let Ty::Range(t) = &recv.ty {
             let bound = |field: &str| {
                 Ex::primary(format!("{}.{field}", wrap(&recv, P_PRIMARY)), (**t).clone())
@@ -4936,6 +5058,39 @@ fn last_member(code: &str) -> Option<String> {
 }
 
 /// Binds the generic parameters of `param` to the parts of `arg`.
+/// Whether the type mentions one of the type parameters.
+fn mentions_generic(t: &Ty, generics: &[String]) -> bool {
+    match t {
+        Ty::Named(n, args) => {
+            (args.is_empty() && generics.contains(n))
+                || args.iter().any(|a| mentions_generic(a, generics))
+        }
+        Ty::Vec(i) | Ty::Set(i, _) | Ty::Option(i) | Ty::Iter(i) | Ty::Range(i) | Ty::Inout(i) => {
+            mentions_generic(i, generics)
+        }
+        Ty::Map(k, v, _) | Ty::Result(k, v) => {
+            mentions_generic(k, generics) || mentions_generic(v, generics)
+        }
+        Ty::Tuple(ts) => ts.iter().any(|t| mentions_generic(t, generics)),
+        Ty::Fn(ps, r) => {
+            ps.iter().any(|t| mentions_generic(t, generics)) || mentions_generic(r, generics)
+        }
+        _ => false,
+    }
+}
+
+/// `rsBitsT: 32` for each `T: FromStr` of the callee bound to a Rust integer that Swift
+/// widens (`i32`, Swift's `Int`).
+fn parse_bits_args(sig: &FnSig, bound: &std::collections::HashMap<String, Ty>) -> Vec<String> {
+    sig.parse_generics
+        .iter()
+        .filter_map(|g| match bound.get(g) {
+            Some(Ty::Int(k)) => k.narrow_bits().map(|b| format!("rsBits{g}: {b}")),
+            _ => None,
+        })
+        .collect()
+}
+
 fn unify(
     param: &Ty,
     arg: &Ty,

@@ -31,6 +31,9 @@ pub struct Local {
     /// The placeholder of its declared type, refined by later uses (`v.push(1)`).
     pub slot: Option<usize>,
     pub alias: bool,
+    /// `let mut cur = &mut self.head;` re-pointed later (`cur = &mut node.next`): a cursor
+    /// (`RsLink`) on a link between class nodes, with the Swift place it started from.
+    pub link_root: Option<String>,
 }
 
 #[derive(Default)]
@@ -108,6 +111,10 @@ pub struct Translator<'a> {
     /// The (type, trait) pairs whose first `impl Trait<…> for Type` has been written: a
     /// second one (`impl Converter<i32>` after `impl Converter<f64>`) is a plain extension.
     pub generic_impls_done: std::collections::HashSet<(String, String)>,
+    /// `T` → `rsBitsT` in a function with `T: FromStr` (see `FnSig::parse_generics`).
+    pub parse_bits: std::collections::HashMap<String, String>,
+    /// The type parameters a call knows before its arguments (turbofish, expected result).
+    pub pending_bindings: std::collections::HashMap<String, Ty>,
     /// The variables being assigned by the branches of a `let x = match …` (Swift names),
     /// with the slot of their type: a binding of a branch must not take their name.
     pub assign_slots: std::collections::HashMap<String, usize>,
@@ -142,6 +149,9 @@ pub struct Translator<'a> {
     pub generic_call: usize,
     /// Parameters of the function being translated that its body uses as values.
     pub escaping_params: std::collections::HashSet<String>,
+    /// The locals assigned somewhere in the blocks being translated (`cur = …`): a `let
+    /// mut cur = &mut place` among them is a cursor, not an alias of the place.
+    pub reassigned_lets: std::collections::HashSet<String>,
     /// Locals being declared (`let max = …`): their initializers already see the shadowing.
     pub pending_locals: Vec<String>,
     /// A key-path method call is wanted raw (see `raw_key_path_call`).
@@ -179,6 +189,8 @@ impl<'a> Translator<'a> {
             assign_slots: std::collections::HashMap::new(),
             into_iter_done: std::collections::HashSet::new(),
             generic_impls_done: std::collections::HashSet::new(),
+            parse_bits: std::collections::HashMap::new(),
+            pending_bindings: std::collections::HashMap::new(),
             last_closure_inouts: Vec::new(),
             closure_inouts: std::collections::HashMap::new(),
             impl_closure_generics: std::collections::HashMap::new(),
@@ -196,6 +208,7 @@ impl<'a> Translator<'a> {
             result_values: 0,
             generic_call: 0,
             escaping_params: std::collections::HashSet::new(),
+            reassigned_lets: std::collections::HashSet::new(),
             pending_locals: Vec::new(),
             raw_key_path: false,
             key_path_raw: None,
@@ -285,6 +298,7 @@ impl<'a> Translator<'a> {
                 ty,
                 slot: None,
                 alias: false,
+                link_root: None,
             },
         ));
         swift
@@ -321,8 +335,18 @@ impl<'a> Translator<'a> {
                 ty,
                 slot: None,
                 alias: true,
+                link_root: None,
             },
         ));
+    }
+
+    /// Declares a cursor local (`RsLink`) on the links starting at the Swift place `root`.
+    pub fn declare_link(&mut self, rust: &str, root: String, ty: Ty) -> String {
+        let swift = self.declare(rust, ty);
+        if let Some(local) = self.lookup_mut(rust) {
+            local.link_root = Some(root);
+        }
+        swift
     }
 
     pub fn lookup(&self, rust: &str) -> Option<&Local> {
@@ -825,8 +849,9 @@ impl<'a> Translator<'a> {
         for pred in &w.predicates {
             if let syn::WherePredicate::Type(pt) = pred {
                 let ty = self.ty(&pt.bounded_ty);
-                // A parameter standing for a closure or a sequence: no protocol to require.
-                if matches!(ty, Ty::Fn(..) | Ty::Iter(_)) {
+                // A parameter standing for a closure or a sequence, or the error of a
+                // generic parse: no protocol to require.
+                if matches!(ty, Ty::Fn(..) | Ty::Iter(_)) || ty.named() == Some("RsAnyParseError") {
                     continue;
                 }
                 // `where C::Item: Display` → `where C.Item: CustomStringConvertible`.
@@ -2832,6 +2857,13 @@ impl<'a> Translator<'a> {
         // `fn report<T: FromStr>(inputs: &[&str])`: `T` is a trailing `T.Type` parameter.
         for g in crate::symbols::phantom_params(sig, &self.closure_generics) {
             params.push(format!("_: {g}.Type"));
+        }
+        // `T: FromStr`: the width of the Rust integer `T` stands for, given by the callers.
+        self.parse_bits.clear();
+        for g in crate::symbols::parse_generics(&sig.generics) {
+            let name = format!("rsBits{g}");
+            params.push(format!("{name}: Int = 0"));
+            self.parse_bits.insert(g, name);
         }
         let ret = match &sig.output {
             ReturnType::Default => Ty::Unit,

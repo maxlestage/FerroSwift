@@ -27,9 +27,9 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("vec", &["Ordering"], VEC),
     ("binary_search", &["Ordering", "IntError"], BINARY_SEARCH),
     ("reverse", &[], REVERSE),
-    ("try_from", &["debug_custom", "int_bounds"], TRY_FROM),
+    ("try_from", &["debug", "int_bounds"], TRY_FROM),
     ("int_bounds", &[], INT_BOUNDS),
-    ("parse", &["debug_custom", "int_bounds"], PARSE),
+    ("parse", &["debug", "int_bounds"], PARSE),
     ("utf8", &["debug"], UTF8),
     ("tuple1", &[], TUPLE1),
     ("heap", &[], HEAP),
@@ -44,6 +44,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("option", &[], OPTION),
     ("option_cmp", &[], OPTION_CMP),
     ("array_cmp", &[], ARRAY_CMP),
+    ("link", &[], LINK),
     ("result", &[], RESULT),
     ("int", &[], INT),
     ("mem", &[], MEM),
@@ -58,7 +59,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("BoolError", &[], BOOL_ERROR),
     ("CharError", &[], CHAR_ERROR),
     ("ParseError", &[], PARSE_ERROR),
-    ("parse_any", &["parse", "ParseError"], PARSE_ANY),
+    ("parse_any", &["parse", "ParseError", "debug"], PARSE_ANY),
     ("color_hex", &[], COLOR_HEX),
 ];
 
@@ -225,6 +226,31 @@ func rsDebug<T>(_ value: T, pretty: Bool = false, style: RsDebugStyle = RsDebugS
 /// A type whose `{:?}` is written by its own `fmt` with a formatter (`f.debug_struct(…)`).
 protocol RsDebugText {
     func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String
+}
+
+/// A value written bare by `{:?}` (`InvalidDigit`, the variant of a support enum).
+struct RsDebugBare: RsDebugCustom {
+    let rsDebugText: String
+}
+
+/// A support value as Rust's derived `Debug` writes a struct (`Name { a: 1 }`), a tuple
+/// struct (`Name(1)`, its labels empty) or a unit struct (no fields), in `{:?}` and `{:#?}`.
+func rsDebugRecord(_ name: String, _ fields: [(String, Any)], pretty: Bool, style: RsDebugStyle) -> String {
+    if fields.isEmpty { return name }
+    let tuple = fields.allSatisfy { $0.0.isEmpty }
+    var out = name + (tuple ? "(" : " {")
+    for (i, (label, value)) in fields.enumerated() {
+        var text = ""
+        rsDebugWrite(value, pretty, pretty ? 1 : 0, &text, style)
+        let head = label.isEmpty ? "" : label + ": "
+        if pretty {
+            out += "\n    " + head + text + ","
+        } else {
+            out += (i == 0 ? (tuple ? "" : " ") : ", ") + head + text
+        }
+    }
+    if pretty { return out + "\n" + (tuple ? ")" : "}") }
+    return out + (tuple ? ")" : " }")
 }
 
 /// An integer in `{:?}`; in `{:x?}`, its two's complement in the width of its type.
@@ -2077,9 +2103,11 @@ extension Optional {
 
 const TRY_FROM: &str = r#"
 /// `u8::try_from(x)`: `TryFromIntError` when the value does not fit.
-struct RsTryFromIntError: Error, Equatable, RsDebugCustom, CustomStringConvertible {
+struct RsTryFromIntError: Error, Equatable, RsDebugText, CustomStringConvertible {
     let negative: Bool
-    var rsDebugText: String { "TryFromIntError(\(negative ? "NegOverflow" : "PosOverflow"))" }
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebugRecord("TryFromIntError", [("", RsDebugBare(rsDebugText: negative ? "NegOverflow" : "PosOverflow"))], pretty: pretty, style: style)
+    }
     var description: String { "out of range integral type conversion attempted" }
 }
 
@@ -2411,6 +2439,39 @@ const CHAR_ERROR: &str = r#"
 extension Character: @retroactive Error {}
 "#;
 
+const LINK: &str = r#"
+/// `let mut cur = &mut self.head; … cur = &mut node.next;`: a cursor on a link between
+/// nodes (classes); the root link is the variable it started from, given at each use.
+struct RsLink<Node: AnyObject> {
+    var parent: Node? = nil
+    var path: ReferenceWritableKeyPath<Node, Node?>? = nil
+
+    /// The node the cursor points at.
+    func get(_ root: Node?) -> Node? {
+        if let parent, let path { return parent[keyPath: path] }
+        return root
+    }
+
+    /// `*cur = value`.
+    func set(_ root: inout Node?, _ value: Node?) {
+        if let parent, let path { parent[keyPath: path] = value } else { root = value }
+    }
+
+    /// `cur.take()`.
+    func take(_ root: inout Node?) -> Node? {
+        let value = get(root)
+        set(&root, nil)
+        return value
+    }
+
+    /// `cur = &mut node.next`.
+    mutating func move(_ node: Node, _ path: ReferenceWritableKeyPath<Node, Node?>) {
+        parent = node
+        self.path = path
+    }
+}
+"#;
+
 const ARRAY_CMP: &str = r#"
 /// `Vec`s compare element by element, the shorter first, as in Rust.
 extension Array: @retroactive Comparable where Element: Comparable {
@@ -2431,26 +2492,40 @@ struct RsParseError: Error, CustomStringConvertible {
 "#;
 
 const PARSE_ANY: &str = r#"
-/// `s.parse::<T>()` in generic code: the parse of the type `T` stands for, as Rust reads
-/// it (`Character("ab")` would trap, `Double("0x10")` read a hexadecimal number).
-func rsParseAny<T: LosslessStringConvertible>(_ s: String, _: T.Type) -> Result<T, RsParseError> {
-    func done<U>(_ r: U?) -> Result<T, RsParseError> {
-        if let v = r as? T { return .success(v) }
-        return .failure(RsParseError())
+/// `T::Err` of a generic `s.parse::<T>()`: the error of the type `T` stands for
+/// (`ParseIntError { kind: InvalidDigit }`, `ParseFloatError { kind: Invalid }`…).
+struct RsAnyParseError: Error, CustomStringConvertible, RsDebugText {
+    let inner: any Error
+    var description: String { String(describing: inner) }
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebug(inner, pretty: pretty, style: style)
     }
-    if T.self == Character.self { return done(try? rsParseChar(s).get()) }
-    if T.self == Bool.self { return done(try? rsParseBool(s).get()) }
-    if T.self == Double.self { return done(try? rsParseFloat(s, Double.self).get()) }
-    if T.self == Float.self { return done(try? rsParseFloat(s, Float.self).get()) }
-    if T.self == String.self { return done(s) }
-    if let intType = T.self as? any FixedWidthInteger.Type {
-        return done(rsParseAnyInt(s, intType))
-    }
-    return done(T(s))
 }
 
-private func rsParseAnyInt<I: FixedWidthInteger>(_ s: String, _ t: I.Type) -> I? {
-    try? rsParseInt(s, t).get()
+/// `s.parse::<T>()` in generic code: the parse of the type `T` stands for, as Rust reads
+/// it (`Character("ab")` would trap, `Double("0x10")` read a hexadecimal number), with
+/// that type's error.
+func rsParseAny<T: LosslessStringConvertible>(_ s: String, _: T.Type, bits: Int = 0) -> Result<T, RsAnyParseError> {
+    func done<U, E: Error>(_ r: Result<U, E>) -> Result<T, RsAnyParseError> {
+        switch r {
+        case .success(let v): return .success(v as! T)
+        case .failure(let e): return .failure(RsAnyParseError(inner: e))
+        }
+    }
+    if T.self == Character.self { return done(rsParseChar(s)) }
+    if T.self == Bool.self { return done(rsParseBool(s)) }
+    if T.self == Double.self { return done(rsParseFloat(s, Double.self)) }
+    if T.self == Float.self { return done(rsParseFloat(s, Float.self)) }
+    if T.self == String.self { return .success(s as! T) }
+    if let intType = T.self as? any FixedWidthInteger.Type {
+        return done(rsParseAnyInt(s, intType, bits))
+    }
+    if let v = T(s) { return .success(v) }
+    return .failure(RsAnyParseError(inner: RsParseError()))
+}
+
+private func rsParseAnyInt<I: FixedWidthInteger>(_ s: String, _ t: I.Type, _ bits: Int) -> Result<Any, RsParseIntError> {
+    rsParseInt(s, t, bits: bits == 0 ? I.bitWidth : bits).map { $0 as Any }
 }
 "#;
 
@@ -2481,10 +2556,12 @@ func rsIntBounds<T: FixedWidthInteger>(_: T.Type, _ bits: Int) -> (T, T) {
 
 const PARSE: &str = r#"
 /// `std::num::ParseIntError`.
-struct RsParseIntError: Error, Equatable, CustomStringConvertible, RsDebugCustom {
-    enum Kind: String {
+struct RsParseIntError: Error, Equatable, CustomStringConvertible, RsDebugText {
+    /// `std::num::IntErrorKind`.
+    enum Kind: String, RsDebugCustom {
         case empty = "Empty", invalidDigit = "InvalidDigit"
-        case posOverflow = "PosOverflow", negOverflow = "NegOverflow"
+        case posOverflow = "PosOverflow", negOverflow = "NegOverflow", zero = "Zero"
+        var rsDebugText: String { rawValue }
     }
     let kind: Kind
     var description: String {
@@ -2493,9 +2570,12 @@ struct RsParseIntError: Error, Equatable, CustomStringConvertible, RsDebugCustom
         case .invalidDigit: "invalid digit found in string"
         case .posOverflow: "number too large to fit in target type"
         case .negOverflow: "number too small to fit in target type"
+        case .zero: "number would be zero for non-zero type"
         }
     }
-    var rsDebugText: String { "ParseIntError { kind: \(kind.rawValue) }" }
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebugRecord("ParseIntError", [("kind", kind)], pretty: pretty, style: style)
+    }
 }
 
 /// `s.parse::<i32>()`, `i32::from_str_radix(s, 16)`: Rust's rules, within the limits of the
@@ -2536,12 +2616,14 @@ func rsParseInt<T: FixedWidthInteger>(_ s: String, _: T.Type, radix: Int = 10, b
 }
 
 /// `std::num::ParseFloatError`.
-struct RsParseFloatError: Error, Equatable, CustomStringConvertible, RsDebugCustom {
+struct RsParseFloatError: Error, Equatable, CustomStringConvertible, RsDebugText {
     let empty: Bool
     var description: String {
         empty ? "cannot parse float from empty string" : "invalid float literal"
     }
-    var rsDebugText: String { "ParseFloatError { kind: \(empty ? "Empty" : "Invalid") }" }
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebugRecord("ParseFloatError", [("kind", RsDebugBare(rsDebugText: empty ? "Empty" : "Invalid"))], pretty: pretty, style: style)
+    }
 }
 
 /// `s.parse::<f64>()`: Rust's grammar (digits, a point, an exponent, `inf`, `nan`; no spaces,
@@ -2616,12 +2698,14 @@ func rsParseBool(_ s: String) -> Result<Bool, RsParseBoolError> {
 }
 
 /// `std::char::ParseCharError`.
-struct RsParseCharError: Error, Equatable, CustomStringConvertible, RsDebugCustom {
+struct RsParseCharError: Error, Equatable, CustomStringConvertible, RsDebugText {
     let empty: Bool
     var description: String {
         empty ? "cannot parse char from empty string" : "too many characters in string"
     }
-    var rsDebugText: String { "ParseCharError { kind: \(empty ? "EmptyString" : "TooManyChars") }" }
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebugRecord("ParseCharError", [("kind", RsDebugBare(rsDebugText: empty ? "EmptyString" : "TooManyChars"))], pretty: pretty, style: style)
+    }
 }
 
 /// `s.parse::<char>()`: exactly one Unicode scalar.
@@ -2633,9 +2717,11 @@ func rsParseChar(_ s: String) -> Result<Character, RsParseCharError> {
 }
 
 /// `std::char::CharTryFromError`.
-struct RsCharTryFromError: Error, Equatable, CustomStringConvertible, RsDebugCustom {
+struct RsCharTryFromError: Error, Equatable, CustomStringConvertible, RsDebugText {
     var description: String { "converted integer out of range for `char`" }
-    var rsDebugText: String { "CharTryFromError(())" }
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebugRecord("CharTryFromError", [("", ())], pretty: pretty, style: style)
+    }
 }
 
 /// `char::try_from(n)`.
@@ -2649,7 +2735,7 @@ func rsCharTryFrom(_ n: some BinaryInteger) -> Result<Character, RsCharTryFromEr
 
 const UTF8: &str = r#"
 /// `std::str::Utf8Error`.
-struct RsUtf8Error: Error, Equatable, CustomStringConvertible, RsDebugCustom {
+struct RsUtf8Error: Error, Equatable, CustomStringConvertible, RsDebugText {
     let validUpTo: Int
     let errorLen: Int?
     var description: String {
@@ -2659,18 +2745,18 @@ struct RsUtf8Error: Error, Equatable, CustomStringConvertible, RsDebugCustom {
             "incomplete utf-8 byte sequence from index \(validUpTo)"
         }
     }
-    var rsDebugText: String {
-        "Utf8Error { valid_up_to: \(validUpTo), error_len: \(errorLen.map { "Some(\($0))" } ?? "None") }"
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebugRecord("Utf8Error", [("valid_up_to", validUpTo), ("error_len", errorLen as Any)], pretty: pretty, style: style)
     }
 }
 
 /// `std::string::FromUtf8Error`.
-struct RsFromUtf8Error: Error, Equatable, CustomStringConvertible, RsDebugCustom {
+struct RsFromUtf8Error: Error, Equatable, CustomStringConvertible, RsDebugText {
     let bytes: [UInt8]
     let error: RsUtf8Error
     var description: String { error.description }
-    var rsDebugText: String {
-        "FromUtf8Error { bytes: " + rsDebug(bytes) + ", error: " + error.rsDebugText + " }"
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebugRecord("FromUtf8Error", [("bytes", bytes), ("error", error)], pretty: pretty, style: style)
     }
     func intoBytes() -> [UInt8] { bytes }
     func asBytes() -> [UInt8] { bytes }
@@ -2727,6 +2813,12 @@ func rsUtf8Error(_ v: [UInt8]) -> RsUtf8Error? {
 }
 
 /// `String::from_utf8(bytes)`.
+/// `std::str::from_utf8(&bytes)`.
+func rsStrFromUtf8(_ bytes: [UInt8]) -> Result<String, RsUtf8Error> {
+    if let error = rsUtf8Error(bytes) { return .failure(error) }
+    return .success(String(decoding: bytes, as: UTF8.self))
+}
+
 func rsFromUtf8(_ bytes: [UInt8]) -> Result<String, RsFromUtf8Error> {
     if let error = rsUtf8Error(bytes) { return .failure(RsFromUtf8Error(bytes: bytes, error: error)) }
     return .success(String(decoding: bytes, as: UTF8.self))

@@ -527,6 +527,17 @@ impl Translator<'_> {
                 );
             }
         }
+        // `IntErrorKind::Empty`.
+        if segs.len() >= 2 && segs[segs.len() - 2] == "IntErrorKind" {
+            self.helper("parse");
+            return Ex::primary(
+                format!(
+                    "RsParseIntError.Kind.{}",
+                    names::case_name(&segs[segs.len() - 1])
+                ),
+                Ty::Named("RsParseIntError.Kind".into(), vec![]),
+            );
+        }
         if segs.len() == 1 {
             let n = segs[0].as_str();
             if n == "self" {
@@ -562,6 +573,10 @@ impl Translator<'_> {
                 }
                 if let Some(rest) = local.swift.strip_prefix('\u{2}') {
                     return Ex::primary(rest.to_string(), ty);
+                }
+                // A cursor local: the node it points at.
+                if let Some(root) = &local.link_root {
+                    return Ex::primary(format!("{}.get({root})", local.swift), ty);
                 }
                 return Ex::primary(local.swift, ty);
             }
@@ -2053,16 +2068,26 @@ impl Translator<'_> {
             || matches!(&ret_ty, Ty::Fn(..));
         for (i, p) in c.inputs.iter().enumerate() {
             let hint = param_tys.get(i).cloned().unwrap_or(Ty::Unknown);
+            // A `dyn Fn(&mut State)` expected: the parameter is `inout`.
+            let (hint, hinted_inout) = match hint {
+                Ty::Inout(t) => (*t, true),
+                t => (t, false),
+            };
             let (pat, annot) = match p {
                 Pat::Type(pt) => (&*pt.pat, Some(self.ty(&pt.ty))),
                 p => (p, None),
             };
             let ty = annot.clone().unwrap_or(hint);
-            tys.push(ty.clone());
             let name = self.closure_param(pat, &ty, &mut prologue, i);
             // `|out: &mut Vec<Token>|`: an `inout` parameter of the closure.
-            let inout = matches!(p, Pat::Type(pt)
-                if matches!(&*pt.ty, syn::Type::Reference(r) if r.mutability.is_some()));
+            let inout = hinted_inout
+                || matches!(p, Pat::Type(pt)
+                    if matches!(&*pt.ty, syn::Type::Reference(r) if r.mutability.is_some()));
+            tys.push(if inout {
+                Ty::Inout(Box::new(ty.clone()))
+            } else {
+                ty.clone()
+            });
             inouts.push(inout);
             match annot {
                 Some(t) => {

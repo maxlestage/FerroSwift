@@ -7,7 +7,7 @@ use syn::{Block, Expr, Local, Pat, Stmt};
 
 use crate::expr::{Ex, P_PRIMARY};
 use crate::names;
-use crate::translate::{Translator, indent_lines};
+use crate::translate::{INDENT, Translator, indent_lines};
 use crate::ty::Ty;
 
 /// Where the value of a block goes.
@@ -29,6 +29,7 @@ pub enum Sink {
 impl Translator<'_> {
     /// The statements of a block, in a new scope.
     pub fn block_lines(&mut self, b: &Block, sink: Sink) -> Vec<String> {
+        self.reassigned_lets.extend(assigned_names(&b.stmts));
         self.push_scope();
         let lines = self.stmts(&b.stmts, sink, b.span().start().line, b.span().end().line);
         self.pop_scope();
@@ -372,6 +373,27 @@ impl Translator<'_> {
                 );
             }
             return out;
+        }
+        // `let mut cur = &mut self.head;` re-pointed later (`cur = &mut node.next`): a
+        // cursor on the links between class nodes, holding the node and the field it is
+        // in, the root link being the place it started from.
+        if let Expr::Reference(re) = value {
+            if re.mutability.is_some()
+                && mutable
+                && simple_place(&re.expr)
+                && self.reassigned_lets.contains(rust)
+            {
+                let ty = self.place_ty(&re.expr);
+                if let Ty::Option(inner) = &ty {
+                    if self.is_recursive_class(inner) {
+                        let root = self.place(&re.expr);
+                        let node = inner.swift_lossy();
+                        let name = self.declare_link(rust, root, ty.clone());
+                        self.helper("link");
+                        return vec![format!("var {name} = RsLink<{node}>()")];
+                    }
+                }
+            }
         }
         // `let r = &mut inv;`: `r` stands for `inv`.
         if let Expr::Reference(re) = value {
@@ -837,6 +859,12 @@ impl Translator<'_> {
         if let Some(lines) = self.option_map_stmt(e) {
             return lines;
         }
+        // `cur = &mut node.next;`, `*cur = value;` on a cursor local.
+        if let Expr::Assign(a) = e {
+            if let Some(lines) = self.link_assign(a) {
+                return lines;
+            }
+        }
         // `opt.get_or_insert_with(f);` on its own: only the insertion, written as a prelude.
         if let Expr::MethodCall(m) = e {
             if matches!(
@@ -939,6 +967,81 @@ impl Translator<'_> {
                     vec![v.code]
                 }
             }
+        }
+    }
+
+    /// `cur = &mut node.next;` (`cur = if c { &mut n.left } else { &mut n.right };`) and
+    /// `*cur = value;` on a cursor local: the cursor moved, or the link written.
+    fn link_assign(&mut self, a: &syn::ExprAssign) -> Option<Vec<String>> {
+        let link_of = |t: &Self, e: &Expr| -> Option<(String, String, Ty)> {
+            let Expr::Path(p) = e else { return None };
+            let id = p.path.get_ident()?.to_string();
+            let local = t.lookup(&id)?;
+            let root = local.link_root.clone()?;
+            Some((local.swift.clone(), root, t.local_ty(local)))
+        };
+        if let Expr::Unary(u) = &*a.left {
+            if matches!(u.op, syn::UnOp::Deref(_)) {
+                let (swift, root, ty) = link_of(self, &u.expr)?;
+                let v = self.expr_with(&a.right, &ty);
+                let v = self.settle(v);
+                return Some(vec![format!("{swift}.set(&{root}, {})", v.code)]);
+            }
+        }
+        let (swift, _, _) = link_of(self, &a.left)?;
+        self.link_move(&swift, &a.right)
+    }
+
+    /// `cur.move(node, \.next)` for `&mut node.next`, through the branches of an `if`.
+    fn link_move(&mut self, swift: &str, target: &Expr) -> Option<Vec<String>> {
+        match target {
+            Expr::Reference(r) if r.mutability.is_some() => {
+                let Expr::Field(f) = &*r.expr else {
+                    return None;
+                };
+                let base = self.expr(&f.base);
+                let base = self.settle(base);
+                let field = match &f.member {
+                    syn::Member::Named(id) => {
+                        let base_ty = base.ty.clone();
+                        match &base_ty {
+                            Ty::Named(n, _) => self
+                                .struct_by_swift(n)
+                                .and_then(|s| s.field(&id.to_string()).map(|f| f.swift.clone()))
+                                .unwrap_or_else(|| names::lower_camel(&id.to_string())),
+                            _ => names::lower_camel(&id.to_string()),
+                        }
+                    }
+                    syn::Member::Unnamed(i) => format!("_{}", i.index),
+                };
+                Some(vec![format!(
+                    "{swift}.move({}, \\.{field})",
+                    crate::expr::wrap(&base, P_PRIMARY)
+                )])
+            }
+            Expr::Paren(p) => self.link_move(swift, &p.expr),
+            Expr::Block(b) if b.block.stmts.len() == 1 => match &b.block.stmts[0] {
+                Stmt::Expr(e, None) => self.link_move(swift, e),
+                _ => None,
+            },
+            Expr::If(i) => {
+                let cond = self.expr_with(&i.cond, &Ty::Bool);
+                let cond = self.settle(cond);
+                let then_e = match i.then_branch.stmts.as_slice() {
+                    [Stmt::Expr(e, None)] => e,
+                    _ => return None,
+                };
+                let then_lines = self.link_move(swift, then_e)?;
+                let (_, else_e) = i.else_branch.as_ref()?;
+                let else_lines = self.link_move(swift, else_e)?;
+                let mut out = vec![format!("if {} {{", cond.code)];
+                out.extend(then_lines.iter().map(|l| format!("{INDENT}{l}")));
+                out.push("} else {".into());
+                out.extend(else_lines.iter().map(|l| format!("{INDENT}{l}")));
+                out.push("}".into());
+                Some(out)
+            }
+            _ => None,
         }
     }
 
@@ -2045,6 +2148,10 @@ impl Translator<'_> {
         if !contains_let(cond) {
             let v = self.expr_with(cond, &Ty::Bool);
             let v = self.settle(v);
+            // `while matches!(…)`: a closure applied on the spot cannot open a condition.
+            if v.code.starts_with('{') {
+                return format!("({})", v.code);
+            }
             return v.code;
         }
         let mut parts = Vec::new();
@@ -2500,6 +2607,27 @@ struct Iterable {
 }
 
 /// Whether a statement names an identifier.
+/// The locals the statements assign (`cur = …`), at any depth.
+fn assigned_names(stmts: &[Stmt]) -> std::collections::HashSet<String> {
+    use syn::visit::Visit;
+    struct V(std::collections::HashSet<String>);
+    impl<'ast> Visit<'ast> for V {
+        fn visit_expr_assign(&mut self, a: &'ast syn::ExprAssign) {
+            if let Expr::Path(p) = &*a.left {
+                if let Some(id) = p.path.get_ident() {
+                    self.0.insert(id.to_string());
+                }
+            }
+            syn::visit::visit_expr_assign(self, a);
+        }
+    }
+    let mut v = V(std::collections::HashSet::new());
+    for s in stmts {
+        v.visit_stmt(s);
+    }
+    v.0
+}
+
 fn mentions(s: &Stmt, name: &str) -> bool {
     quote::quote!(#s)
         .into_iter()

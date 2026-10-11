@@ -13,7 +13,7 @@ rustc checks ownership and lifetimes; Swift does not need them. FerroSwift drops
 - `&T` becomes `T`, and a `&mut T` parameter becomes `inout T`: the caller sees the changes, as in Rust.
 - A reference **stored** in a struct becomes a copy. Changes made through it are not seen by the original.
 - Moves and `Drop` have no effect: Swift copies structs and counts references to classes.
-- A method returning a mutable reference into its receiver (`fn find_mut(&mut self, id) -> Option<&mut Task>`, `-> &mut T`, `-> Result<&mut T, E>`) returns a `WritableKeyPath` into the type instead, and its callers read and write `self[keyPath: path]`: `self.find_mut(id)?.done = true`, `if let Some(t) = inv.find_mut(id) { t.qty += 1 }` and `let acct = bank.get(name)?;` change the element as in Rust. The body must end with a place of `self` (`&mut self.items[i]`, `self.map.get_mut(&k)`, `….ok_or(e)`, `self.map.entry(k).or_insert(v)`, `self.items.iter_mut().find(…)`); such a method must take `&mut self`. A `&mut` into a collection obtained on the spot (`v.last_mut().unwrap()`, `map.get_mut(&k)`, `v.iter_mut().find(…)`) changes the element too: the name stands for `v[i]`.
+- A method returning a mutable reference into its receiver (`fn find_mut(&mut self, id) -> Option<&mut Task>`, `-> &mut T`, `-> Result<&mut T, E>`) returns a `WritableKeyPath` into the type instead, and its callers read and write `self[keyPath: path]`: `self.find_mut(id)?.done = true`, `if let Some(t) = inv.find_mut(id) { t.qty += 1 }` and `let acct = bank.get(name)?;` change the element as in Rust. The body must end with a place of `self` (`&mut self.items[i]`, `self.map.get_mut(&k)`, `….ok_or(e)`, `self.map.entry(k).or_insert(v)`, `self.items.iter_mut().find(…)`); such a method must take `&mut self`. A `&mut` into a collection obtained on the spot (`v.last_mut().unwrap()`, `map.get_mut(&k)`, `v.iter_mut().find(…)`) changes the element too: the name stands for `v[i]`. A cursor on linked nodes (`let mut cur = &mut self.head;` then `cur = &mut node.next`, `*cur = Some(…)`, `cur.take()`) is a small `RsLink` of the support file holding the node and the field it points into, so the idioms of Rust lists and trees keep their meaning with nodes that Swift makes classes.
 
 Write the model with values (structs, enums, `Vec`, `HashMap`) and pass `&mut` to the functions that change it: that code means the same thing in both languages.
 
@@ -44,7 +44,6 @@ Macros of the standard library are translated: `println!`, `eprintln!`, `format!
 - **`VecDeque`** is an `Array`: `dq.remove(i)` gives the element, as `Vec::remove` does, where Rust's `VecDeque::remove` gives an `Option`.
 - **A struct generic over an iterator type** (`struct Pairs<I: Iterator<Item = u8>> { inner: I }`) is not translated yet: keep the iterator in a `Vec` instead.
 - **`i128` and `u128`** become `Int128` and `UInt128`, which Apple's platforms provide from iOS 18 and macOS 15 on.
-- **Generic parsing:** `s.parse::<T>()` in a generic function given `i32` (`report::<i32>(…)`) reads a 64-bit integer, as `T` is Swift's `Int` there; only a parse with a known target keeps the 32-bit limits.
 - **Strings** are indexed by bytes in Rust and by characters in Swift: slicing (`&s[0..3]`) goes through a support helper that counts bytes, like Rust.
 
 ## What is reported
