@@ -434,8 +434,13 @@ impl Translator<'_> {
                 }
                 _ => Ty::Unknown,
             };
+            let field = if crate::ty::ord_tuple_arity(&inner_ty).is_some() {
+                "value.tuple"
+            } else {
+                "value"
+            };
             let mut inner = PatCx {
-                subject: format!("{}.value", cx.subject),
+                subject: format!("{}.{field}", cx.subject),
                 guards: Vec::new(),
                 lets: Vec::new(),
                 declare: cx.declare,
@@ -460,7 +465,9 @@ impl Translator<'_> {
             }
             Pat::TupleStruct(ts) => {
                 let last = ts.path.segments.last().map(|s| s.ident.to_string());
-                last.is_some_and(|l| self.syms.structs.contains_key(&self.rust_type_name(&l)))
+                last.is_some_and(|l| {
+                    l == "Reverse" || self.syms.structs.contains_key(&self.rust_type_name(&l))
+                })
             }
             Pat::Slice(_) => true,
             _ => false,
@@ -578,6 +585,27 @@ impl Translator<'_> {
                 cx.lets.push(format!("var {n} = {}", inner.subject));
             }
             Pat::Wild(_) | Pat::Rest(_) => {}
+            // `(d, node)` on a field: each element in turn.
+            Pat::Tuple(t) if !t.elems.iter().any(|p| matches!(p, Pat::Rest(_))) => {
+                let tys = match ty {
+                    Ty::Tuple(ts) => ts.clone(),
+                    _ => vec![Ty::Unknown; t.elems.len()],
+                };
+                for (i, p) in t.elems.iter().enumerate() {
+                    let member = if t.elems.len() == 1 {
+                        "_0".to_string()
+                    } else {
+                        i.to_string()
+                    };
+                    let mut sub = PatCx {
+                        subject: format!("{}.{member}", inner.subject),
+                        guards: Vec::new(),
+                        lets: Vec::new(),
+                        declare: cx.declare,
+                    };
+                    self.field_subpattern(p, tys.get(i).unwrap_or(&Ty::Unknown), &mut sub, cx);
+                }
+            }
             // `Some(x)` on a field: a condition, and `x` stands for the unwrapped field.
             Pat::TupleStruct(ts)
                 if ts.path.is_ident("Some")

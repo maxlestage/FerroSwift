@@ -627,6 +627,7 @@ impl<'a> Translator<'a> {
                 "RsBinaryHeap" => "heap",
                 "RsReverse" => "reverse",
                 "RsTupleKeys" => "tuple_keys",
+                "RsOrdTuple" => "ord_tuple",
                 _ => continue,
             };
             self.helper(helper);
@@ -2617,6 +2618,13 @@ fn named_types(t: &Ty, out: &mut Vec<String>) {
     match t {
         Ty::Named(n, args) => {
             out.push(n.clone());
+            if (n == "RsReverse" || n == "RsBinaryHeap")
+                && args
+                    .first()
+                    .is_some_and(|a| crate::ty::ord_tuple_arity(a).is_some())
+            {
+                out.push("RsOrdTuple".into());
+            }
             for a in args {
                 named_types(a, out);
             }

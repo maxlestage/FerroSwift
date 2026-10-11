@@ -338,6 +338,23 @@ impl Ty {
                 t.write_swift(out);
                 out.push('>');
             }
+            // `Reverse<(A, B)>`, `BinaryHeap<(A, B)>`: the tuple made comparable.
+            Ty::Named(n, args)
+                if (n == "RsReverse" || n == "RsBinaryHeap")
+                    && matches!(args.first(), Some(Ty::Tuple(ts)) if ts.len() == 2 || ts.len() == 3) =>
+            {
+                let Some(Ty::Tuple(ts)) = args.first() else {
+                    unreachable!()
+                };
+                let _ = write!(out, "{n}<RsOrd{}<", ts.len());
+                for (i, t) in ts.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    t.write_swift(out);
+                }
+                out.push_str(">>");
+            }
             Ty::Named(n, args) => {
                 out.push_str(n);
                 if !args.is_empty() {
@@ -381,6 +398,14 @@ impl Ty {
             Ty::Named(n, _) => format!("{n}()"),
             _ => return None,
         })
+    }
+}
+
+/// `(A, B)` or `(A, B, C)`: a tuple that a `BinaryHeap` or a `Reverse` must compare.
+pub fn ord_tuple_arity(t: &Ty) -> Option<usize> {
+    match t {
+        Ty::Tuple(ts) if ts.len() == 2 || ts.len() == 3 => Some(ts.len()),
+        _ => None,
     }
 }
 

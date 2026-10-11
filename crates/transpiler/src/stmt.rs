@@ -590,9 +590,14 @@ impl Translator<'_> {
                         }
                         _ => Ty::Unknown,
                     };
+                    let field = if crate::ty::ord_tuple_arity(&inner).is_some() {
+                        "value.tuple"
+                    } else {
+                        "value"
+                    };
                     return self.let_pattern(
                         &ts.elems[0],
-                        &format!("{subject}.value"),
+                        &format!("{subject}.{field}"),
                         &inner,
                         mutable,
                     );

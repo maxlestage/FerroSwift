@@ -1435,8 +1435,17 @@ impl Translator<'_> {
             }
             // `t.0` of a `(T,)`: the field of the support struct.
             (syn::Member::Unnamed(_), Ty::Tuple(ts)) if ts.len() == 1 => "_0".into(),
-            // `r.0` of a `Reverse(x)`.
-            (syn::Member::Unnamed(_), Ty::Named(n, _)) if n == "RsReverse" => "value".into(),
+            // `r.0` of a `Reverse(x)`; a tuple inside is stored made comparable.
+            (syn::Member::Unnamed(_), Ty::Named(n, args)) if n == "RsReverse" => {
+                if args
+                    .first()
+                    .is_some_and(|a| crate::ty::ord_tuple_arity(a).is_some())
+                {
+                    "value.tuple".into()
+                } else {
+                    "value".into()
+                }
+            }
             (syn::Member::Unnamed(i), _) => i.index.to_string(),
         };
         // `self.count` → `count`, unless a local of that name hides the field.
