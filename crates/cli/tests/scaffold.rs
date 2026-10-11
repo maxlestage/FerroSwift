@@ -2,7 +2,7 @@
 //! translation type-checks as Swift and, on macOS (`FERROSWIFT_SDK=macosx`), the Swift package
 //! builds with `swift build`.
 //!
-//! The crate depends on this repository by git; the test points it at the checkout instead.
+//! The crate depends on ferroswift from crates.io; the test points it at the checkout instead.
 //! Needs `swiftc` (or `FERROSWIFT_SWIFTC`) for the Swift parts; skipped without it.
 
 use std::path::{Path, PathBuf};
@@ -61,14 +61,14 @@ fn a_new_app_checks_builds_and_translates() {
         "App.swift was not created"
     );
 
-    // The crate: `cargo check`, against this checkout's ferroswift instead of GitHub's.
+    // The crate: `cargo check`, against this checkout's ferroswift instead of crates.io's.
     let manifest = app.join("Cargo.toml");
     let toml = std::fs::read_to_string(&manifest).unwrap();
     let dep = toml
         .lines()
         .find(|l| l.starts_with("ferroswift = "))
         .expect("the ferroswift dependency");
-    assert!(dep.contains("git = \"https://github.com/maxlestage/FerroSwift\""));
+    assert_eq!(dep, "ferroswift = \"0.1\"");
     let local = format!(
         "ferroswift = {{ path = {:?} }}",
         workspace.join("crates/ferroswift").canonicalize().unwrap()

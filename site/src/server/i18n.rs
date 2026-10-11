@@ -74,7 +74,6 @@ pub struct DocsText {
     pub on_this_page: &'static str,
     pub prev: &'static str,
     pub next: &'static str,
-    pub edit: &'static str,
     pub copy: &'static str,
 }
 
@@ -86,10 +85,26 @@ pub struct NotFound {
 
 pub struct Footer {
     pub tagline: &'static str,
+    /// The call to action, followed by the project name: "Start building with *FerroSwift*".
+    pub start: &'static str,
+    /// Accessible name of the install command chip.
+    pub install: &'static str,
+    pub rust_only: &'static str,
     pub product: &'static str,
     pub project: &'static str,
     pub made_with: &'static str,
     pub license: &'static str,
+    /// The sister projects: title, one-line introduction, the "you are here" mark and one
+    /// line per project, in the order of `pages::ECOSYSTEM`.
+    pub ecosystem: &'static str,
+    pub ecosystem_text: &'static str,
+    pub here: &'static str,
+    pub projects: [&'static str; 6],
+    /// The signature: "Designed and built by", then where it was made.
+    pub by: &'static str,
+    pub crafted: &'static str,
+    pub rights: &'static str,
+    pub proprietary: &'static str,
     pub top: &'static str,
 }
 
@@ -114,7 +129,7 @@ static FR: Dict = Dict {
     home: Home {
         title: "FerroSwift — écrivez du Rust, livrez du SwiftUI",
         description: "FerroSwift traduit votre app Rust — la logique et les vues SwiftUI — en Swift idiomatique à ouvrir dans Xcode. Vérifiée par rustc, à essayer dans le navigateur.",
-        eyebrow: "Transpileur Rust → Swift · open source",
+        eyebrow: "Transpileur Rust → Swift · 100 % Rust",
         hero: ["Écrivez du Rust.", "Livrez du SwiftUI."],
         lead: "Écrivez toute votre app iOS ou macOS en Rust — la logique et les vues SwiftUI. rustc la vérifie, FerroSwift la traduit en Swift idiomatique que vous ouvrez dans Xcode.",
         cta_play: "Essayer le playground",
@@ -230,8 +245,8 @@ static FR: Dict = Dict {
         commands: [
             Item {
                 title: "Installez la CLI",
-                text: "Depuis le dépôt GitHub, avec cargo.",
-                code: "cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli",
+                text: "Depuis crates.io, avec cargo.",
+                code: "cargo install ferroswift-cli",
             },
             Item {
                 title: "Créez une app",
@@ -272,7 +287,6 @@ static FR: Dict = Dict {
         on_this_page: "Sur cette page",
         prev: "Précédent",
         next: "Suivant",
-        edit: "Modifier cette page sur GitHub",
         copy: "Copier",
     },
     not_found: NotFound {
@@ -282,10 +296,28 @@ static FR: Dict = Dict {
     },
     footer: Footer {
         tagline: "Écrivez du Rust. Livrez du SwiftUI.",
+        start: "Commencez avec",
+        install: "S'installe en une ligne",
+        rust_only: "100 % Rust",
         product: "Produit",
         project: "Projet",
         made_with: "Site fait avec active",
-        license: "Licence MIT",
+        license: "Licence",
+        ecosystem: "Écosystème",
+        ecosystem_text: "Six projets Rust d'un même auteur, faits pour travailler ensemble : du front-end à la base de données, et jusqu'aux apps iPhone.",
+        here: "Vous êtes ici",
+        projects: [
+            "Front-end : composants, SSR, îlots WebAssembly",
+            "Serveur web façon Express, HTTP/3",
+            "Middlewares de sécurité pour tower et axum",
+            "ORM asynchrone typé, SQL et NoSQL",
+            "Le framework full-stack qui les réunit",
+            "Des apps SwiftUI écrites en Rust",
+        ],
+        by: "Conçu et développé par",
+        crafted: "Fabriqué en Rust, en France",
+        rights: "© 2026 Maxime Nathan Lestage. Tous droits réservés.",
+        proprietary: "Logiciel propriétaire",
         top: "Haut de page",
     },
 };
@@ -304,7 +336,7 @@ static EN: Dict = Dict {
     home: Home {
         title: "FerroSwift — write Rust, ship SwiftUI",
         description: "FerroSwift translates your Rust app — logic and SwiftUI views — into idiomatic Swift you open in Xcode. Type-checked by rustc, try it in your browser.",
-        eyebrow: "Rust → Swift transpiler · open source",
+        eyebrow: "Rust → Swift transpiler · 100 % Rust",
         hero: ["Write Rust.", "Ship SwiftUI."],
         lead: "Write your whole iOS or macOS app in Rust — the logic and the SwiftUI views. rustc type-checks it, FerroSwift translates it into idiomatic Swift you open in Xcode.",
         cta_play: "Try the playground",
@@ -420,8 +452,8 @@ static EN: Dict = Dict {
         commands: [
             Item {
                 title: "Install the CLI",
-                text: "From the GitHub repository, with cargo.",
-                code: "cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli",
+                text: "From crates.io, with cargo.",
+                code: "cargo install ferroswift-cli",
             },
             Item {
                 title: "Create an app",
@@ -462,7 +494,6 @@ static EN: Dict = Dict {
         on_this_page: "On this page",
         prev: "Previous",
         next: "Next",
-        edit: "Edit this page on GitHub",
         copy: "Copy",
     },
     not_found: NotFound {
@@ -472,10 +503,28 @@ static EN: Dict = Dict {
     },
     footer: Footer {
         tagline: "Write Rust. Ship SwiftUI.",
+        start: "Start building with",
+        install: "Install in one line",
+        rust_only: "100 % Rust",
         product: "Product",
         project: "Project",
         made_with: "Site made with active",
-        license: "MIT license",
+        license: "License",
+        ecosystem: "Ecosystem",
+        ecosystem_text: "Six Rust projects by one author, made to work together: from the front end to the database, and even to iPhone apps.",
+        here: "You are here",
+        projects: [
+            "Front-end: components, SSR, WebAssembly islands",
+            "Express-style web server, HTTP/3",
+            "Security middlewares for tower & axum",
+            "Async, type-safe ORM, SQL & NoSQL",
+            "The full-stack framework that unites them",
+            "SwiftUI apps written in Rust",
+        ],
+        by: "Designed & built by",
+        crafted: "Crafted in Rust, in France",
+        rights: "© 2026 Maxime Nathan Lestage. All rights reserved.",
+        proprietary: "Proprietary software",
         top: "Back to top",
     },
 };
