@@ -13,7 +13,7 @@ rustc checks ownership and lifetimes; Swift does not need them. FerroSwift drops
 - `&T` becomes `T`, and a `&mut T` parameter becomes `inout T`: the caller sees the changes, as in Rust.
 - A reference **stored** in a struct becomes a copy. Changes made through it are not seen by the original.
 - Moves and `Drop` have no effect: Swift copies structs and counts references to classes.
-- A method returning a mutable reference into its receiver (`fn find_mut(&mut self, id) -> Option<&mut Task>`) is reported: return the index of the task and change `self.tasks[i]` instead. A `&mut` into a collection obtained on the spot (`v.last_mut().unwrap()`, `map.get_mut(&k)`, `v.iter_mut().find(…)`) does change the element: the name stands for `v[i]`.
+- A method returning a mutable reference into its receiver (`fn find_mut(&mut self, id) -> Option<&mut Task>`, `-> &mut T`, `-> Result<&mut T, E>`) returns a `WritableKeyPath` into the type instead, and its callers read and write `self[keyPath: path]`: `self.find_mut(id)?.done = true`, `if let Some(t) = inv.find_mut(id) { t.qty += 1 }` and `let acct = bank.get(name)?;` change the element as in Rust. The body must end with a place of `self` (`&mut self.items[i]`, `self.map.get_mut(&k)`, `….ok_or(e)`, `self.map.entry(k).or_insert(v)`, `self.items.iter_mut().find(…)`); such a method must take `&mut self`. A `&mut` into a collection obtained on the spot (`v.last_mut().unwrap()`, `map.get_mut(&k)`, `v.iter_mut().find(…)`) changes the element too: the name stands for `v[i]`.
 
 Write the model with values (structs, enums, `Vec`, `HashMap`) and pass `&mut` to the functions that change it: that code means the same thing in both languages.
 

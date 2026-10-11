@@ -458,7 +458,7 @@ impl Translator<'_> {
         "self".into()
     }
 
-    fn self_ty(&self) -> Ty {
+    pub fn self_ty(&self) -> Ty {
         self.imp.as_ref().map_or(Ty::Unknown, |i| i.self_ty.clone())
     }
 
@@ -1184,6 +1184,24 @@ impl Translator<'_> {
         } else {
             Ty::Option(Box::new(expected.clone()))
         };
+        // `self.get(name)?` with a method returning a key path: the path first.
+        if let Expr::MethodCall(m) = &*t.expr {
+            if let Some((call, root, sig)) = self.raw_key_path_call(m) {
+                let path = self.fresh("path");
+                match &sig.ret {
+                    Ty::Result(ok, _) => {
+                        self.prelude(format!("let {path} = try {call}"));
+                        return Ex::primary(format!("{root}[keyPath: {path}]"), (**ok).clone());
+                    }
+                    Ty::Option(inner) => {
+                        let exit = self.option_exit();
+                        self.prelude(format!("guard let {path} = {call} else {{ {exit} }}"));
+                        return Ex::primary(format!("{root}[keyPath: {path}]"), (**inner).clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
         // The value may end up in a `guard let … else`: no trailing closure.
         self.no_trailing += 1;
         let v = self.expr_with(&t.expr, &inner_expected);
@@ -1227,27 +1245,31 @@ impl Translator<'_> {
         // `?` on an Option: leave the function early.
         let item = v.ty.item();
         let tmp = self.fresh("value");
+        let exit = self.option_exit();
+        self.prelude(format!(
+            "guard let {tmp} = {} else {{ {exit} }}",
+            condition_value(v.code)
+        ));
+        Ex::primary(tmp, item)
+    }
+
+    /// What `?` on a `None` does in the current function: returns `nil`, returns, or throws.
+    pub fn option_exit(&mut self) -> String {
         let throws = self.fn_cx().and_then(|f| f.throws.clone());
-        let exit = match &throws {
+        match &throws {
             Some(_) => {
                 self.helper("ParseError");
                 "throw RsParseError()".to_string()
             }
             None => {
-                let cx = self.fn_cx();
-                let unit = cx.is_some_and(|f| f.ret == Ty::Unit);
+                let unit = self.fn_cx().is_some_and(|f| f.ret == Ty::Unit);
                 if unit {
                     "return".into()
                 } else {
                     "return nil".into()
                 }
             }
-        };
-        self.prelude(format!(
-            "guard let {tmp} = {} else {{ {exit} }}",
-            condition_value(v.code)
-        ));
-        Ex::primary(tmp, item)
+        }
     }
 
     /// The function's error type, when `source` converts into it through a `From` impl.
@@ -1807,6 +1829,7 @@ impl Translator<'_> {
             init: false,
             closure: true,
             self_name: None,
+            key_path: None,
         });
         let body_expr = &*c.body;
         let mut body_ty = Ty::Unknown;
@@ -1962,6 +1985,7 @@ impl Translator<'_> {
             init: false,
             closure: true,
             self_name: None,
+            key_path: None,
         });
         let lines = self.with_prelude(|t| t.tail(e, &Sink::Return));
         self.fns.pop();
