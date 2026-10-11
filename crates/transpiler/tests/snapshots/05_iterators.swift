@@ -223,6 +223,19 @@ extension Array {
         return RsChunksExact(chunks: Array(self[..<full]).chunks(size), remainder: Array(self[full...]))
     }
 
+    /// `v.chunk_by(|a, b| …)`: runs of consecutive elements the predicate chains.
+    func chunkBy(_ same: (Element, Element) throws -> Bool) rethrows -> [[Element]] {
+        var out: [[Element]] = []
+        for x in self {
+            if let last = out.last?.last, try same(last, x) {
+                out[out.count - 1].append(x)
+            } else {
+                out.append([x])
+            }
+        }
+        return out
+    }
+
     /// `v.rchunks(n)`: the chunks from the end.
     func rchunks(_ size: Int) -> [[Element]] {
         var out: [[Element]] = []

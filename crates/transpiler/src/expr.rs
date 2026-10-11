@@ -534,7 +534,12 @@ impl Translator<'_> {
                 return Ex::primary("nil", ty);
             }
             if let Some(local) = self.lookup(n).cloned() {
-                let ty = self.local_ty(&local);
+                let mut ty = self.local_ty(&local);
+                // `Reading { day }` with `day` from `s.parse()`: the field says the target.
+                if crate::translate::placeholder_slot(&ty).is_some() && expected.is_complete() {
+                    self.refine(n, expected);
+                    ty = expected.clone();
+                }
                 if let Some(rest) = local.swift.strip_prefix('\u{2}') {
                     return Ex::primary(rest.to_string(), ty);
                 }
@@ -1879,16 +1884,27 @@ impl Translator<'_> {
                 l
             }
         };
-        self.fns.pop();
+        let learned_ret = self.fns.pop().map(|f| f.ret);
         self.pop_scope();
         let throws_clause = match &throws {
             Some(Ty::Unknown) | Some(Ty::Dyn(_)) => " throws".to_string(),
             Some(e) => format!(" throws({})", e.swift_lossy()),
             None => String::new(),
         };
-        let ret_clause = match &declared_ret {
-            Some(Ty::Result(ok, _)) if throws.is_some() => format!(" -> {}", ok.swift_lossy()),
-            Some(t) if *t != Ty::Unit && throws.is_none() => format!(" -> {}", t.swift_lossy()),
+        // A closure of several statements needs its result type written when Swift cannot
+        // infer it: the type its `return`s gave.
+        let multi = single_expr.is_none();
+        let ret_clause = match (&declared_ret, &learned_ret) {
+            (Some(Ty::Result(ok, _)), _) if throws.is_some() => format!(" -> {}", ok.swift_lossy()),
+            (Some(t), _) if *t != Ty::Unit && throws.is_none() => {
+                format!(" -> {}", t.swift_lossy())
+            }
+            (None, Some(t)) if multi && throws.is_none() && *t != Ty::Unit && t.is_complete() => {
+                match t.swift() {
+                    Some(s) => format!(" -> {s}"),
+                    None => String::new(),
+                }
+            }
             _ => String::new(),
         };
         let head = if params.is_empty() {
@@ -1904,7 +1920,8 @@ impl Translator<'_> {
         };
         let fn_ret = match (&declared_ret, &body_ty) {
             (Some(t), _) => t.clone(),
-            (None, t) => t.clone(),
+            (None, t) if !t.is_unknown() => t.clone(),
+            (None, _) => learned_ret.unwrap_or(Ty::Unknown),
         };
         let ty = Ty::Fn(tys, Box::new(fn_ret));
         let code = if lines.len() == 1 && !lines[0].contains('\n') && lines[0].len() < 70 {

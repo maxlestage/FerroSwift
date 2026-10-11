@@ -1698,12 +1698,16 @@ impl Translator<'_> {
                     Ex::primary(s, Ty::Unknown)
                 }
             },
+            // The target is not known yet (`let n = s.parse().ok()?;` then `n` used as a
+            // `u32`): a placeholder, filled by a later use of the value.
             _ => {
-                self.error(
-                    span,
-                    "parse(): write the target type, e.g. `s.parse::<i32>()`",
-                );
-                Ex::primary(s, Ty::Unknown)
+                let _ = span;
+                self.helper("parse");
+                let t = self.placeholder_ty();
+                Ex::primary(
+                    format!("rsParse({s}, {}.self)", t.swift_lossy()),
+                    Ty::Result(Box::new(t), Box::new(Ty::Unknown)),
+                )
             }
         }
     }
@@ -2849,6 +2853,25 @@ impl Translator<'_> {
                         t,
                     );
                 }
+                // `usize` is Swift's signed `Int`: a subtraction saturates at 0, not below.
+                "saturating_sub" if t == Ty::Int(IntKind::Usize) => {
+                    let f = self.global_fn("max");
+                    return prim(
+                        format!(
+                            "{f}({} - {}, 0)",
+                            wrap(&recv, P_ADD),
+                            wrap(&args[0], P_ADD + 1)
+                        ),
+                        t,
+                    );
+                }
+                "checked_sub" if t == Ty::Int(IntKind::Usize) => {
+                    let (a_, b_) = (wrap(&recv, P_ADD), wrap(&args[0], P_ADD + 1));
+                    return prim(
+                        format!("({a_} >= {b_} ? Optional({a_} - {b_}) : nil)"),
+                        Ty::Option(Box::new(t)),
+                    );
+                }
                 "checked_add" | "checked_sub" | "checked_mul" | "checked_div" | "checked_rem"
                 | "saturating_add" | "saturating_sub" | "saturating_mul" | "rem_euclid"
                 | "div_euclid" | "abs_diff" | "isqrt" | "checked_pow" | "overflowing_add"
@@ -3696,6 +3719,13 @@ impl Translator<'_> {
                 )
             }
             "fuse" => recv.clone(),
+            "chunk_by" if args.len() == 1 => {
+                self.helper("vec");
+                prim(
+                    format!("{r}.chunkBy({})", a(0)),
+                    iter(Ty::Vec(Box::new(item.clone()))),
+                )
+            }
             "inspect" if args.len() == 1 => {
                 self.helper("vec");
                 prim(format!("{r}.inspect({})", a(0)), iter(item))

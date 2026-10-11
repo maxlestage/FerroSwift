@@ -91,7 +91,7 @@ func check(_ name: String) throws(LoginError) -> String {
 
 Error enums conform to `Error`. Typed `throws` needs Swift 6 (Xcode 16).
 
-`s.parse::<i32>()` and the other conversions of the standard library (`i32::from_str_radix`, `u8::try_from`, `x.try_into()`, `String::from_utf8`, `char::try_from`) return `Result`s whose errors are Rust's, in `{:?}` as in `{}`: `Err(ParseIntError { kind: InvalidDigit })`, `invalid digit found in string`, `PosOverflow` for a number too large for the type, `TryFromIntError(NegOverflow)`. A `?` on an error that converts into the function's (`impl From<ParseIntError> for AppError`) converts it the same way. `v.last_mut().unwrap().done = true`, `map.get_mut(&k).unwrap().push(x)`, `if let Some(t) = v.iter_mut().find(…)` and `v.iter_mut().for_each(…)` change the element in place, as in Rust.
+`s.parse::<i32>()` (the target may also be a later use of the value, as in `let n = s.parse().ok()?;` followed by `Point { x: n }`) and the other conversions of the standard library (`i32::from_str_radix`, `u8::try_from`, `x.try_into()`, `String::from_utf8`, `char::try_from`) return `Result`s whose errors are Rust's, in `{:?}` as in `{}`: `Err(ParseIntError { kind: InvalidDigit })`, `invalid digit found in string`, `PosOverflow` for a number too large for the type, `TryFromIntError(NegOverflow)`. A `?` on an error that converts into the function's (`impl From<ParseIntError> for AppError`) converts it the same way. `v.last_mut().unwrap().done = true`, `map.get_mut(&k).unwrap().push(x)`, `if let Some(t) = v.iter_mut().find(…)` and `v.iter_mut().for_each(…)` change the element in place, as in Rust.
 
 ## Strings and formatting
 

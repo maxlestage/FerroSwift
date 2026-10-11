@@ -1002,6 +1002,11 @@ impl Translator<'_> {
         }
         let v = self.expr_with(e, &cx.ret);
         let v = self.settle(v);
+        if cx.closure && !cx.ret.is_complete() {
+            if let Some(f) = self.fns.last_mut() {
+                f.ret.merge(&v.ty);
+            }
+        }
         if cx.ret == Ty::Unit && cx.closure {
             return vec![v.code];
         }
