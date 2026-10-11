@@ -39,7 +39,7 @@ Les longueurs `usize` sont des `Int` Swift : `v.len()` donne `v.count`. Le `len(
 - Les blocs **`impl`** deviennent des `extension`. `fn new(…) -> Self` devient un `init`, les méthodes `&mut self` des `mutating func`, les `const` associées des `static let`. Une méthode qui renvoie `&mut Self` (un builder) est appelée comme une instruction : `a.b().c()` devient `a.b()` puis `a.c()`. Une méthode qui porte le nom d’un champ (`fn count(&self)` à côté de `count`) devient une propriété calculée, le champ étant stocké sous `_count`.
 - **`impl Iterator for Type`** fait du type une `Sequence` : `for x in Counter { … }`, `.filter`, `.sum()` fonctionnent dessus. Ses adaptateurs sont paresseux, comme ceux de `(1..)`, donc un itérateur sans fin s’arrête avec `take(5)` ; `let mut it = …` garde un itérateur que `next()`, `peek()` et `nth()` font avancer.
 - Les **traits** deviennent des `protocol` ; les méthodes par défaut vont dans une extension du protocole, les types associés dans des `associatedtype`. `impl Trait for Type` ajoute la conformité.
-- Les **traits d’opérateurs** (`Add`, `Sub`, `Mul`, `Neg`…) deviennent des fonctions d’opérateur ; `impl Display` devient `CustomStringConvertible`.
+- Les **traits d’opérateurs** (`Add`, `Sub`, `Mul`, `Neg`…) deviennent des fonctions d’opérateur, `impl Index` un `subscript` (avec un `set` quand `IndexMut` est implémenté aussi) ; `impl Display` devient `CustomStringConvertible`.
 - **Conversions :** `impl From<A> for B` devient un `init` ; `impl FromStr for B` et `impl TryFrom<A> for B` deviennent les fonctions statiques `fromStr` et `tryFrom`, qu’appellent `s.parse::<B>()`, `B::from_str(s)`, `B::try_from(x)` et `x.try_into()`.
 - Les **génériques** gardent leurs bornes : `fn largest<T: Describe>(items: &[T])` → `func largest<T: Describe>(_ items: [T])`. Les clauses `where` sont conservées.
 - Les **fonctions** prennent des paramètres sans étiquette (`_ name: Type`), pour que les appels ressemblent à ceux de Rust.
@@ -56,6 +56,7 @@ Les longueurs `usize` sont des `Int` Swift : `v.len()` donne `v.count`. Le `len(
 | `for (i, x) in v.iter().enumerate()` | `for (i, x) in v.enumerated()` |
 | `for i in 0..n`, `0..=n`, `(0..n).rev()` | `for i in 0..<n`, `0...n`, `(0..<n).reversed()` |
 | `if c { a } else { b }` comme valeur | `c ? a : b` |
+| `v.push(match op { '+' => a + b, … })` | `v.append({ () -> Int in switch op { … } }())` |
 | `x as f64`, `n as u8` | `Double(x)`, `UInt8(truncatingIfNeeded: n)` |
 | `matches!(x, Some(1..=5))` | un `switch` qui renvoie un `Bool` |
 | `assert!(c, "…")`, `panic!("…")` | `precondition(c, "…")`, `fatalError("…")` |

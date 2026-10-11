@@ -2072,6 +2072,28 @@ pub fn has_control_flow(e: &Expr) -> bool {
     v.0
 }
 
+/// `return`, `break`, `continue` or `?` inside the expression: a jump that a closure
+/// standing for the expression could not make.
+pub fn has_jump(e: &Expr) -> bool {
+    use syn::visit::Visit;
+    struct V(bool);
+    impl<'ast> Visit<'ast> for V {
+        fn visit_expr(&mut self, e: &'ast Expr) {
+            match e {
+                Expr::Return(_) | Expr::Break(_) | Expr::Continue(_) | Expr::Try(_) => {
+                    self.0 = true
+                }
+                Expr::Closure(_) => {}
+                _ => syn::visit::visit_expr(self, e),
+            }
+        }
+        fn visit_item(&mut self, _: &'ast syn::Item) {}
+    }
+    let mut v = V(false);
+    v.visit_expr(e);
+    v.0
+}
+
 pub fn contains_let(e: &Expr) -> bool {
     match e {
         Expr::Let(_) => true,

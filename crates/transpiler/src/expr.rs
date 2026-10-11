@@ -968,6 +968,9 @@ impl Translator<'_> {
         };
         let (lmin, rmin) = if comparison {
             (P_CMP + 1, P_CMP + 1)
+        } else if prec == P_SHIFT {
+            // Swift's shifts do not associate: `(a << b) << c`.
+            (P_SHIFT + 1, P_SHIFT + 1)
         } else {
             (prec, prec + 1)
         };
@@ -1904,8 +1907,8 @@ impl Translator<'_> {
                 return ex;
             }
         }
-        if has_control_flow(e) {
-            self.error(e.span(), "control flow inside an expression used as a value is not supported: bind it with `let x: T = …;` first");
+        if crate::stmt::has_jump(e) {
+            self.error(e.span(), "a `return`, `break`, `continue` or `?` inside an expression used as a value is not supported: bind it with `let x: T = …;` first");
         }
         let ret = expected.clone();
         self.fns.push(FnCx {

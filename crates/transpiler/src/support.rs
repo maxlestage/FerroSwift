@@ -1298,6 +1298,34 @@ extension BinaryInteger {
     func remEuclid(_ n: Self) -> Self { let r = self % n; return r < 0 ? r + (n < 0 ? 0 - n : n) : r }
     func divEuclid(_ n: Self) -> Self { let q = self / n; return self % n < 0 ? (n > 0 ? q - 1 : q + 1) : q }
     func absDiff(_ other: Self) -> Self { self > other ? self - other : other - self }
+    /// `x.div_ceil(n)`: the quotient, rounded towards positive infinity.
+    func divCeil(_ n: Self) -> Self {
+        let q = self / n
+        let r = self % n
+        return (r != 0 && ((r > 0) == (n > 0))) ? q + 1 : q
+    }
+    /// `x.next_power_of_two()`: the smallest power of two that is at least `x`.
+    func nextPowerOfTwo() -> Self {
+        var p: Self = 1
+        while p < self { p *= 2 }
+        return p
+    }
+    /// `x.ilog2()`: the floor of the base-2 logarithm.
+    func ilog2() -> UInt32 {
+        precondition(self > 0, "argument of integer logarithm must be positive")
+        var n = self
+        var r: UInt32 = 0
+        while n > 1 { n /= 2; r += 1 }
+        return r
+    }
+    /// `x.ilog10()`: the floor of the base-10 logarithm.
+    func ilog10() -> UInt32 {
+        precondition(self > 0, "argument of integer logarithm must be positive")
+        var n = self
+        var r: UInt32 = 0
+        while n >= 10 { n /= 10; r += 1 }
+        return r
+    }
 }
 
 extension MutableCollection {
