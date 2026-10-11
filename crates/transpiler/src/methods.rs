@@ -4,7 +4,7 @@
 use syn::spanned::Spanned;
 use syn::{Expr, ExprCall, ExprMethodCall};
 
-use crate::expr::{Ex, P_ADD, P_CMP, P_MUL, P_NIL, P_PRIMARY, P_TRY, wrap};
+use crate::expr::{Ex, P_ADD, P_CMP, P_MUL, P_NIL, P_PRIMARY, P_TERNARY, P_TRY, wrap};
 use crate::names;
 use crate::symbols::{FnSig, ParamInfo, SelfKind, TypeKind, VariantShape};
 use crate::translate::Translator;
@@ -30,7 +30,7 @@ impl Translator<'_> {
             .map(|s| s.ident.to_string())
             .collect();
         let last = segs.last().cloned().unwrap_or_default();
-        let turbofish = generic_args(&p.path);
+        let turbofish = self.generic_args(&p.path);
         if last == "Reverse"
             && c.args.len() == 1
             && (segs.len() == 1 || segs[0] == "std" || segs[0] == "cmp")
@@ -137,8 +137,28 @@ impl Translator<'_> {
                     );
                 }
             }
-            if let Some(sig) = self.syms.fns.get(&last).cloned() {
-                return self.sig_call(names::lower_camel(&last), &sig, &c.args);
+            if let Some(mut sig) = self.syms.fns.get(&last).cloned() {
+                // `generic_max::<u8>(&[])`: the turbofish fixes the type parameters.
+                if !turbofish.is_empty() && turbofish.len() == sig.generics.len() {
+                    let map: std::collections::HashMap<String, Ty> = sig
+                        .generics
+                        .iter()
+                        .cloned()
+                        .zip(turbofish.iter().cloned())
+                        .collect();
+                    for p in &mut sig.params {
+                        p.ty = crate::symbols::substitute(&p.ty, &map);
+                    }
+                    sig.ret = crate::symbols::substitute(&sig.ret, &map);
+                }
+                if !sig.generics.is_empty() {
+                    self.generic_call += 1;
+                }
+                let ex = self.sig_call(names::lower_camel(&last), &sig, &c.args);
+                if !sig.generics.is_empty() {
+                    self.generic_call -= 1;
+                }
+                return ex;
             }
             // A tuple variant imported with `use Enum::*`.
             let found: Vec<(String, String)> = self
@@ -387,6 +407,11 @@ impl Translator<'_> {
             let param = params.and_then(|p| p.get(i));
             let inout = param.is_some_and(|p| p.inout);
             let expected = param.map_or(Ty::Unknown, |p| p.ty.clone());
+            // `generic_max::<u8>(&[])`: Swift cannot infer `T` from an empty literal.
+            let cast_empty = self.generic_call > 0
+                && matches!(expected, Ty::Vec(_))
+                && expected.is_complete()
+                && matches!(a, Expr::Reference(_) | Expr::Array(_) | Expr::Macro(_));
             if inout {
                 let inner = match a {
                     Expr::Reference(r) => &*r.expr,
@@ -408,7 +433,11 @@ impl Translator<'_> {
             }
             let v = self.expr_with(a, &expected);
             let v = self.settle(v);
-            out.push(v.code);
+            if cast_empty && v.code == "[]" {
+                out.push(format!("[] as {}", expected.swift_lossy()));
+            } else {
+                out.push(v.code);
+            }
             tys.push(v.ty);
         }
         (out, tys)
@@ -470,19 +499,51 @@ impl Translator<'_> {
                 Some(Ex { ty: Ty::Str, ..v })
             }
             ("String", "from_utf8") if args.len() == 1 => {
-                let v = arg(self, 0, &Ty::Unknown);
-                let mut ex = Ex::primary(
-                    format!("String(bytes: {}, encoding: .utf8)", v.code),
-                    Ty::Option(Box::new(Ty::Str)),
-                );
-                ex.parsed = true;
-                Some(ex)
+                self.helper("utf8");
+                let v = arg(self, 0, &Ty::Vec(Box::new(Ty::Int(IntKind::U8))));
+                Some(Ex::primary(
+                    format!("rsFromUtf8({})", v.code),
+                    Ty::Result(
+                        Box::new(Ty::Str),
+                        Box::new(Ty::Named("RsFromUtf8Error".into(), vec![])),
+                    ),
+                ))
             }
             ("String", "from_utf8_lossy") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Unknown);
                 Some(Ex::primary(
                     format!("String(decoding: {}, as: UTF8.self)", v.code),
                     Ty::Str,
+                ))
+            }
+            ("BinaryHeap", "new" | "with_capacity") => {
+                self.helper("heap");
+                let item = turbofish
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| match expected {
+                        Ty::Named(n, args) if n == "RsBinaryHeap" => {
+                            args.first().cloned().unwrap_or(Ty::Unknown)
+                        }
+                        _ => Ty::Unknown,
+                    });
+                Some(Ex::primary(
+                    "RsBinaryHeap()",
+                    Ty::Named("RsBinaryHeap".into(), vec![item]),
+                ))
+            }
+            ("BinaryHeap", "from" | "from_iter") if args.len() == 1 => {
+                self.helper("heap");
+                let v = arg(self, 0, &Ty::Unknown);
+                let item = v.ty.item();
+                let code = if v.code.starts_with('[') || matches!(v.ty, Ty::Vec(_)) {
+                    format!("RsBinaryHeap({})", v.code)
+                } else {
+                    format!("RsBinaryHeap(Array({}))", v.code)
+                };
+                Some(Ex::primary(
+                    code,
+                    Ty::Named("RsBinaryHeap".into(), vec![item]),
                 ))
             }
             ("Vec" | "VecDeque", "new" | "with_capacity") => {
@@ -519,7 +580,7 @@ impl Translator<'_> {
                 let v = arg(self, 0, &Ty::Unknown);
                 let item = v.ty.item();
                 Some(Ex::primary(
-                    format!("Set({})", v.code),
+                    format!("{}({})", crate::ty::set_type_name(&item), v.code),
                     Ty::Set(Box::new(item), owner == "BTreeSet"),
                 ))
             }
@@ -531,7 +592,8 @@ impl Translator<'_> {
                 };
                 Some(Ex::primary(
                     format!(
-                        "Dictionary({}, uniquingKeysWith: {{ _, last in last }})",
+                        "{}({}, uniquingKeysWith: {{ _, last in last }})",
+                        crate::ty::map_type_name(&k),
                         v.code
                     ),
                     Ty::Map(Box::new(k), Box::new(val), owner == "BTreeMap"),
@@ -629,12 +691,27 @@ impl Translator<'_> {
                 }
                 Some(Ex::primary(format!("{ts}({})", v.code), t))
             }
+            ("char", "try_from") if args.len() == 1 => {
+                self.helper("parse");
+                let v = arg(self, 0, &Ty::Int(IntKind::U32));
+                Some(Ex::primary(
+                    format!("rsCharTryFrom({})", v.code),
+                    Ty::Result(
+                        Box::new(Ty::Char),
+                        Box::new(Ty::Named("RsCharTryFromError".into(), vec![])),
+                    ),
+                ))
+            }
             (o, "try_from") if args.len() == 1 && IntKind::parse(o).is_some() => {
                 self.helper("try_from");
                 let t = crate::ty::from_name(o, vec![]);
                 let v = arg(self, 0, &Ty::Unknown);
+                let bits = IntKind::parse(o)
+                    .and_then(IntKind::narrow_bits)
+                    .map(|b| format!(", bits: {b}"))
+                    .unwrap_or_default();
                 Some(Ex::primary(
-                    format!("rsTryFrom({}.self, {})", t.swift_lossy(), v.code),
+                    format!("rsTryFrom({}.self, {}{bits})", t.swift_lossy(), v.code),
                     Ty::Result(
                         Box::new(t),
                         Box::new(Ty::Named("RsTryFromIntError".into(), vec![])),
@@ -642,15 +719,30 @@ impl Translator<'_> {
                 ))
             }
             (o, "from_str_radix") if args.len() == 2 && IntKind::parse(o).is_some() => {
+                self.helper("parse");
                 let t = crate::ty::from_name(o, vec![]);
                 let s = arg(self, 0, &Ty::Str);
                 let r = arg(self, 1, &Ty::Int(IntKind::U32));
-                let mut ex = Ex::primary(
-                    format!("{}({}, radix: Int({}))", t.swift_lossy(), s.code, r.code),
-                    Ty::Option(Box::new(t)),
-                );
-                ex.parsed = true;
-                Some(ex)
+                let radix = if r.weak {
+                    r.code
+                } else {
+                    format!("Int({})", r.code)
+                };
+                let bits = IntKind::parse(o)
+                    .and_then(IntKind::narrow_bits)
+                    .map(|b| format!(", bits: {b}"))
+                    .unwrap_or_default();
+                Some(Ex::primary(
+                    format!(
+                        "rsParseInt({}, {}.self, radix: {radix}{bits})",
+                        s.code,
+                        t.swift_lossy()
+                    ),
+                    Ty::Result(
+                        Box::new(t),
+                        Box::new(Ty::Named("RsParseIntError".into(), vec![])),
+                    ),
+                ))
             }
             (o, "pow" | "abs" | "max" | "min" | "sqrt")
                 if IntKind::parse(o).is_some() || o == "f64" || o == "f32" =>
@@ -740,12 +832,52 @@ impl Translator<'_> {
         if name == "into" && m.args.is_empty() {
             return self.convert_into(m, expected);
         }
+        if name == "try_into" && m.args.is_empty() {
+            return self.convert_try_into(m, expected);
+        }
+        // `v.chunks_exact(n).remainder()`: what the chunks leave out.
+        if name == "remainder" && m.args.is_empty() {
+            if let Expr::MethodCall(inner) = &*m.receiver {
+                if inner.method == "chunks_exact" && inner.args.len() == 1 {
+                    let v = self.expr(&inner.receiver);
+                    let v = self.settle(v);
+                    let n = self.expr_with(&inner.args[0], &Ty::Int(IntKind::Usize));
+                    let n = self.settle(n);
+                    let c = wrap(&v, P_PRIMARY);
+                    return Ex::primary(
+                        format!("Array({c}.dropFirst({c}.count - {c}.count % {}))", n.code),
+                        v.ty.clone(),
+                    );
+                }
+            }
+        }
+        if matches!(name.as_str(), "unwrap" | "expect") {
+            // `v.last_mut().unwrap().done = true`: the element itself is the place.
+            if let Expr::MethodCall(inner) = &*m.receiver {
+                if let Some((place, ty)) = self.mutable_place_forced(inner) {
+                    return Ex::primary(place, ty);
+                }
+            }
+            // `write!(out, …).unwrap()`: writing to a `String` cannot fail.
+            if let Expr::Macro(mac) = &*m.receiver {
+                if matches!(
+                    crate::macros::macro_name(&mac.mac).as_str(),
+                    "write" | "writeln"
+                ) {
+                    return self.macro_expr(&mac.mac, &Ty::Unit);
+                }
+            }
+        }
         let collect_target = if name == "collect" {
-            self.method_turbofish(m)
+            // `collect::<Option<Vec<_>>>()` with a `Vec<u64>` expected: both say a part.
+            let mut target = self
+                .method_turbofish(m)
                 .first()
                 .cloned()
                 .filter(|t| !t.is_unknown())
-                .unwrap_or_else(|| expected.clone())
+                .unwrap_or_else(|| expected.clone());
+            target.merge(expected);
+            target
         } else {
             Ty::Unknown
         };
@@ -777,7 +909,16 @@ impl Translator<'_> {
         if let Some(ex) = self.entry_modify(m) {
             return ex;
         }
+        // `map.entry(k).or_default()` anywhere: the place in the map.
+        if let Some(place) = self.entry_place(m) {
+            let ty = self.entry_value_ty(m);
+            return Ex::primary(place, ty);
+        }
         // `map.entry(k).or_insert_with(Vec::new).push(x)`: the receiver is a place.
+        let value_results = name == "collect" && !matches!(collect_target, Ty::Result(..));
+        if value_results {
+            self.result_values += 1;
+        }
         let recv = if let Expr::MethodCall(inner) = &*m.receiver {
             match self.entry_place(inner) {
                 Some(place) => {
@@ -789,6 +930,9 @@ impl Translator<'_> {
         } else {
             self.expr_with(&m.receiver, &recv_expected)
         };
+        if value_results {
+            self.result_values -= 1;
+        }
         // A method of a type of the crate.
         if let Some((mut sig, owner)) = self.user_method(&recv.ty, &name) {
             let mut recv = self.settle(recv);
@@ -879,7 +1023,33 @@ impl Translator<'_> {
                 return ex;
             }
         }
-        let recv = self.settle(recv);
+        let mut recv = self.settle(recv);
+        // `v[..3].fill(0)`, `v[1..].sort()`: the slice itself is changed, not a copy of it.
+        if matches!(
+            name.as_str(),
+            "fill" | "sort" | "sort_unstable" | "reverse" | "swap"
+        ) && matches!(&*m.receiver, Expr::Index(i) if matches!(*i.index, Expr::Range(_)))
+        {
+            if let Some(inner) = recv
+                .code
+                .strip_prefix("Array(")
+                .and_then(|s| s.strip_suffix(')'))
+            {
+                recv.code = inner.to_string();
+            }
+        }
+        // `Some(4).take_if(…)`: Swift cannot mutate a temporary, so it gets a name first.
+        if matches!(
+            name.as_str(),
+            "take" | "take_if" | "replace" | "insert" | "get_or_insert" | "get_or_insert_with"
+        ) && matches!(recv.ty, Ty::Option(_))
+            && !crate::expr::is_place(&m.receiver)
+            && self.preludes.last().is_some()
+        {
+            let tmp = self.fresh("value");
+            self.prelude(format!("var {tmp} = {}", recv.code));
+            recv = Ex::primary(tmp, recv.ty.clone());
+        }
         // `self.dismiss.call()` → `dismiss()`.
         if name == "call"
             && m.args.is_empty()
@@ -1159,6 +1329,9 @@ impl Translator<'_> {
                     // `.map(|s| parse(s)).collect::<Result<Vec<_>, _>>()`: the closure throws.
                     let ret = match (name, call_expected) {
                         ("map", Ty::Iter(t) | Ty::Vec(t)) if !t.is_unknown() => (**t).clone(),
+                        ("filter_map", Ty::Iter(t) | Ty::Vec(t)) if !t.is_unknown() => {
+                            Ty::Option(t.clone())
+                        }
                         _ => Ty::Unknown,
                     };
                     if name == "map_or" && i == 0 {
@@ -1172,6 +1345,11 @@ impl Translator<'_> {
                 ("retain_mut" | "dedup_by_key", 0, _) => {
                     Ty::Fn(vec![item.clone()], Box::new(Ty::Unknown))
                 }
+                ("binary_search_by", 0, _) => Ty::Fn(
+                    vec![item.clone()],
+                    Box::new(Ty::Named("Ordering".into(), vec![])),
+                ),
+                ("binary_search_by_key", 1, _) => Ty::Fn(vec![item.clone()], Box::new(Ty::Unknown)),
                 ("sort_by" | "max_by" | "min_by" | "sort_unstable_by", 0, _) => Ty::Fn(
                     vec![item.clone(), item.clone()],
                     Box::new(Ty::Named("Ordering".into(), vec![])),
@@ -1206,6 +1384,18 @@ impl Translator<'_> {
                     0,
                     t,
                 ) => t.clone(),
+                // `s.starts_with(char::is_uppercase)`, `s.find(|c| c == ' ')`: a predicate.
+                (
+                    "contains" | "starts_with" | "ends_with" | "rfind" | "split" | "strip_prefix"
+                    | "strip_suffix" | "trim_start_matches" | "trim_end_matches" | "trim_matches"
+                    | "rsplit" | "split_terminator",
+                    0,
+                    Ty::Str,
+                ) if matches!(&m.args[i], Expr::Closure(_))
+                    || matches!(&m.args[i], Expr::Path(p) if p.path.segments.len() >= 2) =>
+                {
+                    Ty::Fn(vec![Ty::Char], Box::new(Ty::Bool))
+                }
                 (
                     "push_str" | "contains" | "starts_with" | "ends_with" | "rfind" | "split"
                     | "replace" | "strip_prefix" | "strip_suffix" | "split_once"
@@ -1288,6 +1478,163 @@ impl Translator<'_> {
         })
     }
 
+    /// `s.parse::<T>()`: the parse functions of the support code for the primitive types,
+    /// the type's own `from_str` otherwise.
+    fn parse_call(&mut self, recv: Ex, target: Ty, span: proc_macro2::Span) -> Ex {
+        let s = recv.code;
+        let result = |ok: &Ty, err: &str| {
+            Ty::Result(
+                Box::new(ok.clone()),
+                Box::new(Ty::Named(err.into(), vec![])),
+            )
+        };
+        match &target {
+            Ty::Int(k) => {
+                self.helper("parse");
+                let bits = k
+                    .narrow_bits()
+                    .map(|b| format!(", bits: {b}"))
+                    .unwrap_or_default();
+                Ex::primary(
+                    format!("rsParseInt({s}, {}.self{bits})", k.swift()),
+                    result(&target, "RsParseIntError"),
+                )
+            }
+            Ty::Float(_) => {
+                self.helper("parse");
+                Ex::primary(
+                    format!("rsParseFloat({s}, {}.self)", target.swift_lossy()),
+                    result(&target, "RsParseFloatError"),
+                )
+            }
+            Ty::Bool => {
+                self.helper("parse");
+                Ex::primary(
+                    format!("rsParseBool({s})"),
+                    result(&target, "RsParseBoolError"),
+                )
+            }
+            Ty::Char => {
+                self.helper("parse");
+                Ex::primary(
+                    format!("rsParseChar({s})"),
+                    result(&target, "RsParseCharError"),
+                )
+            }
+            Ty::Str => Ex::primary(
+                format!("Result<String, Never>.success({s})"),
+                result(&target, "Never"),
+            ),
+            // `T: FromStr` in generic code: Swift's `LosslessStringConvertible`.
+            Ty::Named(n, _) if self.generics.contains(n) => {
+                self.helper("option");
+                self.helper("ParseError");
+                Ex::primary(
+                    format!("{n}({s}).okOr(RsParseError())"),
+                    result(&target, "RsParseError"),
+                )
+            }
+            Ty::Named(n, _) => match self.user_method(&target, "from_str") {
+                Some((sig, _)) => {
+                    let mut ex = self.sig_result(format!("{n}.fromStr({s})"), &sig);
+                    self.self_result(&mut ex, &target);
+                    ex
+                }
+                None => {
+                    self.error(
+                        span,
+                        format!("parse(): `{n}` has no `FromStr` implementation"),
+                    );
+                    Ex::primary(s, Ty::Unknown)
+                }
+            },
+            _ => {
+                self.error(
+                    span,
+                    "parse(): write the target type, e.g. `s.parse::<i32>()`",
+                );
+                Ex::primary(s, Ty::Unknown)
+            }
+        }
+    }
+
+    /// `Self` in the result of a static function: the type itself.
+    fn self_result(&self, ex: &mut Ex, ty: &Ty) {
+        let this = Ty::Named("Self".into(), vec![]);
+        if ex.ty == this {
+            ex.ty = ty.clone();
+        }
+        if let Some(t) = &mut ex.throws {
+            if t.0 == this {
+                t.0 = ty.clone();
+            }
+        }
+    }
+
+    /// `x.try_into()`: the target type comes from the context (`let n: u8 = x.try_into()?`).
+    fn convert_try_into(&mut self, m: &ExprMethodCall, expected: &Ty) -> Ex {
+        let target = match expected {
+            Ty::Result(t, _) | Ty::Option(t) => (**t).clone(),
+            t => t.clone(),
+        };
+        let result = |ok: &Ty, err: &str| {
+            Ty::Result(
+                Box::new(ok.clone()),
+                Box::new(Ty::Named(err.into(), vec![])),
+            )
+        };
+        match &target {
+            Ty::Int(k) => {
+                let v = self.expr(&m.receiver);
+                let v = self.settle(v);
+                self.helper("try_from");
+                let bits = k
+                    .narrow_bits()
+                    .map(|b| format!(", bits: {b}"))
+                    .unwrap_or_default();
+                Ex::primary(
+                    format!("rsTryFrom({}.self, {}{bits})", k.swift(), v.code),
+                    result(&target, "RsTryFromIntError"),
+                )
+            }
+            Ty::Char => {
+                let v = self.expr(&m.receiver);
+                let v = self.settle(v);
+                self.helper("parse");
+                Ex::primary(
+                    format!("rsCharTryFrom({})", v.code),
+                    result(&Ty::Char, "RsCharTryFromError"),
+                )
+            }
+            Ty::Named(n, _) => match self.user_method(&target, "try_from") {
+                Some((sig, _)) => {
+                    let param = sig.params.first().map_or(Ty::Unknown, |p| p.ty.clone());
+                    let v = self.expr_with(&m.receiver, &param);
+                    let v = self.settle(v);
+                    let mut ex = self.sig_result(format!("{n}.tryFrom({})", v.code), &sig);
+                    self.self_result(&mut ex, &target);
+                    ex
+                }
+                None => {
+                    self.error(
+                        m.span(),
+                        format!("try_into(): `{n}` has no `TryFrom` implementation"),
+                    );
+                    let v = self.expr(&m.receiver);
+                    self.settle(v)
+                }
+            },
+            _ => {
+                self.error(
+                    m.span(),
+                    "try_into(): write the target type, e.g. `let n: u8 = x.try_into()?`",
+                );
+                let v = self.expr(&m.receiver);
+                self.settle(v)
+            }
+        }
+    }
+
     /// The standard library methods.
     #[allow(clippy::too_many_lines)]
     pub fn std_method(
@@ -1338,6 +1685,24 @@ impl Translator<'_> {
                 "alternate" | "sign_plus" | "sign_minus" | "sign_aware_zero_pad" => {
                     return Ex::primary("false", Ty::Bool);
                 }
+                // `f.write_str(s)`, `f.write_char(c)`, `f.pad(s)`: appended to the text.
+                "write_str" | "write_char" | "pad" | "write_fmt" => {
+                    let target = recv
+                        .code
+                        .trim_start_matches('\u{2}')
+                        .trim_start_matches("fmt:")
+                        .to_string();
+                    let value = if name == "write_char" {
+                        format!("String({})", a(0))
+                    } else {
+                        a(0)
+                    };
+                    return Ex::new(
+                        format!("{target} += {value}"),
+                        crate::expr::P_ASSIGN,
+                        Ty::Unit,
+                    );
+                }
                 _ => {}
             }
         }
@@ -1368,7 +1733,7 @@ impl Translator<'_> {
         let is_str = rty == Ty::Str;
         let usize_ty = Ty::Int(IntKind::Usize);
 
-        // Option values (and parsed values, which are Swift optionals).
+        // Option values.
         if let Ty::Option(inner) = &rty {
             let inner = (**inner).clone();
             match name {
@@ -1417,12 +1782,10 @@ impl Translator<'_> {
                     return Ex::new(format!("{} ?? {d}", wrap(&recv, P_NIL + 1)), P_NIL, inner);
                 }
                 "map" => {
-                    let mut ex = prim(
+                    return prim(
                         format!("{r}.map({})", a(0)),
                         Ty::Option(Box::new(fn_ret(0))),
                     );
-                    ex.parsed = recv.parsed;
-                    return ex;
                 }
                 "and_then" => {
                     let ret = match fn_ret(0) {
@@ -1494,23 +1857,28 @@ impl Translator<'_> {
                         closure_body(&a(0))
                     };
                     self.helper("option");
+                    let err = ty_a(0);
+                    self.note_types(&err);
                     return prim(
                         format!("{r}.okOr({e})"),
-                        Ty::Result(Box::new(inner), Box::new(ty_a(0))),
-                    );
-                }
-                // `s.parse::<T>().map_err(|_| E)`: the optional becomes a `Result`.
-                "map_err" if recv.parsed => {
-                    self.helper("option");
-                    let e = closure_body(&a(0));
-                    return prim(
-                        format!("{r}.okOr({e})"),
-                        Ty::Result(Box::new(inner), Box::new(fn_ret(0))),
+                        Ty::Result(Box::new(inner), Box::new(err)),
                     );
                 }
                 "ok" | "cloned" | "copied" | "as_ref" | "as_mut" | "as_deref" | "as_deref_mut"
                 | "clone" | "map_err" => return recv,
                 "flatten" => return prim(format!("{r}.flatMap {{ $0 }}"), inner),
+                // `Option<Result<T, E>>` → `Result<Option<T>, E>`.
+                "transpose" => {
+                    self.helper("result");
+                    let (ok, err) = match &inner {
+                        Ty::Result(o, e) => ((**o).clone(), (**e).clone()),
+                        _ => (Ty::Unknown, Ty::Unknown),
+                    };
+                    return prim(
+                        format!("{r}.transpose()"),
+                        Ty::Result(Box::new(Ty::Option(Box::new(ok))), Box::new(err)),
+                    );
+                }
                 "iter" | "into_iter" => {
                     return prim(
                         format!("({r}.map {{ [$0] }} ?? [])"),
@@ -1547,9 +1915,11 @@ impl Translator<'_> {
                     );
                 }
                 "map_err" => {
+                    let err = fn_ret(0);
+                    self.note_types(&err);
                     return prim(
                         format!("{r}.mapError({})", a(0)),
-                        Ty::Result(Box::new(ok), Box::new(fn_ret(0))),
+                        Ty::Result(Box::new(ok), Box::new(err)),
                     );
                 }
                 "and_then" => {
@@ -1568,6 +1938,17 @@ impl Translator<'_> {
                 }
                 "is_ok_and" => {
                     return Ex::new(format!("{r}.ok().map({}) ?? false", a(0)), P_NIL, Ty::Bool);
+                }
+                // `Result<Option<T>, E>` → `Option<Result<T, E>>`.
+                "transpose" => {
+                    let inner = match &ok {
+                        Ty::Option(t) => (**t).clone(),
+                        t => t.clone(),
+                    };
+                    return prim(
+                        format!("{r}.transpose()"),
+                        Ty::Option(Box::new(Ty::Result(Box::new(inner), Box::new(err)))),
+                    );
                 }
                 "is_err_and" => {
                     return Ex::new(format!("{r}.err().map({}) ?? false", a(0)), P_NIL, Ty::Bool);
@@ -1643,7 +2024,7 @@ impl Translator<'_> {
                 }
             };
             match name {
-                "len" => return prim(format!("{r}.utf8.count"), usize_ty),
+                "len" | "capacity" => return prim(format!("{r}.utf8.count"), usize_ty),
                 "is_empty" => return prim(format!("{r}.isEmpty"), Ty::Bool),
                 "push_str" => {
                     return Ex::new(
@@ -1694,6 +2075,14 @@ impl Translator<'_> {
                     };
                     return prim(format!("{r}.{f}()"), Ty::Str);
                 }
+                "trim_start_matches" if matches!(ty_a(0), Ty::Fn(..)) => {
+                    return prim(format!("String({r}.drop(while: {}))", a(0)), Ty::Str);
+                }
+                "trim_end_matches" | "trim_matches" if matches!(ty_a(0), Ty::Fn(..)) => {
+                    self.helper("string");
+                    let f = names::lower_camel(name);
+                    return prim(format!("{r}.{f}(where: {})", a(0)), Ty::Str);
+                }
                 "trim_start_matches" | "trim_end_matches" | "trim_matches" => {
                     self.helper("string");
                     let f = match name {
@@ -1721,6 +2110,44 @@ impl Translator<'_> {
                     return prim(
                         format!("{r}.splitTerminator({})", str_arg(0)),
                         Ty::Iter(Box::new(Ty::Str)),
+                    );
+                }
+                "starts_with" if matches!(ty_a(0), Ty::Fn(..)) => {
+                    return Ex::new(format!("{r}.first.map({}) ?? false", a(0)), P_NIL, Ty::Bool);
+                }
+                "ends_with" if matches!(ty_a(0), Ty::Fn(..)) => {
+                    return Ex::new(format!("{r}.last.map({}) ?? false", a(0)), P_NIL, Ty::Bool);
+                }
+                "contains" if matches!(ty_a(0), Ty::Fn(..)) => {
+                    return prim(format!("{r}.contains(where: {})", a(0)), Ty::Bool);
+                }
+                "find" | "rfind" if matches!(ty_a(0), Ty::Fn(..)) => {
+                    self.helper("string");
+                    let f = if name == "find" {
+                        "findWhere"
+                    } else {
+                        "rfindWhere"
+                    };
+                    return prim(format!("{r}.{f}({})", a(0)), Ty::Option(Box::new(usize_ty)));
+                }
+                "strip_prefix" if matches!(ty_a(0), Ty::Fn(..)) => {
+                    return Ex::new(
+                        format!(
+                            "{r}.first.map({}) == true ? String({r}.dropFirst()) : nil",
+                            a(0)
+                        ),
+                        P_TERNARY,
+                        Ty::Option(Box::new(Ty::Str)),
+                    );
+                }
+                "strip_suffix" if matches!(ty_a(0), Ty::Fn(..)) => {
+                    return Ex::new(
+                        format!(
+                            "{r}.last.map({}) == true ? String({r}.dropLast()) : nil",
+                            a(0)
+                        ),
+                        P_TERNARY,
+                        Ty::Option(Box::new(Ty::Str)),
                     );
                 }
                 "starts_with" => return prim(format!("{r}.hasPrefix({})", str_arg(0)), Ty::Bool),
@@ -1821,26 +2248,7 @@ impl Translator<'_> {
                             Ty::Result(t, _) | Ty::Option(t) => (**t).clone(),
                             t => t.clone(),
                         });
-                    let code = match &target {
-                        Ty::Int(_) | Ty::Float(_) | Ty::Bool => {
-                            format!("{}({})", target.swift_lossy(), recv.code)
-                        }
-                        Ty::Char => format!("({}.count == 1 ? {}.first : nil)", r, r),
-                        Ty::Str => format!("Optional({})", recv.code),
-                        Ty::Named(n, _) if self.generics.contains(n) => {
-                            format!("{n}({})", recv.code)
-                        }
-                        _ => {
-                            self.error(
-                                span,
-                                "parse(): write the target type, e.g. `s.parse::<i32>()`",
-                            );
-                            format!("Int({})", recv.code)
-                        }
-                    };
-                    let mut ex = prim(code, Ty::Option(Box::new(target)));
-                    ex.parsed = true;
-                    return ex;
+                    return self.parse_call(recv, target, span);
                 }
                 "eq_ignore_ascii_case" => {
                     return Ex::new(
@@ -1890,7 +2298,10 @@ impl Translator<'_> {
                         Ty::Named("Ordering".into(), vec![]),
                     );
                 }
-                "is_char_boundary" => return prim("true".into(), Ty::Bool),
+                "is_char_boundary" => {
+                    self.helper("string");
+                    return prim(format!("{r}.isCharBoundary({})", a(0)), Ty::Bool);
+                }
                 _ => {}
             }
         }
@@ -2025,7 +2436,10 @@ impl Translator<'_> {
                         t,
                     );
                 }
-                "signum" if float => return prim(format!("({} < 0 ? -1.0 : 1.0)", recv.code), t),
+                "signum" if float => {
+                    self.helper("int");
+                    return prim(format!("{r}.rsSignum()"), t);
+                }
                 "signum" => return prim(format!("{r}.signum()"), t),
                 "is_nan" => return prim(format!("{r}.isNaN"), Ty::Bool),
                 "is_finite" => return prim(format!("{r}.isFinite"), Ty::Bool),
@@ -2054,12 +2468,30 @@ impl Translator<'_> {
                         t,
                     );
                 }
-                "count_ones" => return prim(format!("{r}.nonzeroBitCount"), Ty::Int(IntKind::U32)),
-                "leading_zeros" => {
-                    return prim(format!("{r}.leadingZeroBitCount"), Ty::Int(IntKind::U32));
-                }
-                "trailing_zeros" => {
-                    return prim(format!("{r}.trailingZeroBitCount"), Ty::Int(IntKind::U32));
+                // Bits of an `i32`, which Swift holds in 64: the 32-bit value.
+                "count_ones" | "leading_zeros" | "trailing_zeros" | "rotate_left"
+                | "rotate_right" => {
+                    let narrow = if t == Ty::Int(IntKind::I32) {
+                        format!("Int32(truncatingIfNeeded: {r})")
+                    } else {
+                        r.clone()
+                    };
+                    let u32 = Ty::Int(IntKind::U32);
+                    return match name {
+                        "count_ones" => prim(format!("{narrow}.nonzeroBitCount"), u32),
+                        "leading_zeros" => prim(format!("{narrow}.leadingZeroBitCount"), u32),
+                        "trailing_zeros" => prim(format!("{narrow}.trailingZeroBitCount"), u32),
+                        _ => {
+                            self.helper("int");
+                            let f = names::lower_camel(name);
+                            let rotated = format!("{narrow}.{f}({})", a(0));
+                            if t == Ty::Int(IntKind::I32) {
+                                prim(format!("Int({rotated})"), t)
+                            } else {
+                                prim(rotated, t)
+                            }
+                        }
+                    };
                 }
                 "is_power_of_two" => {
                     return Ex::new(
@@ -2199,6 +2631,45 @@ impl Translator<'_> {
                 _ => {}
             }
         }
+        // Bytes: `b.is_ascii_digit()`, `b.to_ascii_uppercase()`.
+        if rty == Ty::Int(IntKind::U8) {
+            match name {
+                "is_ascii_digit"
+                | "is_ascii_alphabetic"
+                | "is_ascii_alphanumeric"
+                | "is_ascii_uppercase"
+                | "is_ascii_lowercase"
+                | "is_ascii_punctuation"
+                | "is_ascii_hexdigit"
+                | "is_ascii_whitespace"
+                | "is_ascii_control"
+                | "is_ascii_graphic" => {
+                    let ch = Ex::primary(format!("Character(UnicodeScalar({r}))"), Ty::Char);
+                    return self.std_method(ch, name, args, turbofish, expected, span);
+                }
+                "is_ascii" => return Ex::new(format!("{r} < 128"), P_CMP, Ty::Bool),
+                "to_ascii_uppercase" => {
+                    return prim(format!("({r} >= 97 && {r} <= 122 ? {r} - 32 : {r})"), rty);
+                }
+                "to_ascii_lowercase" => {
+                    return prim(format!("({r} >= 65 && {r} <= 90 ? {r} + 32 : {r})"), rty);
+                }
+                "eq_ignore_ascii_case" => {
+                    return Ex::new(
+                        format!(
+                            "({r} >= 65 && {r} <= 90 ? {r} + 32 : {r}) == ({} >= 65 && {} <= 90 ? {} + 32 : {})",
+                            a(0),
+                            a(0),
+                            a(0),
+                            a(0)
+                        ),
+                        P_CMP,
+                        Ty::Bool,
+                    );
+                }
+                _ => {}
+            }
+        }
         // Maps.
         if let Ty::Map(k, v, ordered) = &rty {
             let (k, v, ordered) = ((**k).clone(), (**v).clone(), *ordered);
@@ -2253,6 +2724,16 @@ impl Translator<'_> {
                     return prim(format!("{r}.retain({})", a(0)), Ty::Unit);
                 }
                 "iter_mut" => return recv,
+                // `map.range(a..b)` of a `BTreeMap`: the entries in order, within the bounds.
+                "range" if ordered && args.len() == 1 => {
+                    return prim(
+                        format!(
+                            "{r}.sorted(by: {{ $0.key < $1.key }}).filter {{ ({}).contains($0.key) }}",
+                            a(0)
+                        ),
+                        Ty::Iter(Box::new(Ty::Tuple(vec![k, v]))),
+                    );
+                }
                 "first_key_value" => {
                     return prim(
                         format!("{r}.min(by: {{ $0.key < $1.key }}).map {{ ($0.key, $0.value) }}"),
@@ -2282,6 +2763,13 @@ impl Translator<'_> {
                 "contains" => return prim(format!("{r}.contains({})", a(0)), Ty::Bool),
                 "len" => return prim(format!("{r}.count"), usize_ty),
                 "is_empty" => return prim(format!("{r}.isEmpty"), Ty::Bool),
+                // `set.range(a..b)` of a `BTreeSet`: the elements in order, within the bounds.
+                "range" if ordered && args.len() == 1 => {
+                    return prim(
+                        format!("{r}.sorted().filter {{ ({}).contains($0) }}", a(0)),
+                        Ty::Iter(Box::new(t)),
+                    );
+                }
                 "union" => return prim(format!("{r}.union({})", a(0)), rty.clone()),
                 "intersection" => return prim(format!("{r}.intersection({})", a(0)), rty.clone()),
                 "difference" => return prim(format!("{r}.subtracting({})", a(0)), rty.clone()),
@@ -2304,6 +2792,39 @@ impl Translator<'_> {
                     return prim(format!("{r}.{f}()"), Ty::Option(Box::new(t)));
                 }
                 _ => {}
+            }
+        }
+        // Binary heaps.
+        if let Ty::Named(n, targs) = &rty {
+            if n == "RsBinaryHeap" {
+                self.helper("heap");
+                let t = targs.first().cloned().unwrap_or(Ty::Unknown);
+                let usize_ty = Ty::Int(IntKind::Usize);
+                match name {
+                    "push" => {
+                        self.pending_refine = Some(Ty::Named("RsBinaryHeap".into(), vec![ty_a(0)]));
+                        return prim(format!("{r}.push({})", a(0)), Ty::Unit);
+                    }
+                    "pop" => return prim(format!("{r}.pop()"), Ty::Option(Box::new(t))),
+                    "peek" => return prim(format!("{r}.peek"), Ty::Option(Box::new(t))),
+                    "len" => return prim(format!("{r}.count"), usize_ty),
+                    "is_empty" => return prim(format!("{r}.isEmpty"), Ty::Bool),
+                    "into_sorted_vec" => {
+                        return prim(format!("{r}.intoSortedVec()"), Ty::Vec(Box::new(t)));
+                    }
+                    "into_vec" | "as_slice" => {
+                        return prim(format!("{r}.items"), Ty::Vec(Box::new(t)));
+                    }
+                    "drain" => return prim(format!("{r}.drain()"), Ty::Vec(Box::new(t))),
+                    "iter" | "into_iter" => {
+                        return prim(format!("{r}.items"), Ty::Iter(Box::new(t)));
+                    }
+                    "clear" => return prim(format!("{r}.clear()"), Ty::Unit),
+                    "extend" => return prim(format!("{r}.extend({})", a(0)), Ty::Unit),
+                    "append" => return prim(format!("{r}.append(&{})", a(0)), Ty::Unit),
+                    "retain" => return prim(format!("{r}.retain({})", a(0)), Ty::Unit),
+                    _ => {}
+                }
             }
         }
         // Vectors, ranges and iterators.
@@ -2424,8 +2945,39 @@ impl Translator<'_> {
         turbofish: &[Ty],
         expected: &Ty,
     ) -> Option<Ex> {
-        let r = wrap(recv, P_PRIMARY);
+        let mut r = wrap(recv, P_PRIMARY);
         let rty = recv.ty.clone();
+        // A sequence without an end (an `impl Iterator` of the crate, `(1..)`): its adapters
+        // must be lazy, as in Rust.
+        let endless = match &rty {
+            Ty::Named(n, _) => self.syms.iterators.contains_key(n),
+            Ty::Range(_) => r.ends_with("...") || r.ends_with("...)"),
+            _ => false,
+        };
+        if endless
+            && matches!(
+                name,
+                "map"
+                    | "filter"
+                    | "filter_map"
+                    | "flat_map"
+                    | "take_while"
+                    | "skip_while"
+                    | "enumerate"
+                    | "skip"
+                    | "take"
+                    | "step_by"
+                    | "inspect"
+                    | "scan"
+                    | "zip"
+                    | "chain"
+                    | "map_while"
+                    | "flatten"
+                    | "peekable"
+            )
+        {
+            r = format!("{r}.lazy");
+        }
         let item = rty.item();
         let a = |i: usize| args.get(i).map_or_else(String::new, |e| e.code.clone());
         let ty_a = |i: usize| args.get(i).map_or(Ty::Unknown, |e| e.ty.clone());
@@ -2440,6 +2992,8 @@ impl Translator<'_> {
         Some(match name {
             "len" => prim(format!("{r}.count"), usize_ty),
             "is_empty" => prim(format!("{r}.isEmpty"), Ty::Bool),
+            "capacity" => prim(format!("{r}.capacity"), usize_ty),
+            "next_back" if args.is_empty() => prim(format!("{r}.last"), Ty::Option(Box::new(item))),
             "push" | "push_back" => {
                 self.pending_refine = Some(Ty::Vec(Box::new(ty_a(0))));
                 prim(format!("{r}.append({})", a(0)), Ty::Unit)
@@ -2499,9 +3053,30 @@ impl Translator<'_> {
                 self.helper("Ordering");
                 prim(format!("{r}.sortBy({})", a(0)), Ty::Unit)
             }
+            // A tuple key (`|w| (w.len(), w)`): Swift compares tuples, but no helper can take them.
+            "sort_by_key" | "sort_unstable_by_key" | "sort_by_cached_key"
+                if matches!(fn_ret(0), Ty::Tuple(_)) =>
+            {
+                let k = a(0);
+                prim(format!("{r}.sort {{ ({k})($0) < ({k})($1) }}"), Ty::Unit)
+            }
             "sort_by_key" | "sort_unstable_by_key" | "sort_by_cached_key" => {
                 self.helper("vec");
                 prim(format!("{r}.sortByKey({})", a(0)), Ty::Unit)
+            }
+            "split_first" | "split_last" => {
+                let (end, rest) = if name == "split_first" {
+                    ("first", "dropFirst")
+                } else {
+                    ("last", "dropLast")
+                };
+                prim(
+                    format!("{r}.{end}.map {{ ($0, Array({r}.{rest}())) }}"),
+                    Ty::Option(Box::new(Ty::Tuple(vec![
+                        item.clone(),
+                        Ty::Vec(Box::new(item)),
+                    ]))),
+                )
             }
             "extend" | "extend_from_slice" | "append" => {
                 self.pending_refine = Some(Ty::Vec(Box::new(ty_a(0).item())));
@@ -2536,7 +3111,13 @@ impl Translator<'_> {
                 } else {
                     "chunks"
                 };
-                prim(format!("{r}.{f}({})", a(0)), iter(Ty::Vec(Box::new(item))))
+                let code = if name == "chunks_exact" {
+                    // Only the full chunks; `remainder()` gives the rest.
+                    format!("{r}.chunks({}).filter {{ $0.count == {} }}", a(0), a(0))
+                } else {
+                    format!("{r}.{f}({})", a(0))
+                };
+                prim(code, iter(Ty::Vec(Box::new(item))))
             }
             "concat" => {
                 if item == Ty::Str {
@@ -2547,6 +3128,15 @@ impl Translator<'_> {
                         Ty::Vec(Box::new(item.item())),
                     )
                 }
+            }
+            // `[[1, 2], [3]].join(&0)`: a vector of vectors joined by an element or a slice.
+            "join" if matches!(item, Ty::Vec(_)) => {
+                let sep = if matches!(ty_a(0), Ty::Vec(_)) {
+                    a(0)
+                } else {
+                    format!("[{}]", a(0))
+                };
+                prim(format!("Array({r}.joined(separator: {sep}))"), item)
             }
             "join" => prim(format!("{r}.joined(separator: {})", a(0)), Ty::Str),
             "starts_with" => prim(format!("{r}.starts(with: {})", a(0)), Ty::Bool),
@@ -2563,6 +3153,18 @@ impl Translator<'_> {
                 self.helper("vec");
                 prim(
                     format!("{r}.binarySearch({})", a(0)),
+                    Ty::Result(Box::new(usize_ty.clone()), Box::new(usize_ty)),
+                )
+            }
+            "binary_search_by" | "binary_search_by_key" => {
+                self.helper("vec");
+                let call = if name == "binary_search_by" {
+                    format!("{r}.binarySearchBy({})", a(0))
+                } else {
+                    format!("{r}.binarySearchByKey({}, {})", a(0), a(1))
+                };
+                prim(
+                    call,
                     Ty::Result(Box::new(usize_ty.clone()), Box::new(usize_ty)),
                 )
             }
@@ -2626,19 +3228,47 @@ impl Translator<'_> {
             "peekable" | "fuse" => recv.clone(),
             "inspect" => recv.clone(),
             "sum" | "product" => {
-                let t = turbofish
+                let mut t = turbofish
                     .first()
                     .cloned()
                     .filter(|t| !t.is_unknown())
                     .or_else(|| (!item.is_unknown()).then(|| item.clone()))
                     .unwrap_or_else(|| expected.clone());
-                let (zero, op) = match (name, &t) {
+                t.merge(expected);
+                let scalar = match &t {
+                    Ty::Option(inner) | Ty::Result(inner, _) => (**inner).clone(),
+                    t => t.clone(),
+                };
+                let (zero, op) = match (name, &scalar) {
                     ("sum", Ty::Float(_)) => ("0.0", "+"),
                     ("sum", _) => ("0", "+"),
                     (_, Ty::Float(_)) => ("1.0", "*"),
                     _ => ("1", "*"),
                 };
-                prim(format!("{r}.reduce({zero}, {op})"), t)
+                // `Option`s and `Result`s add up to the first `None` or `Err`.
+                match (&t, t.swift()) {
+                    (Ty::Option(_) | Ty::Result(..), Some(wrapper)) => {
+                        self.note_types(&t);
+                        // `vec![Ok(2), Ok(3)]`: the literal learns its type here.
+                        let r = if recv.code.starts_with('[') && !item.is_complete() {
+                            format!("({} as [{wrapper}])", recv.code)
+                        } else {
+                            r.clone()
+                        };
+                        let start = if t.is_option() {
+                            format!("{wrapper}({zero})")
+                        } else {
+                            format!("{wrapper}.success({zero})")
+                        };
+                        prim(
+                            format!(
+                                "{r}.reduce({start}) {{ acc, x in acc.flatMap {{ a in x.map {{ a {op} $0 }} }} }}"
+                            ),
+                            t,
+                        )
+                    }
+                    _ => prim(format!("{r}.reduce({zero}, {op})"), t),
+                }
             }
             "count" => prim(format!("{r}.count"), usize_ty),
             "min" | "max" if args.is_empty() && matches!(item, Ty::Tuple(_)) => {
@@ -2651,6 +3281,22 @@ impl Translator<'_> {
                 format!("{}({}, {})", self.global_fn(name), recv.code, a(0)),
                 recv.ty.clone(),
             ),
+            "min_by_key" | "max_by_key" if matches!(fn_ret(0), Ty::Tuple(_)) => {
+                self.helper("vec");
+                self.helper("Ordering");
+                let k = a(0);
+                let f = if name == "min_by_key" {
+                    "minBy"
+                } else {
+                    "maxBy"
+                };
+                prim(
+                    format!(
+                        "{r}.{f} {{ ({k})($0) < ({k})($1) ? .less : (({k})($1) < ({k})($0) ? .greater : .equal) }}"
+                    ),
+                    Ty::Option(Box::new(item)),
+                )
+            }
             "min_by_key" | "max_by_key" | "min_by" | "max_by" => {
                 self.helper("vec");
                 if name.ends_with("by") {
@@ -2778,14 +3424,41 @@ impl Translator<'_> {
                     _ => (Ty::Unknown, Ty::Unknown),
                 };
                 let mut ty = target.clone();
-                ty.merge(&Ty::Map(Box::new(k), Box::new(v), false));
+                ty.merge(&Ty::Map(Box::new(k.clone()), Box::new(v), false));
+                let key = match &ty {
+                    Ty::Map(key, _, _) => (**key).clone(),
+                    _ => k,
+                };
                 Ex::primary(
-                    format!("Dictionary({code}, uniquingKeysWith: {{ _, last in last }})"),
+                    format!(
+                        "{}({code}, uniquingKeysWith: {{ _, last in last }})",
+                        crate::ty::map_type_name(&key)
+                    ),
                     ty,
                 )
             }
-            Ty::Set(_, ordered) => {
-                Ex::primary(format!("Set({code})"), Ty::Set(Box::new(item), *ordered))
+            Ty::Set(t, ordered) => {
+                let mut elem = item;
+                elem.merge(t);
+                Ex::primary(
+                    format!("{}({code})", crate::ty::set_type_name(&elem)),
+                    Ty::Set(Box::new(elem), *ordered),
+                )
+            }
+            // `collect::<BinaryHeap<_>>()`.
+            Ty::Named(n, args) if n == "RsBinaryHeap" => {
+                self.helper("heap");
+                let mut t = item;
+                t.merge(args.first().unwrap_or(&Ty::Unknown));
+                let inner = if is_array_chain {
+                    code
+                } else {
+                    format!("Array({code})")
+                };
+                Ex::primary(
+                    format!("RsBinaryHeap({inner})"),
+                    Ty::Named("RsBinaryHeap".into(), vec![t]),
+                )
             }
             Ty::Result(inner, err) => {
                 // The closures throw; the whole chain is a throwing call.
@@ -3018,7 +3691,28 @@ fn strip_ref(e: &Expr) -> &Expr {
     }
 }
 
-fn generic_args(path: &syn::Path) -> Vec<Ty> {
-    let _ = path;
-    Vec::new()
+impl Translator<'_> {
+    /// The turbofish of a call: `generic_max::<u8>(…)`, `Vec::<i32>::new()`.
+    fn generic_args(&self, path: &syn::Path) -> Vec<Ty> {
+        let Some(last) = path.segments.last() else {
+            return Vec::new();
+        };
+        let seg = if matches!(last.arguments, syn::PathArguments::None) && path.segments.len() >= 2
+        {
+            &path.segments[path.segments.len() - 2]
+        } else {
+            last
+        };
+        match &seg.arguments {
+            syn::PathArguments::AngleBracketed(a) => a
+                .args
+                .iter()
+                .filter_map(|g| match g {
+                    syn::GenericArgument::Type(t) => Some(self.ty(t)),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
 }

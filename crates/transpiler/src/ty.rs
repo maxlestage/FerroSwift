@@ -69,6 +69,23 @@ impl IntKind {
     pub fn signed(self) -> bool {
         !self.swift().starts_with('U')
     }
+
+    /// Bits of the Rust type.
+    pub fn rust_bits(self) -> u32 {
+        match self {
+            IntKind::I8 | IntKind::U8 => 8,
+            IntKind::I16 | IntKind::U16 => 16,
+            IntKind::I32 | IntKind::U32 => 32,
+            IntKind::I64 | IntKind::U64 | IntKind::Isize | IntKind::Usize => 64,
+            IntKind::I128 | IntKind::U128 => 128,
+        }
+    }
+
+    /// The bits of the Rust type when Swift's is wider (`i32` in `Int`): the limits to keep.
+    pub fn narrow_bits(self) -> Option<u32> {
+        let rust = self.rust_bits();
+        (rust < self.bits()).then_some(rust)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +171,9 @@ impl Ty {
             }
             Ty::Map(k, v, _) => Ty::Tuple(vec![(**k).clone(), (**v).clone()]),
             Ty::Str => Ty::Char,
+            Ty::Named(n, args) if n == "RsBinaryHeap" => {
+                args.first().cloned().unwrap_or(Ty::Unknown)
+            }
             _ => Ty::Unknown,
         }
     }
@@ -234,12 +254,34 @@ impl Ty {
                 t.write_swift(out);
                 out.push(']');
             }
+            // Swift cannot hash a tuple: keys of two or three elements get a support type.
+            Ty::Map(k, v, _) if matches!(&**k, Ty::Tuple(ts) if ts.len() == 2 || ts.len() == 3) => {
+                let Ty::Tuple(ts) = &**k else { unreachable!() };
+                let _ = write!(out, "RsTupleMap{}<", ts.len());
+                for t in ts {
+                    t.write_swift(out);
+                    out.push_str(", ");
+                }
+                v.write_swift(out);
+                out.push('>');
+            }
             Ty::Map(k, v, _) => {
                 out.push('[');
                 k.write_swift(out);
                 out.push_str(": ");
                 v.write_swift(out);
                 out.push(']');
+            }
+            Ty::Set(t, _) if matches!(&**t, Ty::Tuple(ts) if ts.len() == 2 || ts.len() == 3) => {
+                let Ty::Tuple(ts) = &**t else { unreachable!() };
+                let _ = write!(out, "RsTupleSet{}<", ts.len());
+                for (i, t) in ts.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    t.write_swift(out);
+                }
+                out.push('>');
             }
             Ty::Set(t, _) => {
                 out.push_str("Set<");
@@ -262,6 +304,12 @@ impl Ty {
                 t.write_swift(out);
                 out.push_str(", ");
                 e.write_swift(out);
+                out.push('>');
+            }
+            // Swift has no tuple of one element: a support struct holds it.
+            Ty::Tuple(ts) if ts.len() == 1 => {
+                out.push_str("RsTuple1<");
+                ts[0].write_swift(out);
                 out.push('>');
             }
             Ty::Tuple(ts) => {
@@ -325,6 +373,7 @@ impl Ty {
             Ty::Map(..) => "[:]".into(),
             Ty::Option(_) => "nil".into(),
             Ty::Unit => "()".into(),
+            Ty::Tuple(ts) if ts.len() == 1 => format!("RsTuple1({})", ts[0].default_value()?),
             Ty::Tuple(ts) => {
                 let parts: Option<Vec<String>> = ts.iter().map(Ty::default_value).collect();
                 format!("({})", parts?.join(", "))
@@ -332,6 +381,24 @@ impl Ty {
             Ty::Named(n, _) => format!("{n}()"),
             _ => return None,
         })
+    }
+}
+
+/// The Swift type that builds a set of these elements: `Set`, or the support type for
+/// tuples.
+pub fn set_type_name(item: &Ty) -> String {
+    match item {
+        Ty::Tuple(ts) if ts.len() == 2 || ts.len() == 3 => format!("RsTupleSet{}", ts.len()),
+        _ => "Set".into(),
+    }
+}
+
+/// The Swift type that builds a map with these keys: `Dictionary`, or the support type for
+/// tuples.
+pub fn map_type_name(key: &Ty) -> String {
+    match key {
+        Ty::Tuple(ts) if ts.len() == 2 || ts.len() == 3 => format!("RsTupleMap{}", ts.len()),
+        _ => "Dictionary".into(),
     }
 }
 
@@ -353,7 +420,8 @@ pub fn from_name(name: &str, args: Vec<Ty>) -> Ty {
         "str" | "String" | "OsString" | "PathBuf" | "Path" => Ty::Str,
         "f32" => Ty::Float(FloatKind::F32),
         "f64" => Ty::Float(FloatKind::F64),
-        "Vec" | "VecDeque" | "LinkedList" | "BinaryHeap" => Ty::Vec(Box::new(arg(0))),
+        "Vec" | "VecDeque" | "LinkedList" => Ty::Vec(Box::new(arg(0))),
+        "BinaryHeap" => Ty::Named("RsBinaryHeap".into(), vec![arg(0)]),
         "HashMap" | "IndexMap" => Ty::Map(Box::new(arg(0)), Box::new(arg(1)), false),
         "BTreeMap" => Ty::Map(Box::new(arg(0)), Box::new(arg(1)), true),
         "HashSet" | "IndexSet" if !args.is_empty() => Ty::Set(Box::new(arg(0)), false),
@@ -365,6 +433,11 @@ pub fn from_name(name: &str, args: Vec<Ty>) -> Ty {
         ),
         // Smart pointers and cells disappear: Swift values are copied, classes shared.
         "Box" | "Rc" | "Arc" | "Cow" | "RefCell" | "Cell" | "Mutex" | "RwLock" => arg(0),
+        // The errors of the standard library have support types of the same shape.
+        "ParseIntError" | "ParseFloatError" | "ParseBoolError" | "ParseCharError"
+        | "CharTryFromError" | "TryFromIntError" | "FromUtf8Error" | "Utf8Error" => {
+            Ty::Named(format!("Rs{name}"), vec![])
+        }
         _ => Ty::Named(names::upper_camel(name), args),
     }
 }

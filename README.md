@@ -122,7 +122,7 @@ The complete list, and what is not supported, is in [the language guide](site/do
 ## Limits
 
 - No borrow checker semantics in Swift: values are copied. Shared mutable state (`Rc<RefCell<T>>`) has no translation; use an `#[derive(Observable)]` model.
-- `i32`, `i64` and `usize` all become Swift's 64-bit `Int`: overflows happen at 2⁶³, not 2³¹.
+- `i32`, `i64` and `usize` all become Swift's 64-bit `Int`: `+` overflows at 2⁶³, not 2³¹ (parsing, `as` casts and the `wrapping_*`/`checked_*` methods keep the 32-bit limits).
 - Not translated: lifetimes (dropped), `unsafe` and raw pointers, `macro_rules!`, threads, `async` runtimes, trait objects with generic methods, crates other than `std` and `ferroswift`.
 
 ## Repository
