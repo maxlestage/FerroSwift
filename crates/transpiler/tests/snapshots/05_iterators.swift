@@ -99,6 +99,25 @@ func rsPartialCmp<T: Comparable>(_ a: T, _ b: T) -> Ordering? {
     a < b ? .less : a == b ? .equal : b < a ? .greater : nil
 }
 
+/// `(a, b).cmp(&(c, d))`: tuples compare element by element.
+func rsCmp<A: Comparable, B: Comparable>(_ a: (A, B), _ b: (A, B)) -> Ordering {
+    rsCmp(a.0, b.0).then(rsCmp(a.1, b.1))
+}
+
+func rsCmp<A: Comparable, B: Comparable, C: Comparable>(_ a: (A, B, C), _ b: (A, B, C)) -> Ordering {
+    rsCmp(a.0, b.0).then(rsCmp(a.1, b.1)).then(rsCmp(a.2, b.2))
+}
+
+func rsPartialCmp<A: Comparable, B: Comparable>(_ a: (A, B), _ b: (A, B)) -> Ordering? {
+    guard let first = rsPartialCmp(a.0, b.0) else { return nil }
+    return first == .equal ? rsPartialCmp(a.1, b.1) : first
+}
+
+func rsPartialCmp<A: Comparable, B: Comparable, C: Comparable>(_ a: (A, B, C), _ b: (A, B, C)) -> Ordering? {
+    guard let first = rsPartialCmp((a.0, a.1), (b.0, b.1)) else { return nil }
+    return first == .equal ? rsPartialCmp(a.2, b.2) : first
+}
+
 extension Array {
     /// `v.get(i)`.
     func get(_ i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
@@ -350,6 +369,22 @@ struct RsStepBy<Base: Sequence>: Sequence, IteratorProtocol {
             if base.next() == nil { return nil }
         }
         return base.next()
+    }
+}
+
+extension Set where Element: Comparable {
+    /// `set.pop_first()` of a `BTreeSet`: removes and returns the smallest element.
+    mutating func rsPopFirst() -> Element? {
+        guard let m = self.min() else { return nil }
+        remove(m)
+        return m
+    }
+
+    /// `set.pop_last()`.
+    mutating func rsPopLast() -> Element? {
+        guard let m = self.max() else { return nil }
+        remove(m)
+        return m
     }
 }
 

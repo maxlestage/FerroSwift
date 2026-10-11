@@ -171,7 +171,7 @@ impl Ty {
             }
             Ty::Map(k, v, _) => Ty::Tuple(vec![(**k).clone(), (**v).clone()]),
             Ty::Str => Ty::Char,
-            Ty::Named(n, args) if n == "RsBinaryHeap" => {
+            Ty::Named(n, args) if n == "RsBinaryHeap" || n == "RsIter" => {
                 args.first().cloned().unwrap_or(Ty::Unknown)
             }
             _ => Ty::Unknown,
@@ -461,6 +461,24 @@ pub fn from_name(name: &str, args: Vec<Ty>) -> Ty {
         ),
         // Smart pointers disappear: Swift values are copied, classes shared.
         "Box" | "Rc" | "Arc" | "Cow" => arg(0),
+        // The iterators of the standard library kept in a field or a variable: `RsIter`.
+        "Peekable" | "Fuse" => match arg(0) {
+            Ty::Iter(t) => Ty::Named("RsIter".into(), vec![*t]),
+            Ty::Named(n, args) if n == "RsIter" => Ty::Named(n, args),
+            t => Ty::Named("RsIter".into(), vec![t.item()]),
+        },
+        "Chars" => Ty::Named("RsIter".into(), vec![Ty::Char]),
+        "CharIndices" => Ty::Named(
+            "RsIter".into(),
+            vec![Ty::Tuple(vec![Ty::Int(IntKind::Usize), Ty::Char])],
+        ),
+        "Bytes" => Ty::Named("RsIter".into(), vec![Ty::Int(IntKind::U8)]),
+        "Lines" | "SplitWhitespace" | "SplitAsciiWhitespace" => {
+            Ty::Named("RsIter".into(), vec![Ty::Str])
+        }
+        "Iter" | "IntoIter" | "Drain" if !args.is_empty() => {
+            Ty::Named("RsIter".into(), vec![arg(0)])
+        }
         // A cell is a class holding the value: the clones of an `Rc` share it.
         "RefCell" | "Cell" | "Mutex" | "RwLock" => Ty::Named("RsRefCell".into(), vec![arg(0)]),
         // The errors of the standard library have support types of the same shape.

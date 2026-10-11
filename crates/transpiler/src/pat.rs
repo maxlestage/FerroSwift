@@ -657,13 +657,18 @@ impl Translator<'_> {
         }
         for (i, p) in s.elems.iter().enumerate() {
             if Some(i) == rest_at {
+                // `[first, rest @ ..] if rest.is_empty()`: the name stands for the slice, so
+                // that the guard can use it before any `let`.
                 if let Pat::Ident(id) = p {
                     let rest_ty = Ty::Vec(Box::new(item.clone()));
-                    let name = self.bind(&id.ident.to_string(), &rest_ty, cx);
                     let after = n - 1 - i;
-                    cx.lets.push(format!(
-                        "let {name} = Array({subject}[{i}..<({subject}.count - {after})])"
-                    ));
+                    if cx.declare {
+                        self.declare_alias(
+                            &id.ident.to_string(),
+                            format!("Array({subject}[{i}..<({subject}.count - {after})])"),
+                            rest_ty,
+                        );
+                    }
                 }
                 continue;
             }

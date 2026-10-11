@@ -1,5 +1,6 @@
 //! Differential tests: every program of `tests/programs` is compiled and run twice, as Rust
-//! with `rustc` and as Swift (after translation) with `swiftc`. Their outputs must be equal.
+//! with `rustc` and as Swift (after translation) with `swiftc`. Their standard output, standard
+//! error and exit code must be equal.
 //!
 //! Needs a Swift compiler: `swiftc` on the PATH, or its path in `FERROSWIFT_SWIFTC`.
 //! Without one, the test only checks that every program translates without errors.
@@ -47,6 +48,38 @@ fn run(cmd: &mut Command) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// What a program wrote and how it ended: a `main` returning an `Err` exits with 1 in both
+/// languages, with the error on the standard error.
+struct Outcome {
+    stdout: String,
+    stderr: String,
+    code: Option<i32>,
+}
+
+fn run_program(bin: &Path) -> Result<Outcome, String> {
+    let out = Command::new(bin).output().map_err(|e| e.to_string())?;
+    Ok(Outcome {
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code: out.status.code(),
+    })
+}
+
+/// The lines that differ between two texts.
+fn text_diff(expected: &str, actual: &str) -> String {
+    let mut diff = String::new();
+    for (i, (e, a)) in expected.lines().zip(actual.lines()).enumerate() {
+        if e != a {
+            diff.push_str(&format!("line {}:\n  rust:  {e}\n  swift: {a}\n", i + 1));
+        }
+    }
+    let (el, al) = (expected.lines().count(), actual.lines().count());
+    if el != al {
+        diff.push_str(&format!("{el} lines from Rust, {al} from Swift\n"));
+    }
+    diff
+}
+
 /// The error messages of the compiler, with the line they point at.
 fn errors_only(output: &str) -> String {
     let lines: Vec<&str> = output.lines().collect();
@@ -88,8 +121,7 @@ fn check(program: &Path, swiftc: Option<&Path>, work: &Path) -> Result<(), Strin
         .arg(&rust_bin)
         .arg(program))
     .map_err(|e| format!("rustc failed:\n{e}"))?;
-    let expected =
-        run(&mut Command::new(&rust_bin)).map_err(|e| format!("the Rust program failed:\n{e}"))?;
+    let expected = run_program(&rust_bin)?;
     let swift_bin = work.join(format!("{name}_swift"));
     run(Command::new(swiftc)
         .arg(&swift_path)
@@ -102,22 +134,27 @@ fn check(program: &Path, swiftc: Option<&Path>, work: &Path) -> Result<(), Strin
             errors_only(&e)
         )
     })?;
-    let actual = run(&mut Command::new(&swift_bin))
-        .map_err(|e| format!("the Swift program failed:\n{e}"))?;
-    if expected != actual {
-        let mut diff = String::new();
-        for (i, (e, a)) in expected.lines().zip(actual.lines()).enumerate() {
-            if e != a {
-                diff.push_str(&format!("line {}:\n  rust:  {e}\n  swift: {a}\n", i + 1));
-            }
-        }
-        let (el, al) = (expected.lines().count(), actual.lines().count());
-        if el != al {
-            diff.push_str(&format!("{el} lines from Rust, {al} from Swift\n"));
-        }
+    let actual = run_program(&swift_bin)?;
+    if expected.stdout != actual.stdout {
         return Err(format!(
-            "different output ({}):\n{diff}",
-            swift_path.display()
+            "different output ({}):\n{}",
+            swift_path.display(),
+            text_diff(&expected.stdout, &actual.stdout)
+        ));
+    }
+    if expected.stderr != actual.stderr {
+        return Err(format!(
+            "different standard error ({}):\n{}",
+            swift_path.display(),
+            text_diff(&expected.stderr, &actual.stderr)
+        ));
+    }
+    if expected.code != actual.code {
+        return Err(format!(
+            "different exit code ({}): {:?} from Rust, {:?} from Swift",
+            swift_path.display(),
+            expected.code,
+            actual.code
         ));
     }
     Ok(())
