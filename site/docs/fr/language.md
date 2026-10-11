@@ -74,7 +74,7 @@ Les longueurs `usize` sont des `Int` Swift : `v.len()` donne `v.count`. Le `len(
 | `v.push(match op { '+' => a + b, … })` | `v.append({ () -> Int in switch op { … } }())` |
 | `x as f64`, `n as u8` | `Double(x)`, `UInt8(truncatingIfNeeded: n)` |
 | `matches!(x, Some(1..=5))` | un `switch` qui renvoie un `Bool` |
-| `assert!(c, "…")`, `panic!("…")` | `precondition(c, "…")`, `fatalError("…")` |
+| `assert!(c, "…")`, `panic!("…")` | `rsAssert(c, "…", location)`, `rsPanic("…", location)` |
 
 Les closures deviennent des closures Swift (`|x| x * 2` → `{ x in x * 2 }`) ; une structure générique sur un type de closure (`struct Button<F: Fn()> { action: F }`) stocke le type de closure lui-même, et une closure `move` qui modifie une variable `Copy` capturée (`move || { counter += 1; counter }`) en possède une copie, comme en Rust. Un paramètre `&mut` d’un type de closure (`Box<dyn Fn(&mut State)>`) est `inout`, pour les closures données comme pour leurs appels. Les chaînes d’itérateurs deviennent les méthodes Swift correspondantes : `map`, `filter`, `fold` (→ `reduce`), `sum`, `any` (→ `contains(where:)`), `find` (→ `first(where:)`), `position` (→ `firstIndex`), `enumerate`, `zip`, `rev`, `max_by`, `collect`… Les quelques méthodes sans équivalent direct viennent du fichier de support.
 

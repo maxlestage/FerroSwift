@@ -50,6 +50,9 @@ pub struct Options {
     pub previews: bool,
     /// Write the header comment naming the source file.
     pub header: bool,
+    /// The path of the Rust file as its panics name it (`src/main.rs:3:9`): the one given
+    /// to rustc. In a crate, each file's own path.
+    pub source_path: Option<String>,
 }
 
 impl Default for Options {
@@ -58,6 +61,7 @@ impl Default for Options {
             entry_point: true,
             previews: true,
             header: true,
+            source_path: None,
         }
     }
 }

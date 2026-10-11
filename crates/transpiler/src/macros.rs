@@ -79,30 +79,27 @@ impl Translator<'_> {
                     vec![format!("{f}({}, terminator: \"\")", text.code)]
                 }
             }
+            // `assert!(cond)`: Rust's panic, `assertion failed: cond` or the message given.
             "assert" | "debug_assert" => {
-                let f = if name == "assert" {
-                    "precondition"
-                } else {
-                    "assert"
-                };
                 let Some(cond) = args.first() else {
                     return vec![];
                 };
                 let c = self.expr_with(cond, &Ty::Bool);
                 let c = self.settle(c);
-                if args.len() > 1 {
-                    let msg = self.format_args(&args[1..], span);
-                    vec![format!("{f}({}, {})", c.code, msg.code)]
+                self.helper("panic");
+                let loc = crate::expr::swift_string(&self.panic_location(span));
+                let msg = if args.len() > 1 {
+                    self.format_args(&args[1..], span).code
                 } else {
-                    vec![format!("{f}({})", c.code)]
-                }
-            }
-            "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne" => {
-                let f = if name.starts_with("debug") {
-                    "assert"
-                } else {
-                    "precondition"
+                    let text = self
+                        .source_of(cond.span())
+                        .unwrap_or_else(|| quote::quote!(#cond).to_string());
+                    crate::expr::swift_string(&format!("assertion failed: {text}"))
                 };
+                vec![format!("rsAssert({}, {msg}, {loc})", c.code)]
+            }
+            // `assert_eq!(a, b)`: both values in `{:?}` when it fails, each evaluated once.
+            "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne" => {
                 let op = if name.ends_with("eq") { "==" } else { "!=" };
                 if args.len() < 2 {
                     return vec![
@@ -113,15 +110,16 @@ impl Translator<'_> {
                 let a = self.settle(a);
                 let b = self.expr_with(&args[1], &a.ty);
                 let b = self.settle(b);
+                self.helper("panic");
+                let loc = crate::expr::swift_string(&self.panic_location(span));
                 let msg = if args.len() > 2 {
                     format!(", {}", self.format_args(&args[2..], span).code)
                 } else {
                     String::new()
                 };
                 vec![format!(
-                    "{f}({} {op} {}{msg})",
-                    crate::expr::wrap(&a, crate::expr::P_CMP + 1),
-                    crate::expr::wrap(&b, crate::expr::P_CMP + 1)
+                    "rsAssertCmp({}, {}, \"{op}\", {loc}{msg}) {{ $0 {op} $1 }}",
+                    a.code, b.code
                 )]
             }
             "write" | "writeln" => {
@@ -201,9 +199,19 @@ impl Translator<'_> {
                 let msg = if args.is_empty() {
                     crate::expr::swift_string(default)
                 } else {
-                    self.format_args(&args, span).code
+                    let text = self.format_args(&args, span).code;
+                    if name == "panic" {
+                        text
+                    } else {
+                        format!(
+                            "{} + {text}",
+                            crate::expr::swift_string(&format!("{default}: "))
+                        )
+                    }
                 };
-                Ex::primary(format!("fatalError({msg})"), Ty::Never)
+                self.helper("panic");
+                let loc = crate::expr::swift_string(&self.panic_location(span));
+                Ex::primary(format!("rsPanic({msg}, {loc})"), Ty::Never)
             }
             "matches" => self.matches_macro(mac),
             "dbg" => {

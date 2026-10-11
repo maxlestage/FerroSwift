@@ -1195,6 +1195,16 @@ impl Translator<'_> {
             };
             return Ex::new(code, P_TERNARY, Ty::Bool);
         }
+        // `a / b`, `a % b` of integers: Rust's panic when `b` is zero (a literal is not).
+        if matches!(op, "/" | "%") && operand_ty.is_int() && !is_nonzero_literal(&right.code) {
+            self.helper("panic");
+            let loc = swift_string(&self.panic_location(b.span()));
+            let f = if op == "/" { "rsDiv" } else { "rsRem" };
+            return Ex::primary(
+                format!("{f}({}, {}, {loc})", left.code, right.code),
+                operand_ty,
+            );
+        }
         if op == "%" && operand_ty.is_float() {
             return Ex::primary(
                 format!(
@@ -1772,6 +1782,14 @@ impl Translator<'_> {
         let base_is_self = is_self(&f.base);
         let base = self.expr(&f.base);
         let base = self.settle(base);
+        // `rc.field` of an `Rc` handle: the field of the value it shares.
+        let base = match &base.ty {
+            Ty::Named(n, a) if n == "RsRc" => Ex::primary(
+                format!("{}.value", wrap(&base, P_PRIMARY)),
+                a.first().cloned().unwrap_or(Ty::Unknown),
+            ),
+            _ => base,
+        };
         let base_ty = if base.ty.is_unknown() && base_is_self {
             self.self_ty()
         } else {
@@ -1855,13 +1873,42 @@ impl Translator<'_> {
                     (Some(b), true) => format!("{b} + 1"),
                     (None, _) => format!("{}.utf8.count", wrap(&base, P_PRIMARY)),
                 };
+                self.helper("panic");
+                let loc = swift_string(&self.panic_location(i.bracket_token.span.open()));
                 return Ex::primary(
-                    format!("{}.rsSlice({a}, {end})", wrap(&base, P_PRIMARY)),
+                    format!("{}.rsSlice({a}, {end}, at: {loc})", wrap(&base, P_PRIMARY)),
                     Ty::Str,
                 );
             }
             if r.start.is_none() && r.end.is_none() {
                 return base;
+            }
+            // `&v[a..b]`: Rust's panics when the bounds are out of range or reversed.
+            if matches!(base.ty, Ty::Vec(_)) {
+                let _ = range;
+                self.helper("panic");
+                let loc = swift_string(&self.panic_location(i.bracket_token.span.open()));
+                let bound = |t: &mut Self, e: &Option<Box<Expr>>| -> String {
+                    match e {
+                        Some(e) => {
+                            let v = t.expr_with(e, &Ty::Int(IntKind::Usize));
+                            t.settle(v).code
+                        }
+                        None => "nil".into(),
+                    }
+                };
+                let lo = bound(self, &r.start);
+                let mut hi = bound(self, &r.end);
+                if matches!(r.limits, syn::RangeLimits::Closed(_)) && hi != "nil" {
+                    hi = format!("{hi} + 1");
+                }
+                return Ex::primary(
+                    format!(
+                        "Array({}[from: {lo}, to: {hi}, at: {loc}])",
+                        wrap(&base, P_PRIMARY)
+                    ),
+                    base.ty,
+                );
             }
             return Ex::primary(
                 format!("Array({}[{}])", wrap(&base, P_PRIMARY), range.code),
@@ -1874,10 +1921,18 @@ impl Translator<'_> {
         };
         let idx = self.expr_with(&i.index, &key_ty);
         let idx = self.settle(idx);
+        self.helper("panic");
+        let loc = swift_string(&self.panic_location(i.bracket_token.span.open()));
         match &base.ty {
+            // `map[&k]`: Rust's panic when the key is missing.
             Ty::Map(_, v, _) => Ex::primary(
-                format!("{}[{}]!", wrap(&base, P_PRIMARY), idx.code),
+                format!("rsEntry({}[{}], {loc})", wrap(&base, P_PRIMARY), idx.code),
                 (**v).clone(),
+            ),
+            // `v[i]`: Rust's panic when `i` is out of bounds.
+            t @ Ty::Vec(_) => Ex::primary(
+                format!("{}[{}, at: {loc}]", wrap(&base, P_PRIMARY), idx.code),
+                t.item(),
             ),
             // `impl Index<…> for Matrix`: the subscript's type.
             t @ Ty::Named(..) => {
@@ -2582,6 +2637,16 @@ fn body_is_closure(e: &Expr) -> bool {
 }
 
 /// A name, a literal or a member path: evaluating it twice costs nothing.
+/// `2`, `100`: a divisor that cannot be zero.
+fn is_nonzero_literal(code: &str) -> bool {
+    let digits = code
+        .trim_start_matches(|c: char| c.is_alphabetic() || c == '(')
+        .trim_end_matches(')');
+    !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '_')
+        && digits.chars().any(|c| c.is_ascii_digit() && c != '0')
+}
+
 fn is_simple_code(code: &str) -> bool {
     !code.is_empty()
         && code
