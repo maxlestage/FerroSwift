@@ -116,6 +116,9 @@ pub struct FnSig {
     pub trait_method: bool,
     /// The type parameters, in order (`fn largest<T: PartialOrd>(…)`).
     pub generics: Vec<String>,
+    /// The type parameters no parameter nor the result mentions (`fn report<T: FromStr>(…)`):
+    /// Swift cannot infer them, so each is a trailing `T.Type` parameter, given at the call.
+    pub phantom: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -171,6 +174,9 @@ pub struct Symbols {
     pub imports: HashMap<String, Vec<String>>,
     /// Types implementing `Iterator`, with their `Item` type (by Rust and by Swift name).
     pub iterators: HashMap<String, Ty>,
+    /// The `Target` of the `impl Deref`s (by Rust and by Swift name): the methods of the
+    /// target are called on the value's `deref()`.
+    pub derefs: HashMap<String, Ty>,
     /// The methods each trait declares, by trait name: the signature a `dyn Trait` call uses.
     pub trait_methods: HashMap<String, HashMap<String, FnSig>>,
     /// The type parameters of the traits (`trait Converter<T>`), by trait name.
@@ -525,6 +531,26 @@ impl Symbols {
             Some("Error") => {
                 self.errors.insert(type_name.clone());
             }
+            // `impl Deref for Name { type Target = String; … }`: `name.len()` is
+            // `name.deref().count`.
+            Some("Deref") => {
+                let target = imp
+                    .items
+                    .iter()
+                    .find_map(|it| match it {
+                        syn::ImplItem::Type(t) if t.ident == "Target" => {
+                            Some(self.ty(&t.ty, Some(&self_ty)))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(Ty::Unknown);
+                self.derefs.insert(type_name.clone(), target.clone());
+                if let Ty::Named(swift, _) = &self_ty {
+                    self.derefs.insert(swift.clone(), target);
+                }
+            }
+            // Swift has no place to give out: changes go through the field itself.
+            Some("DerefMut") => return,
             // `impl Clone for Item` written by hand: the copy Swift makes, as when derived.
             Some("Clone") | Some("Copy") => {
                 if let Some(st) = self.structs.get_mut(&type_name) {
@@ -788,6 +814,7 @@ impl Symbols {
             key_path,
             trait_method: false,
             generics: type_params(&sig.generics),
+            phantom: phantom_params(sig, &closures),
         }
     }
 
@@ -1100,6 +1127,26 @@ fn returns_self(ret: &Ty, self_ty: &Ty) -> bool {
         Ty::Result(t, _) => &**t == self_ty,
         t => t == self_ty,
     }
+}
+
+/// The type parameters that neither a parameter nor the result mentions: Swift has nothing
+/// to infer them from, so they are passed as `T.Type` arguments.
+pub fn phantom_params(sig: &syn::Signature, closures: &HashMap<String, Ty>) -> Vec<String> {
+    type_params(&sig.generics)
+        .into_iter()
+        .filter(|g| !closures.contains_key(g))
+        .filter(|g| {
+            let in_params = sig.inputs.iter().any(|a| match a {
+                FnArg::Typed(p) => crate::translate::mentions_type(&p.ty, g),
+                FnArg::Receiver(_) => false,
+            });
+            let in_ret = match &sig.output {
+                ReturnType::Type(_, t) => crate::translate::mentions_type(t, g),
+                ReturnType::Default => false,
+            };
+            !in_params && !in_ret
+        })
+        .collect()
 }
 
 pub fn type_params(g: &syn::Generics) -> Vec<String> {

@@ -457,10 +457,17 @@ impl Translator<'_> {
             self.field_subpattern(&ts.elems[0], &inner_ty, &mut inner, cx);
             return "_".into();
         }
-        self.error(
-            ts.span(),
-            format!("unknown variant `{last}` in this pattern"),
-        );
+        if matches!(last.as_str(), "Owned" | "Borrowed") {
+            self.error(
+                ts.span(),
+                "a `Cow` is its value: whether it was borrowed or owned is not kept",
+            );
+        } else {
+            self.error(
+                ts.span(),
+                format!("unknown variant `{last}` in this pattern"),
+            );
+        }
         "_".into()
     }
 

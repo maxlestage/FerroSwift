@@ -43,6 +43,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("iter", &[], ITER),
     ("option", &[], OPTION),
     ("option_cmp", &[], OPTION_CMP),
+    ("array_cmp", &[], ARRAY_CMP),
     ("result", &[], RESULT),
     ("int", &[], INT),
     ("mem", &[], MEM),
@@ -57,6 +58,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("BoolError", &[], BOOL_ERROR),
     ("CharError", &[], CHAR_ERROR),
     ("ParseError", &[], PARSE_ERROR),
+    ("parse_any", &["parse", "ParseError"], PARSE_ANY),
     ("color_hex", &[], COLOR_HEX),
 ];
 
@@ -131,7 +133,8 @@ func rsDisplay<T>(_ value: T) -> String {
 const FIXED: &str = r#"
 /// `{:.2}`: a number with a fixed count of decimals.
 func rsFixed<F: BinaryFloatingPoint>(_ x: F, _ decimals: Int) -> String {
-    String(format: "%.\(decimals)f", Double(x))
+    if x.isNaN { return "NaN" }
+    return String(format: "%.\(decimals)f", Double(x))
 }
 "#;
 
@@ -368,6 +371,16 @@ private func rsDebugWrite(_ value: Any, _ pretty: Bool, _ level: Int, _ out: ino
         let text = custom.rsDebugText(pretty: pretty, style: style)
         let indent = "\n" + String(repeating: "    ", count: level)
         out += level == 0 ? text : text.split(separator: "\n", omittingEmptySubsequences: false).joined(separator: indent)
+        return
+    }
+    let typeName = String(describing: type(of: value))
+    if typeName.hasPrefix("Range<") || typeName.hasPrefix("ClosedRange<") {
+        var lo = "", hi = ""
+        for child in mirror.children {
+            if child.label == "lowerBound" { rsDebugWrite(child.value, false, 0, &lo, style) }
+            if child.label == "upperBound" { rsDebugWrite(child.value, false, 0, &hi, style) }
+        }
+        out += lo + (typeName.hasPrefix("Closed") ? "..=" : "..") + hi
         return
     }
     let pad = String(repeating: "    ", count: level + 1)
@@ -903,6 +916,14 @@ func rsTotalCmp<T: BinaryFloatingPoint>(_ a: T, _ b: T) -> Ordering {
     return .greater
 }
 
+/// `a.cmp(&b)` on slices: element by element, the shorter first.
+func rsCmp<T: Comparable>(_ a: [T], _ b: [T]) -> Ordering {
+    for (x, y) in zip(a, b) where x != y {
+        return x < y ? .less : .greater
+    }
+    return rsCmp(a.count, b.count)
+}
+
 /// `(a, b).cmp(&(c, d))`: tuples compare element by element.
 func rsCmp<A: Comparable, B: Comparable>(_ a: (A, B), _ b: (A, B)) -> Ordering {
     rsCmp(a.0, b.0).then(rsCmp(a.1, b.1))
@@ -1239,6 +1260,8 @@ extension Character {
     var isAsciiAlphanumeric: Bool { isASCII && (isLetter || isNumber) }
     var isAsciiUppercase: Bool { isASCII && isUppercase }
     var isAsciiLowercase: Bool { isASCII && isLowercase }
+    var isAsciiGraphic: Bool { asciiValue.map { (33...126).contains($0) } ?? false }
+    var isAsciiControl: Bool { asciiValue.map { $0 < 32 || $0 == 127 } ?? false }
     var isAsciiPunctuation: Bool { isASCII && (isPunctuation || isSymbol) }
     var isAsciiHexdigit: Bool { isASCII && isHexDigit }
 
@@ -1295,6 +1318,8 @@ const EXP: &str = r#"
 /// `{:e}`: Rust's scientific notation (`1.2345e3`, `1e-7`), with a precision when given.
 func rsExp<F: BinaryFloatingPoint>(_ x: F, _ precision: Int? = nil, upper: Bool = false) -> String {
     let d = Double(x)
+    if d.isNaN { return "NaN" }
+    if d.isInfinite { return d < 0 ? "-inf" : "inf" }
     var mantissa: String
     var exponent: Int
     if let p = precision {
@@ -1315,7 +1340,7 @@ func rsExp<F: BinaryFloatingPoint>(_ x: F, _ precision: Int? = nil, upper: Bool 
         while digits.hasPrefix("0") && digits.count > 1 { digits.removeFirst(); exponent -= 1 }
         while digits.hasSuffix("0") && digits.count > 1 { digits.removeLast() }
         if digits == "0" { exponent = 0 }
-        mantissa = (d < 0 ? "-" : "") + String(digits.prefix(1)) + (digits.count > 1 ? "." + digits.dropFirst() : "")
+        mantissa = (d.sign == .minus ? "-" : "") + String(digits.prefix(1)) + (digits.count > 1 ? "." + digits.dropFirst() : "")
     }
     return mantissa + (upper ? "E" : "e") + String(exponent)
 }
@@ -1665,6 +1690,13 @@ extension Set where Element: Comparable {
         remove(m)
         return m
     }
+
+    /// `set.split_off(&x)` of a `BTreeSet`: the elements from `x` on, removed from the set.
+    mutating func rsSplitOff(_ from: Element) -> Set<Element> {
+        let out = filter { $0 >= from }
+        subtract(out)
+        return out
+    }
 }
 
 extension Array where Element: Equatable {
@@ -1890,6 +1922,13 @@ extension Dictionary where Key: Comparable {
         guard let k = keys.max() else { return nil }
         return (k, removeValue(forKey: k)!)
     }
+
+    /// `map.split_off(&k)` of a `BTreeMap`: the entries from `k` on, removed from the map.
+    mutating func rsSplitOff(_ from: Key) -> [Key: Value] {
+        let out = filter { $0.key >= from }
+        for k in out.keys { removeValue(forKey: k) }
+        return out
+    }
 }
 
 extension Set {
@@ -2044,6 +2083,16 @@ func rsTryFrom<T: FixedWidthInteger>(_: T.Type, _ x: some BinaryInteger, bits: I
 
 const INT: &str = r#"
 extension BinaryInteger {
+    /// `n.isqrt()`: the integer square root.
+    func isqrt() -> Self {
+        precondition(self >= 0, "argument of integer square root cannot be negative")
+        if self < 2 { return self }
+        var x = Self(Double(self).squareRoot())
+        while x * x > self { x -= 1 }
+        while (x + 1) * (x + 1) <= self { x += 1 }
+        return x
+    }
+
     /// `x.pow(n)`.
     func pow(_ exponent: some BinaryInteger) -> Self {
         var result: Self = 1
@@ -2182,6 +2231,14 @@ extension FixedWidthInteger {
     func overflowingSub(_ o: Self) -> (Self, Bool) { let r = subtractingReportingOverflow(o); return (r.partialValue, r.overflow) }
     func overflowingMul(_ o: Self) -> (Self, Bool) { let r = multipliedReportingOverflow(by: o); return (r.partialValue, r.overflow) }
     func overflowingNeg() -> (Self, Bool) { (0 &- self, Self.isSigned ? self == Self.min : self != 0) }
+    /// `x.checked_shl(n)`, `wrapping_shl`, `overflowing_shl` and the right shifts: a shift
+    /// of the bit width or more is refused, wrapped or reported.
+    func checkedShl(_ n: some BinaryInteger) -> Self? { Int(n) < Self.bitWidth ? self << Int(n) : nil }
+    func checkedShr(_ n: some BinaryInteger) -> Self? { Int(n) < Self.bitWidth ? self >> Int(n) : nil }
+    func wrappingShl(_ n: some BinaryInteger) -> Self { self << (Int(n) % Self.bitWidth) }
+    func wrappingShr(_ n: some BinaryInteger) -> Self { self >> (Int(n) % Self.bitWidth) }
+    func overflowingShl(_ n: some BinaryInteger) -> (Self, Bool) { (wrappingShl(n), Int(n) >= Self.bitWidth) }
+    func overflowingShr(_ n: some BinaryInteger) -> (Self, Bool) { (wrappingShr(n), Int(n) >= Self.bitWidth) }
     func overflowingAbs() -> (Self, Bool) { self < 0 ? overflowingNeg() : (self, false) }
     /// `x.checked_pow(n)` and its wrapping, saturating and overflowing forms.
     func overflowingPow(_ exponent: some BinaryInteger) -> (Self, Bool) {
@@ -2344,10 +2401,46 @@ const CHAR_ERROR: &str = r#"
 extension Character: @retroactive Error {}
 "#;
 
+const ARRAY_CMP: &str = r#"
+/// `Vec`s compare element by element, the shorter first, as in Rust.
+extension Array: @retroactive Comparable where Element: Comparable {
+    public static func < (lhs: [Element], rhs: [Element]) -> Bool {
+        for (x, y) in zip(lhs, rhs) where x != y {
+            return x < y
+        }
+        return lhs.count < rhs.count
+    }
+}
+"#;
+
 const PARSE_ERROR: &str = r#"
 /// The error of `s.parse()?` when the text is not a valid number.
 struct RsParseError: Error, CustomStringConvertible {
     var description: String { "invalid digit found in string" }
+}
+"#;
+
+const PARSE_ANY: &str = r#"
+/// `s.parse::<T>()` in generic code: the parse of the type `T` stands for, as Rust reads
+/// it (`Character("ab")` would trap, `Double("0x10")` read a hexadecimal number).
+func rsParseAny<T: LosslessStringConvertible>(_ s: String, _: T.Type) -> Result<T, RsParseError> {
+    func done<U>(_ r: U?) -> Result<T, RsParseError> {
+        if let v = r as? T { return .success(v) }
+        return .failure(RsParseError())
+    }
+    if T.self == Character.self { return done(try? rsParseChar(s).get()) }
+    if T.self == Bool.self { return done(try? rsParseBool(s).get()) }
+    if T.self == Double.self { return done(try? rsParseFloat(s, Double.self).get()) }
+    if T.self == Float.self { return done(try? rsParseFloat(s, Float.self).get()) }
+    if T.self == String.self { return done(s) }
+    if let intType = T.self as? any FixedWidthInteger.Type {
+        return done(rsParseAnyInt(s, intType))
+    }
+    return done(T(s))
+}
+
+private func rsParseAnyInt<I: FixedWidthInteger>(_ s: String, _ t: I.Type) -> I? {
+    try? rsParseInt(s, t).get()
 }
 "#;
 
@@ -2496,6 +2589,8 @@ func rsParse(_ s: String, _ t: UInt.Type) -> Result<UInt, RsParseIntError> { rsP
 func rsParse(_ s: String, _ t: UInt8.Type) -> Result<UInt8, RsParseIntError> { rsParseInt(s, UInt8.self) }
 func rsParse(_ s: String, _ t: UInt16.Type) -> Result<UInt16, RsParseIntError> { rsParseInt(s, UInt16.self) }
 func rsParse(_ s: String, _ t: UInt32.Type) -> Result<UInt32, RsParseIntError> { rsParseInt(s, UInt32.self) }
+func rsParse(_ s: String, _ t: Int64.Type) -> Result<Int64, RsParseIntError> { rsParseInt(s, Int64.self) }
+func rsParse(_ s: String, _ t: UInt64.Type) -> Result<UInt64, RsParseIntError> { rsParseInt(s, UInt64.self) }
 func rsParse(_ s: String, _ t: Double.Type) -> Result<Double, RsParseFloatError> { rsParseFloat(s, Double.self) }
 func rsParse(_ s: String, _ t: Float.Type) -> Result<Float, RsParseFloatError> { rsParseFloat(s, Float.self) }
 func rsParse(_ s: String, _ t: Bool.Type) -> Result<Bool, RsParseBoolError> { rsParseBool(s) }

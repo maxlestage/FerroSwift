@@ -624,17 +624,21 @@ impl Translator<'_> {
             || owner == "Self"
             || self.generics.iter().any(|g| g == owner)
         {
-            // An associated constant.
+            // An associated constant (`Stack::<String>::MAX`: of the type written).
             let ty = self
                 .syms
                 .assoc_consts
                 .get(&(owner_rust.clone(), last.to_string()))
                 .cloned()
                 .unwrap_or(Ty::Unknown);
-            return Ex::primary(
-                format!("{}.{}", self.type_path_name(owner), names::constant(last)),
-                ty,
-            );
+            let targs = self.generic_args(path);
+            let tname = if targs.is_empty() || !targs.iter().all(Ty::is_complete) {
+                self.type_path_name(owner)
+            } else {
+                let args: Vec<String> = targs.iter().map(Ty::swift_lossy).collect();
+                format!("{}<{}>", self.type_path_name(owner), args.join(", "))
+            };
+            return Ex::primary(format!("{tname}.{}", names::constant(last)), ty);
         }
         if let Some(ex) = self.ui_constant(owner, last, expected) {
             return ex;
@@ -816,7 +820,12 @@ impl Translator<'_> {
             ) || self.syms.traits.contains(&owner);
             !constructor && receiver_type
         };
-        let arity = params.len().max(1);
+        // `or_insert_with(Account::new)`: a function without parameters, called as such.
+        let arity = if params.is_empty() && !method {
+            0
+        } else {
+            params.len().max(1)
+        };
         let names = ["x", "y", "z", "w"];
         let args: Vec<syn::Ident> = (0..arity)
             .map(|i| {
@@ -830,7 +839,22 @@ impl Translator<'_> {
             let recv = &args[0];
             let rest = &args[1..];
             let m = syn::Ident::new(last, proc_macro2::Span::call_site());
-            syn::parse_quote!(|#(#args),*| #recv.#m(#(#rest),*))
+            // `all(char::is_lowercase)`: the parameter typed after the method's type, when
+            // nothing else tells it.
+            let recv_ty: Option<syn::Type> = match owner.as_str() {
+                "str" => Some(syn::parse_quote!(&str)),
+                "char" | "String" | "bool" | "f64" | "f32" | "i8" | "i16" | "i32" | "i64"
+                | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => {
+                    syn::parse_str(&owner).ok()
+                }
+                _ => None,
+            };
+            match recv_ty {
+                Some(t) if params.first().is_none_or(|p| !p.is_complete()) => {
+                    syn::parse_quote!(|#recv: #t, #(#rest),*| #recv.#m(#(#rest),*))
+                }
+                _ => syn::parse_quote!(|#(#args),*| #recv.#m(#(#rest),*)),
+            }
         } else {
             syn::parse_quote!(|#(#args),*| #path(#(#args),*))
         };
@@ -1046,6 +1070,10 @@ impl Translator<'_> {
             ("^", Ty::Bool) => "!=",
             (op, _) => op,
         };
+        // `vec![1, 2] < vec![1, 3]`: arrays compare element by element.
+        if matches!(op, "<" | ">" | "<=" | ">=") {
+            self.note_array_comparable(&operand_ty);
+        }
         // `Some(1) < None`: options compare as in Rust, `None` first.
         if matches!(op, "<" | ">" | "<=" | ">=") && matches!(operand_ty, Ty::Option(_)) {
             self.helper("option_cmp");
@@ -1069,7 +1097,18 @@ impl Translator<'_> {
 
     fn unary(&mut self, u: &syn::ExprUnary, expected: &Ty) -> Ex {
         match u.op {
-            UnOp::Deref(_) => self.expr_with(&u.expr, expected),
+            UnOp::Deref(_) => {
+                let v = self.expr_with(&u.expr, expected);
+                // `*name` of a type with `impl Deref`: its target (unless the value itself is
+                // wanted, as in `*n == other`).
+                match self.deref_target(&v.ty) {
+                    Some(target) if expected.swift() != v.ty.swift() => {
+                        let v = self.settle(v);
+                        Ex::primary(format!("{}.deref()", wrap(&v, P_PRIMARY)), target)
+                    }
+                    _ => v,
+                }
+            }
             UnOp::Neg(_) => {
                 let v = self.expr_with(&u.expr, expected);
                 let v = self.settle(v);
@@ -1532,6 +1571,11 @@ impl Translator<'_> {
             (Ty::Named(n, args), syn::Member::Unnamed(_)) if n == "RsReverse" => {
                 args.first().cloned().unwrap_or(Ty::Unknown)
             }
+            (Ty::Named(n, args), syn::Member::Named(id))
+                if (n == "Range" || n == "ClosedRange") && (id == "start" || id == "end") =>
+            {
+                args.first().cloned().unwrap_or(Ty::Unknown)
+            }
             (Ty::Named(n, args), m) => {
                 let rust = match m {
                     syn::Member::Named(id) => id.to_string(),
@@ -1594,6 +1638,17 @@ impl Translator<'_> {
         };
         let ty = self.field_ty(&base_ty, &f.member);
         let swift_member = match (&f.member, &base_ty) {
+            // `r.start`, `r.end` of a range kept in a field or a variable.
+            (syn::Member::Named(id), Ty::Named(n, _))
+                if (n == "Range" || n == "ClosedRange") && (id == "start" || id == "end") =>
+            {
+                if id == "start" {
+                    "lowerBound"
+                } else {
+                    "upperBound"
+                }
+                .into()
+            }
             (syn::Member::Named(id), Ty::Named(n, _)) => self
                 .struct_by_swift(n)
                 .and_then(|s| s.field(&id.to_string()).map(|f| f.swift.clone()))

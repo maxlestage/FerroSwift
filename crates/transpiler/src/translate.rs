@@ -105,6 +105,9 @@ pub struct Translator<'a> {
     pub closure_inouts: std::collections::HashMap<String, Vec<bool>>,
     /// The types whose `impl IntoIterator` has been written (`&Deck` after `Deck` adds none).
     pub into_iter_done: std::collections::HashSet<String>,
+    /// The (type, trait) pairs whose first `impl Trait<…> for Type` has been written: a
+    /// second one (`impl Converter<i32>` after `impl Converter<f64>`) is a plain extension.
+    pub generic_impls_done: std::collections::HashSet<(String, String)>,
     /// The variables being assigned by the branches of a `let x = match …` (Swift names),
     /// with the slot of their type: a binding of a branch must not take their name.
     pub assign_slots: std::collections::HashMap<String, usize>,
@@ -175,6 +178,7 @@ impl<'a> Translator<'a> {
             self_mutable: false,
             assign_slots: std::collections::HashMap::new(),
             into_iter_done: std::collections::HashSet::new(),
+            generic_impls_done: std::collections::HashSet::new(),
             last_closure_inouts: Vec::new(),
             closure_inouts: std::collections::HashMap::new(),
             impl_closure_generics: std::collections::HashMap::new(),
@@ -936,7 +940,12 @@ impl<'a> Translator<'a> {
         let generic_default = derives.iter().any(|d| d == "Default") && !info.generics.is_empty();
         let derive_default = derives.iter().any(|d| d == "Default") && !generic_default;
         let mut conformances = self.derive_conformances(&derives, s.span());
-        if info.fields.iter().any(|f| f.rust == "id") && info.kind != TypeKind::App {
+        if info
+            .fields
+            .iter()
+            .any(|f| f.rust == "id" && f.swift == "id")
+            && info.kind != TypeKind::App
+        {
             conformances.push("Identifiable".into());
         }
         // A `BTreeSet<T>` is a `Set<T>`: an ordered type is hashable too, when its fields are.
@@ -949,6 +958,11 @@ impl<'a> Translator<'a> {
         }
         if self.syms.errors.contains(&swift) && !conformances.iter().any(|c| c == "Error") {
             conformances.push("Error".into());
+        }
+        // `fn largest<T: Default>(…)` takes it: the protocol of the `T: Default` bounds.
+        if derive_default && info.kind == TypeKind::Plain && !info.recursive {
+            self.helper("default");
+            conformances.push("RsDefault".into());
         }
         let mut body: Vec<String> = Vec::new();
         // A type renamed after Swift's own (`Task` → `TaskType`): `{:?}` keeps the Rust name.
@@ -1665,6 +1679,17 @@ impl<'a> Translator<'a> {
         });
         let mut reqs = Vec::new();
         let mut defaults = Vec::new();
+        // `trait Converter<T>`: the parameter is an associated type, each impl fixing it.
+        for p in &t.generics.params {
+            if let GenericParam::Type(tp) = p {
+                let bounds = self.bounds(&tp.bounds);
+                reqs.push(if bounds.is_empty() {
+                    format!("associatedtype {}", tp.ident)
+                } else {
+                    format!("associatedtype {}: {}", tp.ident, bounds.join(" & "))
+                });
+            }
+        }
         for item in &t.items {
             match item {
                 TraitItem::Fn(f) => {
@@ -1754,11 +1779,44 @@ impl<'a> Translator<'a> {
         let mut members = Vec::new();
         let mut conformance: Option<String> = None;
         let mut where_parts = Vec::new();
-        // `impl<T: Display> Wrapper<T>` → `extension Wrapper where T: CustomStringConvertible`.
+        // `impl<T: Display> Wrapper<T>` → `extension Wrapper where T: CustomStringConvertible`;
+        // for `impl<T: Describe> Describe for Vec<T>`, `T` is Swift's `Element` (`Wrapped`
+        // of an `Option`, `Key` and `Value` of a map).
+        let std_params: Vec<(String, &str)> = match &*imp.self_ty {
+            Type::Path(tp) => tp.path.segments.last().map_or_else(Vec::new, |seg| {
+                let args: Vec<String> = match &seg.arguments {
+                    syn::PathArguments::AngleBracketed(a) => a
+                        .args
+                        .iter()
+                        .filter_map(|g| match g {
+                            syn::GenericArgument::Type(Type::Path(p)) => {
+                                p.path.get_ident().map(ToString::to_string)
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => vec![],
+                };
+                let names: &[&str] = match seg.ident.to_string().as_str() {
+                    "Vec" | "VecDeque" | "HashSet" | "BTreeSet" => &["Element"],
+                    "Option" => &["Wrapped"],
+                    "HashMap" | "BTreeMap" => &["Key", "Value"],
+                    "Result" => &["Success", "Failure"],
+                    _ => &[],
+                };
+                args.into_iter().zip(names.iter().copied()).collect()
+            }),
+            _ => vec![],
+        };
         for p in &imp.generics.params {
             if let GenericParam::Type(t) = p {
+                let name = t.ident.to_string();
+                let swift_name = std_params
+                    .iter()
+                    .find(|(rust, _)| *rust == name)
+                    .map_or(name.clone(), |(_, s)| (*s).to_string());
                 for b in self.bounds(&t.bounds) {
-                    where_parts.push(format!("{}: {b}", t.ident));
+                    where_parts.push(format!("{swift_name}: {b}"));
                 }
             }
         }
@@ -2012,6 +2070,12 @@ impl<'a> Translator<'a> {
                 self.generics.clear();
                 return String::new();
             }
+            // Changes through `*name = …` go to the field itself: nothing to write.
+            Some("DerefMut") => {
+                self.imp = None;
+                self.generics.clear();
+                return String::new();
+            }
             Some("Default") | Some("From") | None | Some(_) => {
                 if let Some(t) = &trait_name {
                     // Conversions have no protocol: their functions are called directly.
@@ -2028,9 +2092,29 @@ impl<'a> Translator<'a> {
                             | "FromIterator"
                             | "Extend"
                             | "AsRef"
+                            | "Deref"
                     ) {
                         conformance =
                             Some(protocol_name(t).unwrap_or_else(|| names::upper_camel(t)));
+                    }
+                    // `impl Converter<f64> for Celsius`: the trait's `T` is `Double` here. A
+                    // second impl of the trait for the type is a plain extension (Swift
+                    // conforms once), its functions overloads of the first's.
+                    let params = self.syms.trait_generics.get(t).cloned().unwrap_or_default();
+                    if !params.is_empty() {
+                        let key = (rust_name.clone(), t.clone());
+                        if self.generic_impls_done.contains(&key) {
+                            conformance = None;
+                        } else {
+                            self.generic_impls_done.insert(key);
+                            for (p, a) in params.iter().zip(impl_trait_args(imp)) {
+                                let ty = self.ty(&a);
+                                members.push(format!(
+                                    "typealias {p} = {}",
+                                    self.swift_ty(&ty, a.span())
+                                ));
+                            }
+                        }
                     }
                 }
                 for it in &imp.items {
@@ -2071,15 +2155,29 @@ impl<'a> Translator<'a> {
                             } else {
                                 format!(": {}", self.swift_ty(&ty, c.ty.span()))
                             };
-                            format!(
-                                "{}static let {}{annot} = {}",
-                                docs(&c.attrs),
-                                names::constant(&c.ident.to_string()),
-                                v.code
-                            )
+                            // A generic type cannot store a static: a computed one instead.
+                            if self.generics.is_empty() {
+                                format!(
+                                    "{}static let {}{annot} = {}",
+                                    docs(&c.attrs),
+                                    names::constant(&c.ident.to_string()),
+                                    v.code
+                                )
+                            } else {
+                                format!(
+                                    "{}static var {}: {} {{ {} }}",
+                                    docs(&c.attrs),
+                                    names::constant(&c.ident.to_string()),
+                                    self.swift_ty(&ty, c.ty.span()),
+                                    v.code
+                                )
+                            }
                         }
-                        // The error type of `FromStr` or `TryFrom` is resolved where it is used.
-                        ImplItem::Type(t) if t.ident == "Err" || t.ident == "Error" => {
+                        // The error type of `FromStr` or `TryFrom` is resolved where it is used,
+                        // the `Target` of `Deref` where its methods are called.
+                        ImplItem::Type(t)
+                            if t.ident == "Err" || t.ident == "Error" || t.ident == "Target" =>
+                        {
                             members.extend(leading);
                             continue;
                         }
@@ -2688,6 +2786,10 @@ impl<'a> Translator<'a> {
                 }
             }
         }
+        // `fn report<T: FromStr>(inputs: &[&str])`: `T` is a trailing `T.Type` parameter.
+        for g in crate::symbols::phantom_params(sig, &self.closure_generics) {
+            params.push(format!("_: {g}.Type"));
+        }
         let ret = match &sig.output {
             ReturnType::Default => Ty::Unit,
             ReturnType::Type(_, t) => self.ty(t),
@@ -2918,6 +3020,25 @@ fn operator_of(trait_name: &str) -> Option<(&'static str, bool, bool)> {
     })
 }
 
+/// The type arguments of the trait implemented (`f64` in `impl Converter<f64> for C`).
+fn impl_trait_args(imp: &syn::ItemImpl) -> Vec<syn::Type> {
+    imp.trait_
+        .as_ref()
+        .and_then(|(_, path, _)| path.segments.last())
+        .map(|s| match &s.arguments {
+            syn::PathArguments::AngleBracketed(a) => a
+                .args
+                .iter()
+                .filter_map(|g| match g {
+                    syn::GenericArgument::Type(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => vec![],
+        })
+        .unwrap_or_default()
+}
+
 pub fn impl_trait_name(imp: &syn::ItemImpl) -> Option<String> {
     imp.trait_
         .as_ref()
@@ -2954,7 +3075,7 @@ fn struct_in(items: &[Item], name: &str) -> bool {
     })
 }
 
-fn mentions_type(t: &Type, name: &str) -> bool {
+pub fn mentions_type(t: &Type, name: &str) -> bool {
     let s = quote::quote!(#t).to_string();
     s.split(|c: char| !c.is_alphanumeric() && c != '_')
         .any(|w| w == name || w == "Self")

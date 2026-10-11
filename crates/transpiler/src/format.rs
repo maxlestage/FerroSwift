@@ -211,6 +211,8 @@ impl Translator<'_> {
                 | "get_mut"
                 | "last_mut"
                 | "first_mut"
+                | "back_mut"
+                | "front_mut"
         );
         std || self.syms.methods.values().any(|ms| {
             ms.get(name)

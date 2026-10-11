@@ -14,6 +14,29 @@ impl Translator<'_> {
     // ----- Function calls -----
 
     pub fn call(&mut self, c: &ExprCall, expected: &Ty) -> Ex {
+        // `<Square as Shape>::name()`: the function of the type, `Square::name()`.
+        if let Expr::Path(p) = &*c.func {
+            if let Some(q) = &p.qself {
+                if let syn::Type::Path(tp) = &*q.ty {
+                    let mut path = tp.path.clone();
+                    if let Some(last) = p.path.segments.last() {
+                        path.segments.push(last.clone());
+                    }
+                    let func = Expr::Path(syn::ExprPath {
+                        attrs: vec![],
+                        qself: None,
+                        path,
+                    });
+                    let call = ExprCall {
+                        attrs: c.attrs.clone(),
+                        func: Box::new(func),
+                        paren_token: c.paren_token,
+                        args: c.args.clone(),
+                    };
+                    return self.call(&call, expected);
+                }
+            }
+        }
         let Expr::Path(p) = &*c.func else {
             let f = self.expr(&c.func);
             let args = self.call_args(&c.args, None);
@@ -168,7 +191,26 @@ impl Translator<'_> {
                 if !sig.generics.is_empty() {
                     self.generic_call += 1;
                 }
-                let mut ex = self.sig_call(names::lower_camel(&last), &sig, &c.args);
+                // `report::<i32>(…)`: the type parameters nothing else tells, as `Int.self`.
+                let mut extra = Vec::new();
+                for g in &sig.phantom {
+                    let pos = sig.generics.iter().position(|p| p == g);
+                    match pos.and_then(|i| turbofish.get(i)) {
+                        Some(t) if t.is_complete() => {
+                            extra.push(format!("{}.self", t.swift_lossy()))
+                        }
+                        _ => {
+                            self.error(
+                                c.span(),
+                                format!(
+                                    "the type parameter `{g}` is given by nothing: write it, `{last}::<T>(…)`"
+                                ),
+                            );
+                            extra.push("Any.self".into());
+                        }
+                    }
+                }
+                let mut ex = self.sig_call_extra(names::lower_camel(&last), &sig, &c.args, &extra);
                 if !sig.generics.is_empty() {
                     self.generic_call -= 1;
                 }
@@ -330,6 +372,27 @@ impl Translator<'_> {
         if let Some(ex) = self.ui_call(&last, &c.args, expected) {
             return ex;
         }
+        // `str::len(s)`, `Vec::len(&v)`, `Option::is_some(&o)`: the method on its receiver.
+        if segs.len() == 2 && is_std_receiver_type(&owner) && !c.args.is_empty() {
+            let receiver = match &c.args[0] {
+                Expr::Reference(r) => (*r.expr).clone(),
+                e => e.clone(),
+            };
+            let m = ExprMethodCall {
+                attrs: c.attrs.clone(),
+                receiver: Box::new(receiver),
+                dot_token: Default::default(),
+                method: p
+                    .path
+                    .segments
+                    .last()
+                    .map_or_else(|| syn::Ident::new(&last, c.span()), |s| s.ident.clone()),
+                turbofish: None,
+                paren_token: c.paren_token,
+                args: c.args.iter().skip(1).cloned().collect(),
+            };
+            return self.method_call(&m, expected);
+        }
         // A function of another module: modules disappear.
         if let Some(sig) = self.syms.fns.get(&last).cloned() {
             return self.sig_call(names::lower_camel(&last), &sig, &c.args);
@@ -400,7 +463,19 @@ impl Translator<'_> {
         sig: &FnSig,
         args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
     ) -> Ex {
-        let (codes, _, bound) = self.call_args_generic(args, Some(&sig.params), &sig.generics);
+        self.sig_call_extra(callee, sig, args, &[])
+    }
+
+    /// [`sig_call`](Self::sig_call) with arguments added after the Rust ones (`Int.self`).
+    pub fn sig_call_extra(
+        &mut self,
+        callee: String,
+        sig: &FnSig,
+        args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+        extra: &[String],
+    ) -> Ex {
+        let (mut codes, _, bound) = self.call_args_generic(args, Some(&sig.params), &sig.generics);
+        codes.extend(extra.iter().cloned());
         // `group_by(&words, |w| w.len())`: the result's type parameters, from the arguments.
         let ret = crate::symbols::substitute(&sig.ret, &bound);
         let mut ex = Ex::primary(format!("{callee}({})", codes.join(", ")), ret.clone());
@@ -550,6 +625,15 @@ impl Translator<'_> {
             if expected == Ty::Str && v.ty != Ty::Str && self.user_method(&v.ty, "as_ref").is_some()
             {
                 v = Ex::primary(format!("{}.asRef()", wrap(&v, P_PRIMARY)), Ty::Str);
+            }
+            // `greet(&name)` with `name: Name` deref-coerced to the `&str` parameter.
+            if !expected.is_unknown()
+                && v.ty.swift() != expected.swift()
+                && self
+                    .deref_target(&v.ty)
+                    .is_some_and(|t| t.swift() == expected.swift())
+            {
+                v = Ex::primary(format!("{}.deref()", wrap(&v, P_PRIMARY)), expected.clone());
             }
             // `store.set("a", 1)` for an `impl Into<Value>` parameter: converted here.
             if param.is_some_and(|p| p.into) && !expected.is_unknown() {
@@ -834,6 +918,8 @@ impl Translator<'_> {
             ("Box" | "Rc" | "Arc" | "Cow", "new" | "from") if args.len() == 1 => {
                 Some(arg(self, 0, expected))
             }
+            // `Cow::Owned(s)`, `Cow::Borrowed(s)`: the value itself.
+            ("Cow", "Owned" | "Borrowed") if args.len() == 1 => Some(arg(self, 0, expected)),
             // `Rc::clone(&x)`: the same cell, or a copy of a plain value.
             ("Rc" | "Arc", "clone") if args.len() == 1 => Some(arg(self, 0, expected)),
             ("Rc" | "Arc", "ptr_eq") if args.len() == 2 => {
@@ -1265,6 +1351,31 @@ impl Translator<'_> {
         if value_results {
             self.result_values -= 1;
         }
+        // `name.len()` on a type with `impl Deref<Target = String>`: a method of the target.
+        let recv = match self.deref_target(&recv.ty) {
+            Some(target)
+                if self.user_method(&recv.ty, &name).is_none()
+                    && !matches!(
+                        name.as_str(),
+                        "clone"
+                            | "to_owned"
+                            | "into"
+                            | "try_into"
+                            | "eq"
+                            | "ne"
+                            | "cmp"
+                            | "partial_cmp"
+                            | "hash"
+                            | "fmt"
+                            | "borrow"
+                    )
+                    && !(name == "to_string" && self.displays(&recv.ty)) =>
+            {
+                let recv = self.settle(recv);
+                Ex::primary(format!("{}.deref()", wrap(&recv, P_PRIMARY)), target)
+            }
+            _ => recv,
+        };
         // A method of a type of the crate.
         if let Some((mut sig, owner)) = self.user_method(&recv.ty, &name) {
             let mut recv = self.settle(recv);
@@ -1329,29 +1440,36 @@ impl Translator<'_> {
             if sig.returns_self_mut {
                 ex.ty = Ty::Unit;
             }
-            if ex.ty == Ty::Named("Self".into(), vec![]) {
+            let returns_self = ex.ty == Ty::Named("Self".into(), vec![]);
+            if returns_self {
                 ex.ty = recv.ty.clone();
             }
-            // `stack.push("a".to_string())` tells that `stack` is a `Stack<String>`.
-            if let (Expr::Path(p), Ty::Named(n, args)) = (&*m.receiver, &recv.ty) {
-                if let Some(id) = p.path.get_ident() {
-                    let mut bound = std::collections::HashMap::new();
-                    for (param, arg) in sig.params.iter().zip(&arg_tys) {
-                        unify(&param.ty, arg, &generics, &mut bound);
+            // `stack.push("a".to_string())` tells that `stack` is a `Stack<String>`;
+            // `Validator::new().rule(|u: &User| …)` gives a `Validator<User>` back.
+            if let Ty::Named(n, args) = &recv.ty {
+                let mut bound = std::collections::HashMap::new();
+                for (param, arg) in sig.params.iter().zip(&arg_tys) {
+                    unify(&param.ty, arg, &generics, &mut bound);
+                }
+                if !bound.is_empty() {
+                    let args: Vec<Ty> = generics
+                        .iter()
+                        .enumerate()
+                        .map(|(i, g)| {
+                            bound
+                                .get(g)
+                                .cloned()
+                                .unwrap_or_else(|| args.get(i).cloned().unwrap_or(Ty::Unknown))
+                        })
+                        .collect();
+                    let learned = Ty::Named(n.clone(), args);
+                    if returns_self {
+                        ex.ty = learned.clone();
                     }
-                    if !bound.is_empty() {
-                        let args: Vec<Ty> = generics
-                            .iter()
-                            .enumerate()
-                            .map(|(i, g)| {
-                                bound
-                                    .get(g)
-                                    .cloned()
-                                    .unwrap_or_else(|| args.get(i).cloned().unwrap_or(Ty::Unknown))
-                            })
-                            .collect();
-                        let learned = Ty::Named(n.clone(), args);
-                        self.refine(&id.to_string(), &learned);
+                    if let Expr::Path(p) = &*m.receiver {
+                        if let Some(id) = p.path.get_ident() {
+                            self.refine(&id.to_string(), &learned);
+                        }
                     }
                 }
             }
@@ -1623,11 +1741,50 @@ impl Translator<'_> {
     }
 
     /// The signature of a method of the crate's types, for a receiver of type `ty`.
+    /// A `Vec` compared, sorted or ordered by (`Vec<Vec<i32>>` sorted, `(usize, Vec<char>)`
+    /// keys): `Array` is made `Comparable`.
+    pub fn note_array_comparable(&mut self, ty: &Ty) {
+        fn has_vec(t: &Ty) -> bool {
+            match t {
+                Ty::Vec(_) => true,
+                Ty::Tuple(ts) => ts.iter().any(has_vec),
+                Ty::Option(t) => has_vec(t),
+                _ => false,
+            }
+        }
+        if has_vec(ty) {
+            self.helper("array_cmp");
+        }
+    }
+
+    /// The `Target` of the type's `impl Deref`, if it has one.
+    pub fn deref_target(&self, ty: &Ty) -> Option<Ty> {
+        match ty {
+            Ty::Named(n, _) => self.syms.derefs.get(n).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The type has an `impl Display` of its own.
+    pub fn displays(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Named(n, _) => self.syms.display.iter().any(|d| names::type_name(d) == *n),
+            _ => false,
+        }
+    }
+
     pub fn user_method(&self, ty: &Ty, name: &str) -> Option<(FnSig, String)> {
         match ty {
             Ty::Named(n, _) => {
                 let rust = if n == "Self" {
-                    self.imp.as_ref().map(|i| i.rust.clone())?
+                    let rust = self.imp.as_ref().map(|i| i.rust.clone())?;
+                    // Inside a trait's default method: the signature the trait declares.
+                    if let Some(ms) = self.syms.trait_methods.get(&rust) {
+                        if let Some(sig) = ms.get(name) {
+                            return Some((sig.clone(), n.clone()));
+                        }
+                    }
+                    rust
                 } else {
                     self.syms
                         .structs
@@ -1944,12 +2101,12 @@ impl Translator<'_> {
                 format!("Result<String, Never>.success({s})"),
                 result(&target, "Never"),
             ),
-            // `T: FromStr` in generic code: Swift's `LosslessStringConvertible`.
+            // `T: FromStr` in generic code: Swift's `LosslessStringConvertible`, read as
+            // Rust reads the type `T` stands for.
             Ty::Named(n, _) if self.generics.contains(n) => {
-                self.helper("option");
-                self.helper("ParseError");
+                self.helper("parse_any");
                 Ex::primary(
-                    format!("{n}({s}).okOr(RsParseError())"),
+                    format!("rsParseAny({s}, {n}.self)"),
                     result(&target, "RsParseError"),
                 )
             }
@@ -2070,6 +2227,28 @@ impl Translator<'_> {
         span: proc_macro2::Span,
     ) -> Ex {
         let args: Vec<Ex> = args.into_iter().map(|a| self.settle(a)).collect();
+        // A range kept in a field or a variable (`Range<usize>`, `RangeInclusive<u8>`) has
+        // the methods of a range expression.
+        let recv = match &recv.ty {
+            Ty::Named(n, targs) if (n == "Range" || n == "ClosedRange") && targs.len() == 1 => Ex {
+                ty: Ty::Range(Box::new(targs[0].clone())),
+                ..recv
+            },
+            _ => recv,
+        };
+        if let Ty::Range(t) = &recv.ty {
+            let bound = |field: &str| {
+                Ex::primary(format!("{}.{field}", wrap(&recv, P_PRIMARY)), (**t).clone())
+            };
+            match name {
+                "start" if args.is_empty() => return bound("lowerBound"),
+                "end" if args.is_empty() => return bound("upperBound"),
+                "is_empty" if args.is_empty() => {
+                    return Ex::primary(format!("{}.isEmpty", wrap(&recv, P_PRIMARY)), Ty::Bool);
+                }
+                _ => {}
+            }
+        }
         // `s.starts_with(['a', 'b'])`, `s.split([',', ';'])`: an array of characters is a
         // predicate, like a closure.
         let args: Vec<Ex> = if recv.ty == Ty::Str
@@ -2983,6 +3162,7 @@ impl Translator<'_> {
                 "char_count" => return prim(format!("{r}.count"), usize_ty),
                 "cmp" => {
                     self.helper("Ordering");
+                    self.note_array_comparable(&recv.ty);
                     return prim(
                         format!("rsCmp({}, {})", recv.code, a(0)),
                         Ty::Named("Ordering".into(), vec![]),
@@ -3035,6 +3215,7 @@ impl Translator<'_> {
                 | "is_ascii_uppercase"
                 | "is_ascii_lowercase"
                 | "is_ascii_punctuation"
+                | "is_ascii_graphic"
                 | "is_ascii_hexdigit"
                 | "is_digit" => {
                     self.helper("char");
@@ -3071,6 +3252,7 @@ impl Translator<'_> {
                 }
                 "cmp" => {
                     self.helper("Ordering");
+                    self.note_array_comparable(&recv.ty);
                     return prim(
                         format!("rsCmp({}, {})", recv.code, a(0)),
                         Ty::Named("Ordering".into(), vec![]),
@@ -3306,7 +3488,8 @@ impl Translator<'_> {
                 | "saturating_add" | "saturating_sub" | "saturating_mul" | "rem_euclid"
                 | "div_euclid" | "abs_diff" | "isqrt" | "checked_pow" | "overflowing_add"
                 | "overflowing_sub" | "overflowing_mul" | "overflowing_pow" | "saturating_pow"
-                | "wrapping_pow" | "div_ceil" => {
+                | "wrapping_pow" | "div_ceil" | "checked_shl" | "checked_shr" | "wrapping_shl"
+                | "wrapping_shr" | "overflowing_shl" | "overflowing_shr" => {
                     self.helper("int");
                     let ret = if name.starts_with("checked") {
                         Ty::Option(Box::new(t.clone()))
@@ -3398,6 +3581,7 @@ impl Translator<'_> {
                 }
                 "cmp" => {
                     self.helper("Ordering");
+                    self.note_array_comparable(&recv.ty);
                     return prim(
                         format!("rsCmp({}, {})", recv.code, a(0)),
                         Ty::Named("Ordering".into(), vec![]),
@@ -3405,6 +3589,7 @@ impl Translator<'_> {
                 }
                 "partial_cmp" => {
                     self.helper("Ordering");
+                    self.note_array_comparable(&recv.ty);
                     return prim(
                         format!("rsPartialCmp({}, {})", recv.code, a(0)),
                         Ty::Option(Box::new(Ty::Named("Ordering".into(), vec![]))),
@@ -3473,6 +3658,7 @@ impl Translator<'_> {
                 }
                 "cmp" => {
                     self.helper("Ordering");
+                    self.note_array_comparable(&recv.ty);
                     return prim(
                         format!("rsCmp({}, {})", recv.code, a(0)),
                         Ty::Named("Ordering".into(), vec![]),
@@ -3492,7 +3678,6 @@ impl Translator<'_> {
                 | "is_ascii_punctuation"
                 | "is_ascii_hexdigit"
                 | "is_ascii_whitespace"
-                | "is_ascii_control"
                 | "is_ascii_graphic" => {
                     let ch = Ex::primary(format!("Character(UnicodeScalar({r}))"), Ty::Char);
                     return self.std_method(ch, name, args, turbofish, expected, span);
@@ -3571,6 +3756,11 @@ impl Translator<'_> {
                         format!("{r}.{f}()"),
                         Ty::Option(Box::new(Ty::Tuple(vec![k.clone(), v.clone()]))),
                     );
+                }
+                // `map.split_off(&k)` of a `BTreeMap`: the entries from `k` on, taken out.
+                "split_off" if ordered && args.len() == 1 => {
+                    self.helper("map");
+                    return prim(format!("{r}.rsSplitOff({})", a(0)), rty.clone());
                 }
                 "drain" => {
                     self.helper("map");
@@ -3661,6 +3851,11 @@ impl Translator<'_> {
                         "rsPopLast"
                     };
                     return prim(format!("{r}.{f}()"), Ty::Option(Box::new(t)));
+                }
+                // `set.split_off(&x)` of a `BTreeSet`: the elements from `x` on, taken out.
+                "split_off" if ordered && args.len() == 1 => {
+                    self.helper("vec");
+                    return prim(format!("{r}.rsSplitOff({})", a(0)), rty.clone());
                 }
                 // `set.range(a..b)` of a `BTreeSet`: the elements in order, within the bounds.
                 "range" if ordered && args.len() == 1 => {
@@ -3758,6 +3953,9 @@ impl Translator<'_> {
             && (matches!(rty, Ty::Option(_)) || args.iter().any(|a| matches!(a.ty, Ty::Option(_))))
         {
             self.helper("option_cmp");
+        }
+        if matches!(name, "cmp" | "partial_cmp" | "max" | "min" | "clamp") {
+            self.note_array_comparable(&rty);
         }
         match name {
             // `a.max(b)`, `x.clamp(lo, hi)` of a comparable struct or enum.
@@ -4008,7 +4206,10 @@ impl Translator<'_> {
             "sort" | "sort_unstable" if matches!(item, Ty::Tuple(_)) => {
                 prim(format!("{r}.sort(by: <)"), Ty::Unit)
             }
-            "sort" | "sort_unstable" => prim(format!("{r}.sort()"), Ty::Unit),
+            "sort" | "sort_unstable" => {
+                self.note_array_comparable(&item);
+                prim(format!("{r}.sort()"), Ty::Unit)
+            }
             "sort_by" | "sort_unstable_by" => {
                 self.helper("vec");
                 self.helper("Ordering");
@@ -4018,6 +4219,7 @@ impl Translator<'_> {
             "sort_by_key" | "sort_unstable_by_key" | "sort_by_cached_key"
                 if matches!(fn_ret(0), Ty::Tuple(_)) =>
             {
+                self.note_array_comparable(&fn_ret(0));
                 let k = a(0);
                 prim(format!("{r}.sort {{ ({k})($0) < ({k})($1) }}"), Ty::Unit)
             }
@@ -4169,6 +4371,12 @@ impl Translator<'_> {
             "flatten" => {
                 if matches!(item, Ty::Option(_)) {
                     prim(format!("{r}.compactMap {{ $0 }}"), iter(item.item()))
+                } else if let Ty::Result(ok, _) = &item {
+                    // `results.iter().flatten()`: the `Ok` values.
+                    prim(
+                        format!("{r}.compactMap {{ try? $0.get() }}"),
+                        iter((**ok).clone()),
+                    )
                 } else {
                     prim(format!("{r}.flatMap {{ $0 }}"), iter(item.item()))
                 }
@@ -4210,6 +4418,15 @@ impl Translator<'_> {
                     iter(Ty::Vec(Box::new(item.clone()))),
                 )
             }
+            // `v.split(|x| *x == 0)` on a slice: the parts between separators, empty ones
+            // kept, as Rust gives them.
+            "split" if matches!(rty, Ty::Vec(_)) && args.len() == 1 => prim(
+                format!(
+                    "{r}.split(omittingEmptySubsequences: false, whereSeparator: {})",
+                    a(0)
+                ),
+                iter(Ty::Vec(Box::new(item.clone()))),
+            ),
             "partition_point" => {
                 self.helper("vec");
                 prim(
@@ -4348,9 +4565,11 @@ impl Translator<'_> {
             "count" if recv.ty == Ty::Str => prim(format!("{r}.unicodeScalars.count"), usize_ty),
             "count" => prim(format!("{r}.count"), usize_ty),
             "min" | "max" if args.is_empty() && matches!(item, Ty::Tuple(_)) => {
+                self.note_array_comparable(&item);
                 prim(format!("{r}.{name}(by: <)"), Ty::Option(Box::new(item)))
             }
             "min" | "max" if args.is_empty() => {
+                self.note_array_comparable(&item);
                 prim(format!("{r}.{name}()"), Ty::Option(Box::new(item)))
             }
             "min" | "max" if args.len() == 1 => prim(
@@ -4799,7 +5018,7 @@ fn closure_body(code: &str) -> String {
 
 /// `0..<10` → (`0`, `10`, closed).
 fn split_range(code: &str) -> Option<(String, String, bool)> {
-    let code = code.trim_start_matches('(').trim_end_matches(')');
+    let code = strip_outer_parens(code);
     if let Some((a, b)) = code.split_once("..<") {
         return Some((a.to_string(), b.to_string(), false));
     }
@@ -4807,6 +5026,32 @@ fn split_range(code: &str) -> Option<(String, String, bool)> {
         return Some((a.to_string(), b.to_string(), true));
     }
     None
+}
+
+/// `(0...UInt8(255))` → `0...UInt8(255)`: the parentheses around the whole expression.
+fn strip_outer_parens(mut code: &str) -> &str {
+    while code.starts_with('(') && code.ends_with(')') {
+        let mut depth = 0usize;
+        let mut first_closes_last = false;
+        for (i, c) in code.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        first_closes_last = i == code.len() - 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !first_closes_last {
+            break;
+        }
+        code = &code[1..code.len() - 1];
+    }
+    code
 }
 
 fn strip_ref(e: &Expr) -> &Expr {
@@ -4818,7 +5063,7 @@ fn strip_ref(e: &Expr) -> &Expr {
 
 impl Translator<'_> {
     /// The turbofish of a call: `generic_max::<u8>(…)`, `Vec::<i32>::new()`.
-    fn generic_args(&self, path: &syn::Path) -> Vec<Ty> {
+    pub(crate) fn generic_args(&self, path: &syn::Path) -> Vec<Ty> {
         let Some(last) = path.segments.last() else {
             return Vec::new();
         };
@@ -4840,6 +5085,31 @@ impl Translator<'_> {
             _ => Vec::new(),
         }
     }
+}
+
+/// A type of the standard library whose methods may be called as functions
+/// (`str::len(s)`): the receiver types with methods the translator knows.
+fn is_std_receiver_type(name: &str) -> bool {
+    IntKind::parse(name).is_some()
+        || matches!(
+            name,
+            "str"
+                | "String"
+                | "Vec"
+                | "VecDeque"
+                | "Option"
+                | "Result"
+                | "HashMap"
+                | "BTreeMap"
+                | "HashSet"
+                | "BTreeSet"
+                | "char"
+                | "bool"
+                | "f32"
+                | "f64"
+                | "Iterator"
+                | "Duration"
+        )
 }
 
 /// Whether the Swift expression is an `Array`: a literal, or a chain ending with a method
