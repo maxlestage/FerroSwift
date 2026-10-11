@@ -859,6 +859,7 @@ impl Translator<'_> {
             init: false,
             closure: false,
             self_name: None,
+            key_path: None,
         });
         let body = self.view_content(&c.body);
         self.fns.pop();
