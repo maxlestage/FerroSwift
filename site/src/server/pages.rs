@@ -12,6 +12,11 @@ use crate::routes::{Lang, Page, Route, base, link};
 
 pub const GITHUB: &str = "https://github.com/maxlestage/FerroSwift";
 pub const ACTIVE: &str = "https://github.com/maxlestage/Active";
+/// The license, read online: proprietary, all rights reserved.
+pub const LICENSE: &str = "https://github.com/maxlestage/FerroSwift/blob/master/LICENSE";
+/// Who designed and built FerroSwift and its sister projects.
+pub const AUTHOR: &str = "Maxime Nathan Lestage";
+pub const AUTHOR_URL: &str = "https://github.com/maxlestage";
 
 /// How a page loads the browser bundle.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -218,6 +223,20 @@ fn header(route: &Route) -> Element {
         )
 }
 
+/// The sister projects of FerroSwift, by the same author: (name, website). The footer links
+/// them in this order; `i18n::Footer::projects` describes each one in the same order.
+pub const ECOSYSTEM: [(&str, &str); 6] = [
+    ("Active", "https://maxlestage.github.io/Active/"),
+    ("Vitesse", "https://maxlestage.github.io/Vitesse/"),
+    ("Securite", "https://maxlestage.github.io/Securite/"),
+    ("Memoire", "https://maxlestage.github.io/Memoire/"),
+    ("Paquets", "https://maxlestage.github.io/Paquets/"),
+    ("FerroSwift", "https://maxlestage.github.io/FerroSwift/"),
+];
+
+/// The signature footer, shared in spirit by every site of the ecosystem: the call to
+/// action and the install command, the link columns, the sister projects, the author's
+/// signature, the giant wordmark and the legal line.
 fn footer(route: &Route, site: &Site) -> Element {
     let d = t(route.lang);
     let f = &d.footer;
@@ -231,17 +250,103 @@ fn footer(route: &Route, site: &Site) -> Element {
             .child(h2().text(title))
             .child(ul().children(links.into_iter().map(|link| li().child(link))))
     };
+    let cta = div()
+        .class("wrap foot-cta")
+        .child(
+            a().class("foot-cta-link")
+                .href(doc("getting-started"))
+                .child(span().text(f.start))
+                .child(Node::from(" "))
+                .child(em().text("FerroSwift"))
+                .child(arrow()),
+        )
+        .child(
+            el("code")
+                .class("foot-install")
+                .attr(
+                    "aria-label",
+                    format!("{}: cargo install ferroswift-cli", f.install),
+                )
+                .attr("title", f.install)
+                .text("cargo install ferroswift-cli"),
+        );
+    let brand = div()
+        .class("foot-brand")
+        .child(logo("g-foot"))
+        .child(p().class("tagline").text(f.tagline))
+        .child(
+            ul().class("foot-badges")
+                .attr("aria-label", "FerroSwift")
+                .child(
+                    li().class("hot")
+                        .text(format!("v{}", ferroswift_transpiler::VERSION)),
+                )
+                .child(li().text(f.rust_only))
+                .child(
+                    li().child(external(
+                        a().href("https://crates.io/crates/ferroswift")
+                            .text("crates.io"),
+                    )),
+                ),
+        );
+    let ecosystem = nav()
+        .class("wrap foot-eco")
+        .attr("aria-label", f.ecosystem)
+        .child(
+            div()
+                .class("foot-eco-head")
+                .child(h2().text(f.ecosystem))
+                .child(p().text(f.ecosystem_text)),
+        )
+        .child(
+            ul().class("eco-grid")
+                .children(ECOSYSTEM.iter().zip(f.projects).map(|((name, url), text)| {
+                    let here = *name == "FerroSwift";
+                    let mut title = span().class("eco-name").text(*name);
+                    if here {
+                        title = title.child(span().class("eco-here").text(f.here));
+                    }
+                    let link = a()
+                        .class(if here { "eco current" } else { "eco" })
+                        .href(*url)
+                        .child(title)
+                        .child(span().class("eco-text").text(text))
+                        .child(arrow());
+                    li().child(if here {
+                        link.attr("aria-current", "page")
+                    } else {
+                        external(link)
+                    })
+                })),
+        );
+    let credits = div()
+        .class("wrap foot-credits")
+        .child(p().class("credits-by").text(f.by))
+        .child(external(
+            a().class("credits-name").href(AUTHOR_URL).children(
+                AUTHOR
+                    .split(' ')
+                    .enumerate()
+                    .map(|(i, word)| span().style(format!("--i:{i}")).text(word.to_string())),
+            ),
+        ))
+        .child(p().class("credits-note").text(f.crafted));
+    let wordmark = div()
+        .class("wordmark")
+        .attr("aria-hidden", "true")
+        .children(
+            "ferroswift"
+                .chars()
+                .enumerate()
+                .map(|(i, c)| span().style(format!("--i:{i}")).text(c.to_string())),
+        );
     el("footer")
         .class("foot")
+        .child(cta)
         .child(
             div()
                 .class("wrap foot-grid")
-                .child(
-                    div()
-                        .class("foot-brand")
-                        .child(logo("g-foot"))
-                        .child(p().class("tagline").text(f.tagline)),
-                )
+                .child(brand)
                 .child(column(
                     f.product,
                     vec![
@@ -257,8 +362,13 @@ fn footer(route: &Route, site: &Site) -> Element {
                     f.project,
                     vec![
                         external(a().href(GITHUB).text("GitHub")),
+                        external(
+                            a().href("https://crates.io/crates/ferroswift")
+                                .text("crates.io"),
+                        ),
+                        external(a().href("https://docs.rs/ferroswift").text("docs.rs")),
                         external(a().href(format!("{GITHUB}/issues")).text("Issues")),
-                        external(a().href(ACTIVE).text(f.made_with)),
+                        external(a().href(LICENSE).text(f.license)),
                     ],
                 ))
                 .child(column(
@@ -280,10 +390,14 @@ fn footer(route: &Route, site: &Site) -> Element {
                         .collect(),
                 )),
         )
+        .child(ecosystem)
+        .child(credits)
+        .child(wordmark)
         .child(
             div()
                 .class("wrap foot-bottom")
-                .child(span().text(format!("© 2026 FerroSwift · {}", f.license)))
+                .child(span().text(f.rights))
+                .child(external(a().href(LICENSE).text(f.proprietary)))
                 .child(
                     external(a().class("made").href(ACTIVE))
                         .text(f.made_with)
@@ -346,6 +460,7 @@ fn document(site: &Site, route: &Route, kind: &str, content: Node, bundle: Bundl
         .head(format!(
             concat!(
                 r#"<meta name="color-scheme" content="dark"/>"#,
+                r#"<meta name="author" content="{author}"/>"#,
                 r##"<meta name="theme-color" content="#0d0b0a"/>"##,
                 r#"<link rel="icon" href="{base}/favicon.svg" type="image/svg+xml"/>"#,
                 // Same URL as in app.css (no version query), so the preload is reused.
@@ -354,6 +469,7 @@ fn document(site: &Site, route: &Route, kind: &str, content: Node, bundle: Bundl
             ),
             base = base(),
             script = INLINE_SCRIPT,
+            author = AUTHOR,
         ));
     if site.has_bundle() {
         let (js, wasm) = (assets.url(BUNDLE_JS), assets.url(BUNDLE_WASM));
@@ -547,7 +663,7 @@ fn home(site: &Site, route: &Route) -> Node {
     let seo = seo(route, d.title, d.description)
         .title_template("%s")
         .json_ld(format!(
-            r#"{{"@context":"https://schema.org","@type":"SoftwareSourceCode","name":"FerroSwift","description":"{}","codeRepository":"{GITHUB}","programmingLanguage":["Rust","Swift"],"license":"https://opensource.org/licenses/MIT","url":"{}/{}/"}}"#,
+            r#"{{"@context":"https://schema.org","@type":"SoftwareSourceCode","name":"FerroSwift","description":"{}","codeRepository":"{GITHUB}","programmingLanguage":["Rust","Swift"],"license":"{LICENSE}","author":{{"@type":"Person","name":"{AUTHOR}","url":"{AUTHOR_URL}"}},"url":"{}/{}/"}}"#,
             json(d.description),
             site.origin,
             lang.code()

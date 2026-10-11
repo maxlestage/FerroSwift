@@ -19,6 +19,56 @@ fn body(site: &Site, path: &str) -> String {
 }
 
 #[test]
+fn every_page_ends_with_the_signature_footer() {
+    let site = site();
+    for (lang, rights, here) in [
+        ("en", "All rights reserved", "You are here"),
+        ("fr", "Tous droits réservés", "Vous êtes ici"),
+    ] {
+        let html = body(&site, &format!("/{lang}/docs/"));
+        let footer = html.split("<footer").nth(1).expect("a footer");
+        // The author's signature, the legal line and the license.
+        assert!(footer.contains(r#"class="credits-name""#), "{lang}");
+        assert!(footer.contains("Maxime Nathan Lestage"), "{lang}");
+        assert!(footer.contains(rights), "{lang}");
+        assert!(
+            footer
+                .contains(r#"href="https://github.com/maxlestage/FerroSwift/blob/master/LICENSE""#),
+            "{lang}"
+        );
+        assert!(!footer.contains("MIT"), "{lang}");
+        // The install command and the version of the crates.
+        assert!(footer.contains("cargo install ferroswift-cli"), "{lang}");
+        assert!(
+            footer.contains(&format!("v{}", ferroswift_transpiler::VERSION)),
+            "{lang}"
+        );
+        // The six projects of the ecosystem, this one marked as the current page.
+        for project in [
+            "Active",
+            "Vitesse",
+            "Securite",
+            "Memoire",
+            "Paquets",
+            "FerroSwift",
+        ] {
+            assert!(
+                footer.contains(&format!(
+                    r#"href="https://maxlestage.github.io/{project}/""#
+                )),
+                "{lang} {project}"
+            );
+        }
+        assert!(footer.contains(r#"aria-current="page""#), "{lang}");
+        assert!(footer.contains(here), "{lang}");
+    }
+    // The author is named in the metadata too.
+    let html = body(&site, "/en/");
+    assert!(html.contains(r#"<meta name="author" content="Maxime Nathan Lestage"/>"#));
+    assert!(html.contains(r#""author":{"@type":"Person","name":"Maxime Nathan Lestage""#));
+}
+
+#[test]
 fn every_route_renders_with_its_seo_tags() {
     let site = site();
     let routes = site.routes();
