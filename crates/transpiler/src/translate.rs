@@ -129,6 +129,18 @@ pub struct Translator<'a> {
     /// The slots of `let`s of integer literals, with the type they were given: annotated
     /// only when a later use changed it (`let mut buf = vec![9]` passed as `&mut Vec<u8>`).
     pub weak_slots: HashMap<usize, Ty>,
+    /// Per block being translated: the name of its mark on the drop stack, once a value of
+    /// the block needs dropping.
+    pub drop_frames: Vec<Option<String>>,
+    /// The uses moving a value out of its variable (by position), with the flag to clear.
+    pub move_sites: HashMap<(usize, usize), String>,
+    /// Parameters and loop items to drop at the end of the next block (Rust, Swift names).
+    pub pending_drops: Vec<(String, String)>,
+    /// The flag telling whether a variable to drop still holds its value (by Swift name).
+    pub drop_flags: HashMap<String, String>,
+    /// The closures taking their parameter by value (`opt.map(|n| …)`), by position: a
+    /// parameter to drop is dropped when the closure ends.
+    pub consuming_closures: HashSet<(usize, usize)>,
     /// The start of the path call being translated (`thread::scope(…)` panics there).
     pub call_span: Option<proc_macro2::Span>,
     /// The type parameters a call knows before its arguments (turbofish, expected result).
@@ -214,6 +226,11 @@ impl<'a> Translator<'a> {
             ref_closures: HashMap::new(),
             inout_params: HashSet::new(),
             weak_slots: HashMap::new(),
+            drop_frames: Vec::new(),
+            move_sites: HashMap::new(),
+            pending_drops: Vec::new(),
+            drop_flags: HashMap::new(),
+            consuming_closures: HashSet::new(),
             call_span: None,
             pending_bindings: std::collections::HashMap::new(),
             last_closure_inouts: Vec::new(),
@@ -2232,15 +2249,6 @@ impl<'a> Translator<'a> {
                 self.generics.clear();
                 return String::new();
             }
-            Some("Drop") => {
-                self.warn(
-                    imp.span(),
-                    "Drop is not translated: Swift structs have no destructor",
-                );
-                self.imp = None;
-                self.generics.clear();
-                return String::new();
-            }
             // Changes through `*name = …` go to the field itself: nothing to write.
             Some("DerefMut") => {
                 self.imp = None;
@@ -2249,6 +2257,9 @@ impl<'a> Translator<'a> {
             }
             Some("Default") | Some("From") | None | Some(_) => {
                 if let Some(t) = &trait_name {
+                    if t == "Drop" {
+                        self.helper("drop");
+                    }
                     // Conversions have no protocol: their functions are called directly.
                     if !matches!(
                         t.as_str(),
@@ -2746,6 +2757,30 @@ impl<'a> Translator<'a> {
         if view {
             self.used_ui = true;
         }
+        // `fn finish(self)`: `self` is dropped when the method ends.
+        if matches!(sig.inputs.first(), Some(FnArg::Receiver(r)) if r.reference.is_none()) {
+            if let Some(imp) = &self.imp {
+                if self.needs_drop(&imp.self_ty) {
+                    let swift = self
+                        .lookup("self")
+                        .map_or("self".to_string(), |l| l.swift.clone());
+                    self.pending_drops.push(("self".into(), swift));
+                }
+            }
+        }
+        // `fn consume(g: Guard)`: the parameter is dropped when the function ends.
+        for arg in &sig.inputs {
+            if let FnArg::Typed(p) = arg {
+                if let (Pat::Ident(id), false) = (&*p.pat, matches!(&*p.ty, Type::Reference(_))) {
+                    let rust = id.ident.to_string();
+                    if let Some(local) = self.lookup(&rust).cloned() {
+                        if self.needs_drop(&local.ty) {
+                            self.pending_drops.push((rust, local.swift.clone()));
+                        }
+                    }
+                }
+            }
+        }
         body.extend(self.block_lines(block, sink));
         self.fns.pop();
         self.pop_scope();
@@ -3198,6 +3233,7 @@ pub fn protocol_name(name: &str) -> Option<String> {
             "View" => "View",
             "Add" | "Sub" => "AdditiveArithmetic",
             "Mul" => "Numeric",
+            "Drop" => "RsDrop",
             _ => return None,
         }
         .to_string(),

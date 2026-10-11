@@ -16,6 +16,7 @@
 
 mod comments;
 mod diag;
+mod drops;
 mod expand;
 mod expr;
 mod format;
