@@ -1264,7 +1264,10 @@ impl Translator<'_> {
     /// `map.entry(k).and_modify(|v| …).or_insert(x)`: an `if` on the presence of the key.
     fn entry_modify(&mut self, m: &ExprMethodCall) -> Option<Ex> {
         let last = m.method.to_string();
-        if !matches!(last.as_str(), "or_insert" | "or_insert_with" | "or_default") {
+        if !matches!(
+            last.as_str(),
+            "or_insert" | "or_insert_with" | "or_insert_with_key" | "or_default"
+        ) {
             return None;
         }
         let Expr::MethodCall(modify) = &*m.receiver else {
@@ -1943,6 +1946,12 @@ impl Translator<'_> {
                     }
                     "nth" => return prim(format!("{r}.nth({})", a(0)), Ty::Option(Box::new(t))),
                     "by_ref" | "peekable" => return recv,
+                    "clone" if args.is_empty() => {
+                        return prim(format!("{r}.remaining()"), Ty::Iter(Box::new(t)));
+                    }
+                    "as_str" if args.is_empty() => {
+                        return prim(format!("String({r}.remaining())"), Ty::Str);
+                    }
                     _ => {
                         let rest = Ex::primary(format!("{r}.rest()"), Ty::Iter(Box::new(t)));
                         return self.std_method(rest, name, args, turbofish, expected, span);
@@ -3141,6 +3150,37 @@ impl Translator<'_> {
                 "get" => return prim(format!("{r}[{}]", a(0)), Ty::Option(Box::new(v))),
                 "get_mut" => return prim(format!("{r}[{}]", a(0)), Ty::Option(Box::new(v))),
                 "contains_key" => return Ex::new(format!("{r}[{}] != nil", a(0)), P_CMP, Ty::Bool),
+                "get_key_value" => {
+                    return prim(
+                        format!("{r}[{}].map {{ ({}, $0) }}", a(0), a(0)),
+                        Ty::Option(Box::new(Ty::Tuple(vec![k.clone(), v.clone()]))),
+                    );
+                }
+                "remove_entry" => {
+                    return prim(
+                        format!("{r}.removeValue(forKey: {}).map {{ ({}, $0) }}", a(0), a(0)),
+                        Ty::Option(Box::new(Ty::Tuple(vec![k.clone(), v.clone()]))),
+                    );
+                }
+                "pop_first" | "pop_last" if ordered => {
+                    self.helper("map");
+                    let f = if name == "pop_first" {
+                        "rsPopFirst"
+                    } else {
+                        "rsPopLast"
+                    };
+                    return prim(
+                        format!("{r}.{f}()"),
+                        Ty::Option(Box::new(Ty::Tuple(vec![k.clone(), v.clone()]))),
+                    );
+                }
+                "drain" => {
+                    self.helper("map");
+                    return prim(
+                        format!("{r}.drain()"),
+                        Ty::Iter(Box::new(Ty::Tuple(vec![k.clone(), v.clone()]))),
+                    );
+                }
                 "remove" => {
                     return prim(
                         format!("{r}.removeValue(forKey: {})", a(0)),
@@ -3210,6 +3250,10 @@ impl Translator<'_> {
                 "contains" => return prim(format!("{r}.contains({})", a(0)), Ty::Bool),
                 "len" => return prim(format!("{r}.count"), usize_ty),
                 "is_empty" => return prim(format!("{r}.isEmpty"), Ty::Bool),
+                "drain" if args.is_empty() => {
+                    self.helper("map");
+                    return prim(format!("{r}.drain()"), Ty::Iter(Box::new(t)));
+                }
                 // `set.pop_first()`, `set.pop_last()` of a `BTreeSet`: the smallest, the largest.
                 "pop_first" | "pop_last" if ordered && args.is_empty() => {
                     self.helper("vec");
@@ -3523,6 +3567,12 @@ impl Translator<'_> {
             "contains" => prim(format!("{r}.contains({})", a(0)), Ty::Bool),
             "swap" if args.len() == 2 => prim(format!("{r}.swapAt({}, {})", a(0), a(1)), Ty::Unit),
             "reverse" => prim(format!("{r}.reverse()"), Ty::Unit),
+            // Elements Swift cannot compare with `<` (tuples holding optionals or arrays,
+            // optionals, arrays): Rust's order, through reflection.
+            "sort" | "sort_unstable" if !swift_comparable(&item) => {
+                self.helper("less_any");
+                prim(format!("{r}.sort {{ rsLessAny($0, $1) }}"), Ty::Unit)
+            }
             "sort" | "sort_unstable" if matches!(item, Ty::Tuple(_)) => {
                 prim(format!("{r}.sort(by: <)"), Ty::Unit)
             }
@@ -3752,6 +3802,12 @@ impl Translator<'_> {
                 )
             }
             "fuse" => recv.clone(),
+            // A `VecDeque` is an array: already contiguous.
+            "make_contiguous" if args.is_empty() => prim(r.clone(), rty.clone()),
+            "as_slices" if args.is_empty() => prim(
+                format!("({r}, [{}]())", item.swift_lossy()),
+                Ty::Tuple(vec![rty.clone(), rty.clone()]),
+            ),
             "chunk_by" if args.len() == 1 => {
                 self.helper("vec");
                 prim(
@@ -4294,4 +4350,16 @@ fn is_cell_access(name: &str) -> bool {
             | "try_borrow"
             | "try_borrow_mut"
     )
+}
+
+/// Whether Swift's `<` orders values of the type: not tuples holding optionals or arrays,
+/// nor optionals or arrays themselves.
+fn swift_comparable(t: &Ty) -> bool {
+    match t {
+        Ty::Option(_) | Ty::Vec(_) => false,
+        Ty::Tuple(ts) => ts
+            .iter()
+            .all(|t| !matches!(t, Ty::Option(_) | Ty::Vec(_) | Ty::Tuple(_))),
+        _ => true,
+    }
 }

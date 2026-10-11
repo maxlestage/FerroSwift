@@ -1347,7 +1347,7 @@ impl Translator<'_> {
         let method = m.method.to_string();
         if !matches!(
             method.as_str(),
-            "or_insert" | "or_insert_with" | "or_default"
+            "or_insert" | "or_insert_with" | "or_insert_with_key" | "or_default"
         ) {
             return None;
         }
@@ -1378,6 +1378,23 @@ impl Translator<'_> {
                 }
                 v.code
             }
+            // `or_insert_with_key(|k| …)`: the closure sees the key.
+            "or_insert_with_key" => match &m.args[0] {
+                Expr::Closure(c) if c.inputs.len() == 1 => {
+                    self.push_scope();
+                    if let syn::Pat::Ident(id) = &c.inputs[0] {
+                        self.declare_alias(&id.ident.to_string(), key.code.clone(), key.ty.clone());
+                    }
+                    let v = self.expr_with(&c.body, &value_ty);
+                    let code = self.settle(v).code;
+                    self.pop_scope();
+                    code
+                }
+                f => {
+                    let v = self.expr(f);
+                    format!("({})({})", v.code, key.code)
+                }
+            },
             "or_insert_with" => {
                 let f = &m.args[0];
                 match f {
@@ -1884,7 +1901,13 @@ impl Translator<'_> {
                 l
             }
         };
-        let learned_ret = self.fns.pop().map(|f| f.ret);
+        let popped = self.fns.pop();
+        let learned_ret = popped.as_ref().map(|f| f.ret.clone());
+        // The error type a `return` inside taught (see `return_stmt`).
+        let throws = match (&throws, popped.and_then(|f| f.throws)) {
+            (Some(Ty::Unknown), Some(e)) if e.is_complete() => Some(e),
+            _ => throws,
+        };
         self.pop_scope();
         let throws_clause = match &throws {
             Some(Ty::Unknown) | Some(Ty::Dyn(_)) => " throws".to_string(),

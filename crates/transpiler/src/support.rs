@@ -9,7 +9,12 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("display", &[], DISPLAY),
     ("fixed", &[], FIXED),
     ("debug_custom", &[], DEBUG_CUSTOM),
-    ("debug", &["debug_custom", "display", "fixed", "pad"], DEBUG),
+    ("less_any", &[], LESS_ANY),
+    (
+        "debug",
+        &["debug_custom", "display", "fixed", "pad", "less_any"],
+        DEBUG,
+    ),
     ("pad", &[], PAD),
     ("Ordering", &[], ORDERING),
     ("string", &[], STRING),
@@ -113,6 +118,52 @@ func rsFixed<F: BinaryFloatingPoint>(_ x: F, _ decimals: Int) -> String {
 }
 "#;
 
+const LESS_ANY: &str = r#"
+/// `a < b` as Rust orders values of any type: numbers and texts by value, `false < true`,
+/// tuples and arrays element by element, `None` before `Some`.
+func rsLessAny(_ a: Any, _ b: Any) -> Bool {
+    func attempt<T: Comparable>(_: T.Type) -> Bool? {
+        if let x = a as? T, let y = b as? T { return x < y }
+        return nil
+    }
+    if let r = attempt(String.self) { return r }
+    if let r = attempt(Int.self) { return r }
+    if let r = attempt(Double.self) { return r }
+    if let r = attempt(Character.self) { return r }
+    if let r = attempt(UInt.self) { return r }
+    if let r = attempt(Int32.self) { return r }
+    if let r = attempt(UInt32.self) { return r }
+    if let r = attempt(Int64.self) { return r }
+    if let r = attempt(UInt64.self) { return r }
+    if let r = attempt(Int8.self) { return r }
+    if let r = attempt(UInt8.self) { return r }
+    if let r = attempt(Int16.self) { return r }
+    if let r = attempt(UInt16.self) { return r }
+    if let r = attempt(Float.self) { return r }
+    if let x = a as? Bool, let y = b as? Bool { return !x && y }
+    let ma = Mirror(reflecting: a), mb = Mirror(reflecting: b)
+    if ma.displayStyle == .optional || mb.displayStyle == .optional {
+        switch (ma.children.first?.value, mb.children.first?.value) {
+        case (nil, nil): return false
+        case (nil, _): return true
+        case (_, nil): return false
+        case let (x?, y?): return rsLessAny(x, y)
+        }
+    }
+    if ma.displayStyle == .tuple && mb.displayStyle == .tuple
+        || ma.displayStyle == .collection && mb.displayStyle == .collection
+    {
+        let xs = ma.children.map(\.value), ys = mb.children.map(\.value)
+        for (x, y) in zip(xs, ys) {
+            if rsLessAny(x, y) { return true }
+            if rsLessAny(y, x) { return false }
+        }
+        return xs.count < ys.count
+    }
+    return false
+}
+"#;
+
 const DEBUG: &str = r#"
 /// A value as Rust's `{:?}` writes it: `Some(1)`, `Point { x: 1, y: 2 }`, `"text"`.
 /// `{:?}` of a `BTreeSet`, given its elements in order.
@@ -157,36 +208,6 @@ private func rsSnake(_ name: String) -> String {
 }
 
 /// `a < b` for two values of the same comparable type, tuples element by element.
-private func rsLessAny(_ a: Any, _ b: Any) -> Bool {
-    func attempt<T: Comparable>(_: T.Type) -> Bool? {
-        if let x = a as? T, let y = b as? T { return x < y }
-        return nil
-    }
-    if let r = attempt(String.self) { return r }
-    if let r = attempt(Int.self) { return r }
-    if let r = attempt(Double.self) { return r }
-    if let r = attempt(Character.self) { return r }
-    if let r = attempt(UInt.self) { return r }
-    if let r = attempt(Int32.self) { return r }
-    if let r = attempt(UInt32.self) { return r }
-    if let r = attempt(Int64.self) { return r }
-    if let r = attempt(UInt64.self) { return r }
-    if let r = attempt(Int8.self) { return r }
-    if let r = attempt(UInt8.self) { return r }
-    if let r = attempt(Int16.self) { return r }
-    if let r = attempt(UInt16.self) { return r }
-    if let r = attempt(Float.self) { return r }
-    if let x = a as? Bool, let y = b as? Bool { return !x && y }
-    let ma = Mirror(reflecting: a), mb = Mirror(reflecting: b)
-    if ma.displayStyle == .tuple && mb.displayStyle == .tuple {
-        for (x, y) in zip(ma.children.map(\.value), mb.children.map(\.value)) {
-            if rsLessAny(x, y) { return true }
-            if rsLessAny(y, x) { return false }
-        }
-    }
-    return false
-}
-
 /// Values of a comparable type, in order; anything else as given.
 private func rsSorted(_ values: [Any]) -> [Any] {
     func attempt<T: Comparable>(_: T.Type) -> [Any]? {
@@ -1344,6 +1365,9 @@ struct RsIter<Element>: Sequence, IteratorProtocol {
     private var base: AnyIterator<Element>
     private var buffered: Element? = nil
     private var hasBuffered = false
+    /// Once a copy was asked for (`it.clone()`): the elements left, owned by each copy.
+    private var items: [Element]? = nil
+    private var index = 0
 
     init<S: Sequence>(_ items: S) where S.Element == Element {
         base = AnyIterator(items.makeIterator())
@@ -1355,7 +1379,30 @@ struct RsIter<Element>: Sequence, IteratorProtocol {
             defer { buffered = nil }
             return buffered
         }
+        if let items {
+            guard index < items.count else { return nil }
+            defer { index += 1 }
+            return items[index]
+        }
         return base.next()
+    }
+
+    /// Gathers what is left into an array, so that copies of the iterator are independent.
+    private mutating func materialize() {
+        guard items == nil else { return }
+        var rest: [Element] = []
+        if hasBuffered, let b = buffered { rest.append(b) }
+        hasBuffered = false
+        buffered = nil
+        while let x = base.next() { rest.append(x) }
+        items = rest
+        index = 0
+    }
+
+    /// `it.clone()`, `it.as_str()`: what is left, without consuming it.
+    mutating func remaining() -> [Element] {
+        materialize()
+        return Array((items ?? [])[index...])
     }
 
     mutating func peek() -> Element? {
@@ -1395,6 +1442,33 @@ const MAP: &str = r#"
 extension Dictionary {
     mutating func retain(_ keep: ((key: Key, value: Value)) throws -> Bool) rethrows {
         self = try filter(keep)
+    }
+
+    /// `map.drain()`: every entry, the map left empty.
+    mutating func drain() -> [(Key, Value)] {
+        defer { removeAll() }
+        return map { ($0.key, $0.value) }
+    }
+}
+
+extension Dictionary where Key: Comparable {
+    /// `map.pop_first()` of a `BTreeMap`: the entry with the smallest key, removed.
+    mutating func rsPopFirst() -> (Key, Value)? {
+        guard let k = keys.min() else { return nil }
+        return (k, removeValue(forKey: k)!)
+    }
+
+    mutating func rsPopLast() -> (Key, Value)? {
+        guard let k = keys.max() else { return nil }
+        return (k, removeValue(forKey: k)!)
+    }
+}
+
+extension Set {
+    /// `set.drain()`: every element, the set left empty.
+    mutating func drain() -> [Element] {
+        defer { removeAll() }
+        return Array(self)
     }
 }
 "#;

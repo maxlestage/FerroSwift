@@ -119,7 +119,7 @@ impl Translator<'_> {
                 let method = m.method.to_string();
                 if matches!(
                     method.as_str(),
-                    "or_insert" | "or_insert_with" | "or_default"
+                    "or_insert" | "or_insert_with" | "or_insert_with_key" | "or_default"
                 ) {
                     let code = self.entry_place(m)?;
                     return Some(self.key_path_of_alias(&code, root));
@@ -138,15 +138,11 @@ impl Translator<'_> {
     /// A place written as Swift code: `accounts[name, default: Account()]` (an entry, which
     /// is inserted first) or `items[i]`.
     fn key_path_of_alias(&self, code: &str, root: &str) -> (Vec<String>, String) {
-        if let Some((head, default)) = code.rsplit_once(", default: ") {
-            if let Some(default) = default.strip_suffix(']') {
-                if let Some((map, key)) = head.rsplit_once('[') {
-                    let pre = vec![format!(
-                        "if {map}[{key}] == nil {{ {map}[{key}] = {default} }}"
-                    )];
-                    return (pre, format!("\\{root}.{}[{key}]!", strip_self(map)));
-                }
-            }
+        if let Some((map, key, default)) = entry_parts(code) {
+            let pre = vec![format!(
+                "if {map}[{key}] == nil {{ {map}[{key}] = {default} }}"
+            )];
+            return (pre, format!("\\{root}.{}[{key}]!", strip_self(map)));
         }
         (vec![], key_path_of_place(code, root))
     }
@@ -286,6 +282,14 @@ impl Translator<'_> {
         self.raw_key_path = false;
         self.key_path_raw.take()
     }
+}
+
+/// The parts of an entry place `map[key, default: value]`: (`map`, `key`, `value`).
+pub fn entry_parts(code: &str) -> Option<(&str, &str, &str)> {
+    let (head, default) = code.rsplit_once(", default: ")?;
+    let default = default.strip_suffix(']')?;
+    let (map, key) = head.rsplit_once('[')?;
+    Some((map, key, default))
 }
 
 /// `items[i]` → `\Bank.items[i]`, `self` → `\Bank.self`.

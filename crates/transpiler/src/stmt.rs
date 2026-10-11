@@ -689,6 +689,16 @@ impl Translator<'_> {
         if let Some(lines) = self.builder_chain(e) {
             return lines;
         }
+        // `map.entry(k).or_insert(v);` on its own: the entry is inserted when missing.
+        if let Expr::MethodCall(m) = e {
+            if let Some(code) = self.entry_place(m) {
+                if let Some((map, key, default)) = crate::keypath::entry_parts(&code) {
+                    return vec![format!(
+                        "if {map}[{key}] == nil {{ {map}[{key}] = {default} }}"
+                    )];
+                }
+            }
+        }
         // `self.cache.as_mut().map(|c| c.push(x));`: the element changed in place, when it
         // exists.
         if let Some(lines) = self.option_map_stmt(e) {
@@ -981,6 +991,15 @@ impl Translator<'_> {
             }
             let v = self.expr_with(e, &cx.ret);
             if v.throws.is_some() {
+                // A closure collected into a `Result<_, _>`: the call it returns says the
+                // error type (`throws(VmError)`, not `throws`).
+                if cx.closure && matches!(cx.throws, Some(Ty::Unknown)) {
+                    if let (Some(t), Some(f)) = (&v.throws, self.fns.last_mut()) {
+                        if t.1.is_complete() {
+                            f.throws = Some(t.1.clone());
+                        }
+                    }
+                }
                 let code = format!("try {}", v.code);
                 return if ok_ty == Ty::Unit {
                     vec![code, "return".into()]
@@ -1472,7 +1491,7 @@ impl Translator<'_> {
                     }
                     Pat::Tuple(t) if t.elems.len() == 2 && iter.keyed => {
                         if let Pat::Ident(k) = &t.elems[0] {
-                            let kn = self.declare(&k.ident.to_string(), Ty::Unknown);
+                            let kn = self.declare(&k.ident.to_string(), iter.key.clone());
                             if let Pat::Ident(v) = &t.elems[1] {
                                 self.declare_alias(
                                     &v.ident.to_string(),
@@ -1619,6 +1638,10 @@ impl Translator<'_> {
             let v = self.expr(collection);
             let v = self.settle(v);
             let keyed = matches!(v.ty, Ty::Map(..));
+            let key_ty = match &v.ty {
+                Ty::Map(k, _, _) => (**k).clone(),
+                _ => Ty::Unknown,
+            };
             let item = match &v.ty {
                 Ty::Map(k, val, _) if !values => Ty::Tuple(vec![(**k).clone(), (**val).clone()]),
                 Ty::Map(_, val, _) => (**val).clone(),
@@ -1637,6 +1660,7 @@ impl Translator<'_> {
                 item,
                 mutable_items: Some(v.code),
                 keyed,
+                key: key_ty,
                 enumerated: false,
             };
         }
@@ -1663,6 +1687,7 @@ impl Translator<'_> {
             item,
             mutable_items: None,
             keyed: false,
+            key: Ty::Unknown,
             enumerated: false,
         }
     }
@@ -2178,6 +2203,8 @@ struct Iterable {
     mutable_items: Option<String>,
     /// The collection is a dictionary (indexed by keys).
     keyed: bool,
+    /// The type of its keys.
+    key: Ty,
     /// `.iter_mut().enumerate()`: the pattern is `(index, element)`.
     enumerated: bool,
 }
