@@ -45,6 +45,8 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("option_cmp", &[], OPTION_CMP),
     ("array_cmp", &[], ARRAY_CMP),
     ("link", &[], LINK),
+    ("rc", &["debug"], RC),
+    ("panic", &["debug"], PANIC),
     ("thread", &["debug", "duration"], THREAD),
     ("cow", &["debug"], COW),
     ("result", &[], RESULT),
@@ -986,8 +988,7 @@ const STRING: &str = r#"
 extension String {
     /// `&s[a..b]`: a slice by UTF-8 byte offsets.
     func rsSlice(_ start: Int, _ end: Int) -> String {
-        let bytes = Array(utf8)
-        return String(decoding: bytes[start..<end], as: UTF8.self)
+        String(decoding: Array(utf8)[start..<end], as: UTF8.self)
     }
 
     /// `s.escape_default()`: tabs, newlines, quotes and backslashes escaped, anything
@@ -2752,6 +2753,257 @@ extension RsAtomic where T == Bool {
     func fetchOr(_ v: Bool, _: RsMemoryOrdering = .seqCst) -> Bool { defer { value = value || v }; return value }
     func fetchXor(_ v: Bool, _: RsMemoryOrdering = .seqCst) -> Bool { defer { value = value != v }; return value }
     func fetchNand(_ v: Bool, _: RsMemoryOrdering = .seqCst) -> Bool { defer { value = !(value && v) }; return value }
+}
+"#;
+
+const PANIC: &str = r#"
+/// A Rust panic: what Rust's default hook writes to the standard error, then exit status 101.
+func rsPanic(_ message: String, _ location: String) -> Never {
+    fflush(nil)
+    let text = "\nthread 'main' (\(getpid())) panicked at \(location):\n\(message)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    FileHandle.standardError.write(Data(text.utf8))
+    exit(101)
+}
+
+extension String {
+    /// `&s[a..b]`, with Rust's panics when a bound is past the end or inside a character.
+    func rsSlice(_ start: Int, _ end: Int, at location: String) -> String {
+        let bytes = Array(utf8)
+        rsCheckStrSlice(bytes, start, end, location)
+        return String(decoding: bytes[start..<end], as: UTF8.self)
+    }
+}
+
+func rsCheckStrSlice(_ bytes: [UInt8], _ start: Int, _ end: Int, _ location: String) {
+    let len = bytes.count
+    if start > len || end > len {
+        let (which, oob) = start > len ? ("start", start) : ("end", end)
+        rsPanic("\(which) byte index \(oob) is out of bounds for string of length \(len)", location)
+    }
+    if start > end { rsPanic("byte range starts at \(start) but ends at \(end)", location) }
+    func boundary(_ i: Int) -> Bool { i == len || (bytes[i] & 0xC0) != 0x80 }
+    let (which, index) = !boundary(start) ? ("start", start) : ("end", end)
+    if boundary(index) { return }
+    var lo = index
+    while !boundary(lo) { lo -= 1 }
+    var hi = lo + 1
+    while hi < len && !boundary(hi) { hi += 1 }
+    let ch = String(decoding: bytes[lo..<hi], as: UTF8.self)
+    rsPanic("\(which) byte index \(index) is not a char boundary; it is inside \(rsDebug(Character(ch))) (bytes \(lo)..\(hi) of string)", location)
+}
+
+/// `a / b` and `a % b` of integers.
+func rsDiv<T: BinaryInteger>(_ a: T, _ b: T, _ location: String) -> T {
+    if b == 0 { rsPanic("attempt to divide by zero", location) }
+    return a / b
+}
+
+func rsRem<T: BinaryInteger>(_ a: T, _ b: T, _ location: String) -> T {
+    if b == 0 { rsPanic("attempt to calculate the remainder with a divisor of zero", location) }
+    return a % b
+}
+
+extension Array {
+    /// `v[i]`: Rust's panic when `i` is out of bounds.
+    subscript(_ i: Int, at location: String) -> Element {
+        get {
+            if i < 0 || i >= count { rsPanic("index out of bounds: the len is \(count) but the index is \(i)", location) }
+            return self[i]
+        }
+        set {
+            if i < 0 || i >= count { rsPanic("index out of bounds: the len is \(count) but the index is \(i)", location) }
+            self[i] = newValue
+        }
+    }
+
+    /// `&v[a..b]`, `&v[a..]`, `&v[..b]`: Rust's panics when the bounds are out of range.
+    subscript(from start: Int?, to end: Int?, at location: String) -> ArraySlice<Element> {
+        get { self[rsCheckedRange(start, end, location)] }
+        set { self[rsCheckedRange(start, end, location)] = newValue }
+    }
+
+    private func rsCheckedRange(_ start: Int?, _ end: Int?, _ location: String) -> Range<Int> {
+        let lo = start ?? 0, hi = end ?? count
+        if let end, end > count { rsPanic("range end index \(end) out of range for slice of length \(count)", location) }
+        if lo > count { rsPanic("range start index \(lo) out of range for slice of length \(count)", location) }
+        if lo > hi { rsPanic("slice index starts at \(lo) but ends at \(hi)", location) }
+        return lo..<hi
+    }
+}
+
+/// `map[&k]`: Rust's panic when the key is missing.
+func rsEntry<V>(_ value: V?, _ location: String) -> V {
+    guard let value else { rsPanic("no entry found for key", location) }
+    return value
+}
+
+/// `assert!(cond)`, `assert!(cond, "…", …)`.
+func rsAssert(_ condition: Bool, _ message: @autoclosure () -> String, _ location: String) {
+    if !condition { rsPanic(message(), location) }
+}
+
+/// `assert_eq!(a, b)`, `assert_ne!(a, b, "…")`: both values in `{:?}` when it fails.
+func rsAssertCmp<A, B>(_ a: A, _ b: B, _ op: String, _ location: String, _ message: String? = nil, _ holds: (A, B) -> Bool) {
+    if holds(a, b) { return }
+    let head = "assertion `left \(op) right` failed" + (message.map { ": " + $0 } ?? "")
+    rsPanic(head + "\n  left: " + rsDebug(a) + "\n right: " + rsDebug(b), location)
+}
+
+extension Optional {
+    /// `opt.unwrap()`.
+    func rsUnwrap(_ location: String) -> Wrapped {
+        guard let value = self else { rsPanic("called `Option::unwrap()` on a `None` value", location) }
+        return value
+    }
+
+    /// `opt.expect("…")`.
+    func rsExpect(_ message: String, _ location: String) -> Wrapped {
+        guard let value = self else { rsPanic(message, location) }
+        return value
+    }
+}
+
+extension Result {
+    /// `result.unwrap()`, `result.expect("…")`.
+    func rsUnwrap(_ location: String, _ message: String? = nil) -> Success {
+        switch self {
+        case .success(let value):
+            return value
+        case .failure(let error):
+            let head = message ?? "called `Result::unwrap()` on an `Err` value"
+            rsPanic(head + ": " + rsDebug(error), location)
+        }
+    }
+
+    /// `result.unwrap_err()`, `result.expect_err("…")`.
+    func rsUnwrapErr(_ location: String, _ message: String? = nil) -> Failure {
+        switch self {
+        case .success(let value):
+            let head = message ?? "called `Result::unwrap_err()` on an `Ok` value"
+            rsPanic(head + ": " + rsDebug(value), location)
+        case .failure(let error):
+            return error
+        }
+    }
+}
+
+/// `f()?.unwrap()` of a throwing call: its value, or the panic of `Result::unwrap`.
+func rsTryUnwrap<T>(_ location: String, _ message: String? = nil, _ body: () throws -> T) -> T {
+    do {
+        return try body()
+    } catch {
+        let head = message ?? "called `Result::unwrap()` on an `Err` value"
+        rsPanic(head + ": " + rsDebug(error), location)
+    }
+}
+"#;
+
+const RC: &str = r#"
+/// The allocation an `Rc` shares: the value, dropped with the last strong reference, and
+/// the counts.
+final class RsRcBox<T>: @unchecked Sendable {
+    var value: T?
+    var strong = 0
+    var weak = 0
+    init(_ value: T) { self.value = value }
+}
+
+/// `Rc<T>` in a crate counting references: each clone is a handle, released with it (at
+/// the end of its scope, or by `drop`), as Rust drops it.
+final class RsRc<T>: @unchecked Sendable {
+    let box: RsRcBox<T>
+    private var released = false
+
+    init(_ value: T) {
+        box = RsRcBox(value)
+        box.strong = 1
+    }
+
+    init(box: RsRcBox<T>) {
+        self.box = box
+        box.strong += 1
+    }
+
+    deinit { release() }
+
+    /// `drop(rc)`.
+    func release() {
+        if released { return }
+        released = true
+        box.strong -= 1
+        if box.strong == 0 { box.value = nil }
+    }
+
+    var value: T {
+        get { box.value! }
+        set { box.value = newValue }
+    }
+
+    func deref() -> T { box.value! }
+    func clone() -> RsRc<T> { RsRc(box: box) }
+    var strongCount: Int { box.strong }
+    var weakCount: Int { box.weak }
+}
+
+/// `Weak<T>`.
+final class RsWeak<T>: @unchecked Sendable, RsDebugCustom {
+    let box: RsRcBox<T>?
+    private var released = false
+
+    init() { box = nil }
+
+    init(_ rc: RsRc<T>) {
+        box = rc.box
+        rc.box.weak += 1
+    }
+
+    init(box: RsRcBox<T>) {
+        self.box = box
+        box.weak += 1
+    }
+
+    deinit { release() }
+
+    func release() {
+        if released { return }
+        released = true
+        box?.weak -= 1
+    }
+
+    func upgrade() -> RsRc<T>? {
+        guard let box, box.strong > 0 else { return nil }
+        return RsRc(box: box)
+    }
+
+    func clone() -> RsWeak<T> { box.map { RsWeak(box: $0) } ?? RsWeak() }
+    var strongCount: Int { box?.strong ?? 0 }
+    var weakCount: Int {
+        guard let box, box.strong > 0 else { return 0 }
+        return box.weak
+    }
+    var rsDebugText: String { "(Weak)" }
+}
+
+extension RsRc: RsDebugText {
+    func rsDebugText(pretty: Bool, style: RsDebugStyle) -> String {
+        rsDebug(value, pretty: pretty, style: style)
+    }
+}
+
+extension RsRc: CustomStringConvertible {
+    var description: String { String(describing: value) }
+}
+
+extension RsRc: Equatable where T: Equatable {
+    static func == (lhs: RsRc, rhs: RsRc) -> Bool { lhs.value == rhs.value }
+}
+
+extension RsRc: Comparable where T: Comparable {
+    static func < (lhs: RsRc, rhs: RsRc) -> Bool { lhs.value < rhs.value }
+}
+
+extension RsRc: Hashable where T: Hashable {
+    func hash(into hasher: inout Hasher) { hasher.combine(value) }
 }
 "#;
 

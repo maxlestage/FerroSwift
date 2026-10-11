@@ -57,12 +57,33 @@ struct Outcome {
 }
 
 fn run_program(bin: &Path) -> Result<Outcome, String> {
-    let out = Command::new(bin).output().map_err(|e| e.to_string())?;
+    let out = Command::new(bin)
+        .env_remove("RUST_BACKTRACE")
+        .output()
+        .map_err(|e| e.to_string())?;
     Ok(Outcome {
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        stderr: without_thread_ids(&String::from_utf8_lossy(&out.stderr)),
         code: out.status.code(),
     })
+}
+
+/// `thread 'main' (4242) panicked at …`: the id of the thread changes with every run, of
+/// the Rust program as of the Swift one.
+fn without_thread_ids(text: &str) -> String {
+    text.lines()
+        .map(
+            |line| match (line.strip_prefix("thread '"), line.find("' (")) {
+                (Some(_), Some(open)) => match line[open..].find(')') {
+                    Some(close) => format!("{}' (ID{}", &line[..open], &line[open + close..]),
+                    None => line.to_string(),
+                },
+                _ => line.to_string(),
+            },
+        )
+        .collect::<Vec<_>>()
+        .join("\n")
+        + if text.ends_with('\n') { "\n" } else { "" }
 }
 
 /// The lines that differ between two texts.
@@ -102,7 +123,11 @@ fn errors_only(output: &str) -> String {
 fn check(program: &Path, swiftc: Option<&Path>, work: &Path) -> Result<(), String> {
     let name = program.file_stem().unwrap().to_string_lossy().into_owned();
     let source = std::fs::read_to_string(program).map_err(|e| e.to_string())?;
-    let out = ferroswift_transpiler::transpile(&source);
+    let options = ferroswift_transpiler::Options {
+        source_path: Some(program.display().to_string()),
+        ..Default::default()
+    };
+    let out = ferroswift_transpiler::transpile_with(&source, &options);
     let errors: Vec<String> = out
         .diagnostics
         .iter()

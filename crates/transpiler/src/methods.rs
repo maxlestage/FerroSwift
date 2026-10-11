@@ -721,6 +721,13 @@ impl Translator<'_> {
                         Ty::Unit,
                     ));
                 }
+                // `drop(rc)`: the handle released, its count with it.
+                if matches!(v.ty.named(), Some("RsRc" | "RsWeak")) {
+                    return Some(Ex::primary(
+                        format!("{}.release()", wrap(&v, P_PRIMARY)),
+                        Ty::Unit,
+                    ));
+                }
                 Some(Ex::primary("", Ty::Unit))
             }
             "swap" | "take" | "replace" => {
@@ -983,6 +990,76 @@ impl Translator<'_> {
                     format!("RsRefCell{generic}({}{kind})", v.code),
                     Ty::Named("RsRefCell".into(), vec![v.ty]),
                 ))
+            }
+            // A crate counting references: an `Rc` is a handle on a shared box.
+            ("Rc" | "Arc", "new" | "from") if args.len() == 1 && self.syms.rc_mode => {
+                self.helper("rc");
+                let inner = match expected {
+                    Ty::Named(n, a) if n == "RsRc" => a.first().cloned().unwrap_or(Ty::Unknown),
+                    _ => Ty::Unknown,
+                };
+                let v = arg(self, 0, &inner);
+                Some(Ex::primary(
+                    format!("RsRc({})", v.code),
+                    Ty::Named("RsRc".into(), vec![v.ty]),
+                ))
+            }
+            ("Rc" | "Arc", "clone") if args.len() == 1 && self.syms.rc_mode => {
+                let v = arg(self, 0, expected);
+                Some(Ex::primary(
+                    format!("{}.clone()", wrap(&v, P_PRIMARY)),
+                    v.ty,
+                ))
+            }
+            ("Rc" | "Arc", "strong_count" | "weak_count")
+                if args.len() == 1 && self.syms.rc_mode =>
+            {
+                let v = arg(self, 0, &Ty::Unknown);
+                let f = if last == "strong_count" {
+                    "strongCount"
+                } else {
+                    "weakCount"
+                };
+                Some(Ex::primary(
+                    format!("{}.{f}", wrap(&v, P_PRIMARY)),
+                    Ty::Int(IntKind::Usize),
+                ))
+            }
+            ("Rc" | "Arc", "downgrade") if args.len() == 1 && self.syms.rc_mode => {
+                let v = arg(self, 0, &Ty::Unknown);
+                let inner = match &v.ty {
+                    Ty::Named(n, a) if n == "RsRc" => a.first().cloned().unwrap_or(Ty::Unknown),
+                    _ => Ty::Unknown,
+                };
+                Some(Ex::primary(
+                    format!("RsWeak({})", v.code),
+                    Ty::Named("RsWeak".into(), vec![inner]),
+                ))
+            }
+            ("Rc" | "Arc", "ptr_eq") if args.len() == 2 && self.syms.rc_mode => {
+                let a = arg(self, 0, &Ty::Unknown);
+                let b = arg(self, 1, &a.ty);
+                Some(Ex::new(
+                    format!(
+                        "{}.box === {}.box",
+                        wrap(&a, P_PRIMARY),
+                        wrap(&b, P_PRIMARY)
+                    ),
+                    P_CMP,
+                    Ty::Bool,
+                ))
+            }
+            ("Weak", "new") if args.is_empty() && self.syms.rc_mode => {
+                self.helper("rc");
+                let ty = match expected {
+                    Ty::Named(n, _) if n == "RsWeak" => expected.clone(),
+                    _ => Ty::Named("RsWeak".into(), vec![Ty::Unknown]),
+                };
+                let code = match ty.swift() {
+                    Some(t) if ty.is_complete() => format!("{t}()"),
+                    _ => "RsWeak()".into(),
+                };
+                Some(Ex::primary(code, ty))
             }
             ("Box" | "Rc" | "Arc", "new" | "from") if args.len() == 1 => {
                 Some(arg(self, 0, expected))
@@ -1573,12 +1650,14 @@ impl Translator<'_> {
                             | "partial_cmp"
                             | "hash"
                             | "fmt"
-                            | "borrow"
-                            | "to_mut"
-                            | "into_owned"
-                            | "is_borrowed"
-                            | "is_owned"
                     )
+                    && !(name == "borrow" && recv.ty.named() != Some("RsRc"))
+                    && !(recv.ty.named() == Some("RsCow")
+                        && matches!(
+                            name.as_str(),
+                            "to_mut" | "into_owned" | "is_borrowed" | "is_owned" | "borrow"
+                        ))
+                    && !(recv.ty.named() == Some("RsRc") && name == "clone")
                     && !(name == "to_string" && self.displays(&recv.ty)) =>
             {
                 let recv = self.settle(recv);
@@ -1759,7 +1838,7 @@ impl Translator<'_> {
             return Ex::primary(format!("{}()", wrap(&recv, P_PRIMARY)), Ty::Unit);
         }
         let args = self.method_args(&recv, &name, m, expected);
-        let mut ex = self.std_method(recv, &name, args, &turbofish, expected, m.span());
+        let mut ex = self.std_method(recv, &name, args, &turbofish, expected, m.method.span());
         if self.no_trailing == 0 {
             ex.code = trailing_closure(ex.code);
         }
@@ -2033,7 +2112,7 @@ impl Translator<'_> {
     /// The `Target` of the type's `impl Deref`, if it has one.
     pub fn deref_target(&self, ty: &Ty) -> Option<Ty> {
         match ty {
-            Ty::Named(n, a) if n == "RsCow" => a.first().cloned(),
+            Ty::Named(n, a) if n == "RsCow" || n == "RsRc" => a.first().cloned(),
             Ty::Named(n, _) => self.syms.derefs.get(n).cloned(),
             _ => None,
         }
@@ -2288,7 +2367,18 @@ impl Translator<'_> {
         let (ok, _err) = recv.throws.as_ref().map(|t| (t.0.clone(), t.1.clone()))?;
         let code = recv.code.clone();
         Some(match name {
-            "unwrap" | "expect" => Ex::new(format!("try! {code}"), P_TRY, ok),
+            // `f(x).unwrap()` of a throwing call: Rust's panic when it fails.
+            "unwrap" | "expect" => {
+                self.helper("panic");
+                let loc = crate::expr::swift_string(&self.panic_location(m.method.span()));
+                let msg = if name == "expect" && m.args.len() == 1 {
+                    let v = self.expr_with(&m.args[0], &Ty::Str);
+                    format!(", {}", self.settle(v).code)
+                } else {
+                    String::new()
+                };
+                Ex::primary(format!("rsTryUnwrap({loc}{msg}) {{ try {code} }}"), ok)
+            }
             "ok" => Ex::new(format!("try? {code}"), P_TRY, Ty::Option(Box::new(ok))),
             "is_ok" => Ex::new(format!("(try? {code}) != nil"), P_CMP, Ty::Bool),
             "is_err" => Ex::new(format!("(try? {code}) == nil"), P_CMP, Ty::Bool),
@@ -2735,6 +2825,27 @@ impl Translator<'_> {
                 _ => {}
             }
         }
+        // `Rc` handles and `Weak` references of a crate counting references.
+        if let Ty::Named(n, targs) = &rty {
+            let t = targs.first().cloned().unwrap_or(Ty::Unknown);
+            let r = wrap(&recv, P_PRIMARY);
+            match (n.as_str(), name) {
+                ("RsRc" | "RsWeak", "clone") => return prim(format!("{r}.clone()"), rty.clone()),
+                ("RsWeak", "upgrade") => {
+                    return prim(
+                        format!("{r}.upgrade()"),
+                        Ty::Option(Box::new(Ty::Named("RsRc".into(), vec![t]))),
+                    );
+                }
+                ("RsWeak", "strong_count") => {
+                    return prim(format!("{r}.strongCount"), Ty::Int(IntKind::Usize));
+                }
+                ("RsWeak", "weak_count") => {
+                    return prim(format!("{r}.weakCount"), Ty::Int(IntKind::Usize));
+                }
+                _ => {}
+            }
+        }
         // Threads, channels and atomics of the support file.
         if let Ty::Named(n, targs) = &rty {
             let t = targs.first().cloned().unwrap_or(Ty::Unknown);
@@ -2890,7 +3001,17 @@ impl Translator<'_> {
                         Ty::Bool,
                     );
                 }
-                "unwrap" | "expect" | "unwrap_unchecked" => return prim(format!("{r}!"), inner),
+                "unwrap_unchecked" => return prim(format!("{r}!"), inner),
+                // `opt.unwrap()`: Rust's panic, at Rust's place, when it is `None`.
+                "unwrap" | "expect" => {
+                    self.helper("panic");
+                    let loc = crate::expr::swift_string(&self.panic_location(span));
+                    return if name == "expect" && !args.is_empty() {
+                        prim(format!("{r}.rsExpect({}, {loc})", a(0)), inner)
+                    } else {
+                        prim(format!("{r}.rsUnwrap({loc})"), inner)
+                    };
+                }
                 "unwrap_or" | "or" => {
                     let mut t = inner.clone();
                     t.merge(&ty_a(0));
@@ -3043,8 +3164,20 @@ impl Translator<'_> {
             match name {
                 "is_ok" => return prim(format!("{r}.isOk"), Ty::Bool),
                 "is_err" => return prim(format!("{r}.isErr"), Ty::Bool),
-                "unwrap" | "expect" => return Ex::new(format!("try! {r}.get()"), P_TRY, ok),
-                "unwrap_err" | "expect_err" => return prim(format!("{r}.err()!"), err),
+                "unwrap" | "expect" | "unwrap_err" | "expect_err" => {
+                    self.helper("panic");
+                    let loc = crate::expr::swift_string(&self.panic_location(span));
+                    let msg = if name.starts_with("expect") && !args.is_empty() {
+                        format!(", {}", a(0))
+                    } else {
+                        String::new()
+                    };
+                    return if name.ends_with("err") {
+                        prim(format!("{r}.rsUnwrapErr({loc}{msg})"), err)
+                    } else {
+                        prim(format!("{r}.rsUnwrap({loc}{msg})"), ok)
+                    };
+                }
                 "ok" => return prim(format!("{r}.ok()"), Ty::Option(Box::new(ok))),
                 "err" => return prim(format!("{r}.err()"), Ty::Option(Box::new(err))),
                 "unwrap_or" => {
@@ -5599,5 +5732,5 @@ fn is_subslice_place(code: &str) -> bool {
     let Some(open) = code.rfind('[') else {
         return false;
     };
-    code.ends_with(']') && code[open..].contains("..")
+    code.ends_with(']') && (code[open..].contains("..") || code[open..].starts_with("[from: "))
 }

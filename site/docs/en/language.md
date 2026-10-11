@@ -74,7 +74,7 @@ FerroSwift translates ordinary Rust — the code you write for an app's model an
 | `Ok(match e { … => return Err(…) })`, `let (a, b) = match op { … => break }` | the value is computed by statements before its use (`let value: Int` then a `switch` assigning it): a `return`, `break` or `?` in a branch acts on the function or the loop |
 | `x as f64`, `n as u8` | `Double(x)`, `UInt8(truncatingIfNeeded: n)` |
 | `matches!(x, Some(1..=5))` | a `switch` that returns a `Bool` |
-| `assert!(c, "…")`, `panic!("…")` | `precondition(c, "…")`, `fatalError("…")` |
+| `assert!(c, "…")`, `panic!("…")` | `rsAssert(c, "…", location)`, `rsPanic("…", location)` |
 
 Closures become Swift closures (`|x| x * 2` → `{ x in x * 2 }`); a struct generic over a closure type (`struct Button<F: Fn()> { action: F }`) stores the closure type itself, and a `move` closure changing a `Copy` variable it captured (`move || { counter += 1; counter }`) owns a copy of it, as in Rust. A `&mut` parameter of a closure type (`Box<dyn Fn(&mut State)>`) is `inout`, for the closures given as for their calls. Iterator chains become the matching Swift methods: `map`, `filter`, `fold` (→ `reduce`), `sum`, `any` (→ `contains(where:)`), `find` (→ `first(where:)`), `position` (→ `firstIndex`), `enumerate`, `zip`, `rev`, `max_by`, `collect`… A few methods without a direct equivalent come from the support file.
 

@@ -115,6 +115,8 @@ pub struct Translator<'a> {
     pub parse_bits: std::collections::HashMap<String, String>,
     /// The locals and parameters holding a `VecDeque` (by Rust name).
     pub deque_locals: std::collections::HashSet<String>,
+    /// The Rust source, for the text of a failed `assert!`.
+    pub source_text: String,
     /// The type parameters a call knows before its arguments (turbofish, expected result).
     pub pending_bindings: std::collections::HashMap<String, Ty>,
     /// The variables being assigned by the branches of a `let x = match …` (Swift names),
@@ -193,6 +195,7 @@ impl<'a> Translator<'a> {
             generic_impls_done: std::collections::HashSet::new(),
             parse_bits: std::collections::HashMap::new(),
             deque_locals: std::collections::HashSet::new(),
+            source_text: source.to_string(),
             pending_bindings: std::collections::HashMap::new(),
             last_closure_inouts: Vec::new(),
             closure_inouts: std::collections::HashMap::new(),
@@ -314,6 +317,45 @@ impl<'a> Translator<'a> {
             return Some(format!("Array(repeating: {value}, count: {n})"));
         }
         field.ty.default_value()
+    }
+
+    /// Where a panic happens, as Rust writes it: `src/main.rs:3:9`.
+    pub fn panic_location(&self, span: proc_macro2::Span) -> String {
+        let path = self
+            .opts
+            .source_path
+            .clone()
+            .or_else(|| self.file.clone())
+            .unwrap_or_else(|| "src/main.rs".into());
+        let at = span.start();
+        format!("{path}:{}:{}", at.line, at.column + 1)
+    }
+
+    /// The source text of a span, on one line (`v.is_empty()` for `assert!(v.is_empty())`).
+    pub fn source_of(&self, span: proc_macro2::Span) -> Option<String> {
+        let (start, end) = (span.start(), span.end());
+        let lines: Vec<&str> = self.source_text.lines().collect();
+        if start.line == 0 || end.line < start.line || end.line > lines.len() {
+            return None;
+        }
+        let mut text = String::new();
+        for l in start.line..=end.line {
+            let line: Vec<char> = lines[l - 1].chars().collect();
+            let from = if l == start.line { start.column } else { 0 };
+            let to = if l == end.line {
+                end.column.min(line.len())
+            } else {
+                line.len()
+            };
+            if from > to {
+                return None;
+            }
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(line[from..to].iter().collect::<String>().trim());
+        }
+        Some(text)
     }
 
     /// The Swift name of a global constant (`MAX_SIZE` → `maxSize`).

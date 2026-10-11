@@ -133,7 +133,11 @@ fn file(args: &Args, options: &Options) -> Result<(), String> {
         .as_ref()
         .ok_or("ferroswift file needs a .rs file")?;
     let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let out = ferroswift_transpiler::transpile_with(&source, options);
+    let options = Options {
+        source_path: Some(path.display().to_string()),
+        ..options.clone()
+    };
+    let out = ferroswift_transpiler::transpile_with(&source, &options);
     for d in &out.diagnostics {
         eprint!("{}", render(d, &path.display().to_string(), &source));
     }

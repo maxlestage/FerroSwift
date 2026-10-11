@@ -183,6 +183,9 @@ pub struct Symbols {
     pub imports: HashMap<String, Vec<String>>,
     /// Types implementing `Iterator`, with their `Item` type (by Rust and by Swift name).
     pub iterators: HashMap<String, Ty>,
+    /// The crate counts references (`Rc::strong_count`, `Weak`, `Rc::downgrade`): an `Rc`
+    /// is then a handle of the support file (`RsRc`), not the value itself.
+    pub rc_mode: bool,
     /// The `Target` of the `impl Deref`s (by Rust and by Swift name): the methods of the
     /// target are called on the value's `deref()`.
     pub derefs: HashMap<String, Ty>,
@@ -233,7 +236,10 @@ fn collect_imports(
 impl Symbols {
     /// Collects the declarations of every file.
     pub fn collect(files: &[&syn::File]) -> Symbols {
-        let mut s = Symbols::default();
+        let mut s = Symbols {
+            rc_mode: files.iter().any(|f| counts_references(f)),
+            ..Default::default()
+        };
         // The names of the types first: an alias may mention them.
         for file in files {
             s.walk(&file.items, &mut |s, item| match item {
@@ -949,6 +955,17 @@ impl Symbols {
                 if name == "Element" && first.as_deref() != Some("std") && self.ui {
                     return Ty::View;
                 }
+                if self.rc_mode {
+                    match name.as_str() {
+                        "Rc" | "Arc" => {
+                            return Ty::Named("RsRc".into(), args.into_iter().take(1).collect());
+                        }
+                        "Weak" => {
+                            return Ty::Named("RsWeak".into(), args.into_iter().take(1).collect());
+                        }
+                        _ => {}
+                    }
+                }
                 from_name(&name, args)
             }
             Type::Reference(r) => self.ty(&r.elem, self_ty),
@@ -1216,6 +1233,23 @@ pub fn phantom_params(sig: &syn::Signature, closures: &HashMap<String, Ty>) -> V
             !in_params && !in_ret
         })
         .collect()
+}
+
+/// Whether the file counts references or holds weak ones.
+fn counts_references(file: &syn::File) -> bool {
+    fn scan(ts: proc_macro2::TokenStream) -> bool {
+        ts.into_iter().any(|t| match t {
+            proc_macro2::TokenTree::Ident(i) => {
+                matches!(
+                    i.to_string().as_str(),
+                    "strong_count" | "weak_count" | "downgrade" | "Weak"
+                )
+            }
+            proc_macro2::TokenTree::Group(g) => scan(g.stream()),
+            _ => false,
+        })
+    }
+    scan(quote::ToTokens::to_token_stream(file))
 }
 
 /// Whether a written type is a `VecDeque` (behind references).
