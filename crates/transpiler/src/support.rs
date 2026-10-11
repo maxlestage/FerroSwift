@@ -10,6 +10,7 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("fixed", &[], FIXED),
     ("debug_custom", &[], DEBUG_CUSTOM),
     ("less_any", &[], LESS_ANY),
+    ("cmp_any", &["less_any", "Ordering"], CMP_ANY),
     (
         "debug",
         &["debug_custom", "display", "fixed", "pad", "less_any"],
@@ -49,6 +50,9 @@ const HELPERS: &[(&str, &[&str], &str)] = &[
     ("mutref", &["debug"], MUTREF),
     ("drop", &["panic"], DROP),
     ("int128", &["debug"], INT128),
+    ("const_generic", &[], CONST_GENERIC),
+    ("error_source", &[], ERROR_SOURCE),
+    ("io", &["debug_custom"], IO),
     ("panic", &["debug", "debug_custom"], PANIC),
     ("thread", &["debug", "duration", "panic"], THREAD),
     ("cow", &["debug"], COW),
@@ -4514,5 +4518,96 @@ func rsOnDrop(_ drop: @escaping () -> Void) {
 func rsMoved<T>(_ alive: inout Bool, _ value: T) -> T {
     alive = false
     return value
+}
+"#;
+
+const CONST_GENERIC: &str = r#"
+/// A value given as a generic argument (`const N: usize`): `Matrix<3>` is
+/// `Matrix<RsConst3>`, and `N.value` is 3.
+protocol RsConst {
+    static var value: Int { get }
+}
+"#;
+
+const ERROR_SOURCE: &str = r#"
+/// `impl Error for E { fn source(&self) … }`.
+protocol RsErrorSource {
+    func source() -> (any Error)?
+}
+
+/// `e.source()` of any error: its cause, when its type tells one.
+func rsSource(_ error: any Error) -> (any Error)? {
+    (error as? RsErrorSource)?.source()
+}
+"#;
+
+const CMP_ANY: &str = r#"
+/// `a.cmp(&b)` of values Swift cannot compare with `<` (options of tuples, arrays of options).
+func rsCmpAny(_ a: Any, _ b: Any) -> Ordering {
+    rsLessAny(a, b) ? .less : rsLessAny(b, a) ? .greater : .equal
+}
+"#;
+
+const IO: &str = r#"
+/// An error of `std::io`.
+struct RsIoError: Error, CustomStringConvertible, RsDebugCustom {
+    let message: String
+    var description: String { message }
+    var rsDebugText: String { "Custom { kind: Other, error: \"\(message)\" }" }
+}
+
+/// `io::stdin()`: the lines of standard input.
+struct RsStdin {
+    func lock() -> RsStdin { self }
+
+    /// `stdin.lines()`.
+    func lines() -> AnySequence<Result<String, RsIoError>> {
+        AnySequence { AnyIterator { Swift.readLine(strippingNewline: true).map { .success($0) } } }
+    }
+
+    /// `stdin.read_line(&mut s)`: the line with its `\n` added to `s`, its length in bytes
+    /// (0 at the end of the input).
+    @discardableResult
+    func readLine(_ s: inout String) -> Result<Int, RsIoError> {
+        guard let line = Swift.readLine(strippingNewline: false) else { return .success(0) }
+        s += line
+        return .success(line.utf8.count)
+    }
+
+    /// `stdin.read_to_string(&mut s)`.
+    @discardableResult
+    func readToString(_ s: inout String) -> Result<Int, RsIoError> {
+        var n = 0
+        while let line = Swift.readLine(strippingNewline: false) {
+            s += line
+            n += line.utf8.count
+        }
+        return .success(n)
+    }
+}
+
+/// `io::stdout()`, `io::stderr()`.
+struct RsOutput {
+    let error: Bool
+
+    func lock() -> RsOutput { self }
+
+    /// `write!(out, …)`.
+    @discardableResult
+    func writeStr(_ text: String) -> Result<Void, RsIoError> {
+        if error {
+            fflush(nil)
+            FileHandle.standardError.write(Data(text.utf8))
+        } else {
+            print(text, terminator: "")
+        }
+        return .success(())
+    }
+
+    @discardableResult
+    func flush() -> Result<Void, RsIoError> {
+        fflush(nil)
+        return .success(())
+    }
 }
 "#;

@@ -128,6 +128,9 @@ pub struct FnSig {
     /// `rsBitsT` parameter telling the width of the Rust integer it stands for (`i32` is
     /// Swift's `Int`), so that a parse keeps its limits.
     pub parse_generics: Vec<String>,
+    /// `xs: [i32; N]`: the parameters whose array length is a const parameter (index, name),
+    /// which an array literal given there tells.
+    pub const_lens: Vec<(usize, String)>,
 }
 
 impl FnSig {
@@ -175,6 +178,12 @@ pub struct Symbols {
     pub display: HashSet<String>,
     /// The types with an `impl Drop` (Swift names).
     pub drop_types: HashSet<String>,
+    /// The const generic parameters (`N` of `const N: usize`).
+    pub const_params: HashSet<String>,
+    /// `impl<T: Display> Describe for T`: the traits implemented for every type with some
+    /// bounds, with those bounds (a `T: Describe` is a `T: Display`).
+    pub blanket:
+        HashMap<String, syn::punctuated::Punctuated<syn::TypeParamBound, syn::token::Plus>>,
     /// Types whose `Display` asks its formatter for the spec (`f.pad(…)`, `f.precision()`,
     /// `self.0.fmt(f)`): written with a formatter, so that the width applies to them, unlike
     /// `write!`-based impls.
@@ -252,6 +261,7 @@ impl Symbols {
     pub fn collect(files: &[&syn::File]) -> Symbols {
         let mut s = Symbols {
             rc_mode: files.iter().any(|f| counts_references(f)),
+            const_params: files.iter().flat_map(|f| const_params(f)).collect(),
             ..Default::default()
         };
         // The names of the types first: an alias may mention them.
@@ -282,6 +292,17 @@ impl Symbols {
         }
         for file in files {
             s.walk(&file.items, &mut |s, item| s.declare_impl(item));
+        }
+        // `fn walk(…)` declared inside a function: known to its callers too.
+        for file in files {
+            for f in nested_fns(file) {
+                let name = f.sig.ident.to_string();
+                if !s.fns.contains_key(&name) {
+                    let mut sig = s.sig(&f.sig, None);
+                    widen_usize(&mut sig.ret, &f.block);
+                    s.fns.insert(name, sig);
+                }
+            }
         }
         s.properties_for_clashes();
         s.name_constants();
@@ -537,6 +558,9 @@ impl Symbols {
             .map(|s| s.ident.to_string());
         if trait_name.as_deref() == Some("Drop") {
             self.drop_types.insert(names::type_name(&type_name));
+        }
+        if let (Some(t), Some(bounds)) = (&trait_name, blanket_bounds(imp)) {
+            self.blanket.insert(t.clone(), bounds);
         }
         match trait_name.as_deref() {
             Some("View") => {
@@ -891,6 +915,16 @@ impl Symbols {
             generics: type_params(&sig.generics),
             phantom: phantom_params(sig, &closures),
             parse_generics: parse_generics(&sig.generics),
+            const_lens: sig
+                .inputs
+                .iter()
+                .filter(|a| matches!(a, FnArg::Typed(_)))
+                .enumerate()
+                .filter_map(|(i, a)| match a {
+                    FnArg::Typed(p) => array_len_param(&p.ty).map(|n| (i, n)),
+                    FnArg::Receiver(_) => None,
+                })
+                .collect(),
         }
     }
 
@@ -936,8 +970,11 @@ impl Symbols {
                 let mut args = Vec::new();
                 if let syn::PathArguments::AngleBracketed(a) = &last.arguments {
                     for arg in &a.args {
-                        if let syn::GenericArgument::Type(t) = arg {
-                            args.push(self.ty(t, self_ty));
+                        match arg {
+                            syn::GenericArgument::Type(t) => args.push(self.ty(t, self_ty)),
+                            // `Matrix<3>`: the value as a type, `RsConst3`.
+                            syn::GenericArgument::Const(e) => args.push(const_arg(e)),
+                            _ => {}
                         }
                     }
                 }
@@ -1270,10 +1307,28 @@ fn returns_self(ret: &Ty, self_ty: &Ty) -> bool {
 /// The type parameters that neither a parameter nor the result mentions: Swift has nothing
 /// to infer them from, so they are passed as `T.Type` arguments.
 pub fn phantom_params(sig: &syn::Signature, closures: &HashMap<String, Ty>) -> Vec<String> {
+    let consts: HashSet<String> = sig
+        .generics
+        .params
+        .iter()
+        .filter_map(|p| match p {
+            GenericParam::Const(c) => Some(c.ident.to_string()),
+            _ => None,
+        })
+        .collect();
     type_params(&sig.generics)
         .into_iter()
         .filter(|g| !closures.contains_key(g))
         .filter(|g| {
+            // `xs: [i32; N]`: Swift's array has no length in its type, a const parameter is
+            // given as a type unless an argument's type carries it (`v: &Vector<N>`).
+            if consts.contains(g) {
+                let carried = sig.inputs.iter().any(|a| match a {
+                    FnArg::Typed(p) => generic_arg_mentions(&p.ty, g),
+                    FnArg::Receiver(_) => false,
+                });
+                return !carried;
+            }
             let in_params = sig.inputs.iter().any(|a| match a {
                 FnArg::Typed(p) => crate::translate::mentions_type(&p.ty, g),
                 FnArg::Receiver(_) => false,
@@ -1361,9 +1416,47 @@ pub fn type_params(g: &syn::Generics) -> Vec<String> {
         .iter()
         .filter_map(|p| match p {
             GenericParam::Type(t) => Some(t.ident.to_string()),
+            // `const N: usize`: a type parameter conforming to `RsConst`, `N.value` its value.
+            GenericParam::Const(c) => Some(c.ident.to_string()),
             _ => None,
         })
         .collect()
+}
+
+/// `3` in `Matrix<3>`, `{ N }`: the type standing for a value of a const parameter.
+pub fn const_arg(e: &syn::Expr) -> Ty {
+    match e {
+        syn::Expr::Lit(l) => match &l.lit {
+            syn::Lit::Int(i) => match i.base10_parse::<u64>() {
+                Ok(v) => Ty::Named(format!("RsConst{v}"), vec![]),
+                Err(_) => Ty::Unknown,
+            },
+            syn::Lit::Bool(b) => Ty::Named(format!("RsConst{}", b.value), vec![]),
+            _ => Ty::Unknown,
+        },
+        syn::Expr::Block(b) if b.block.stmts.len() == 1 => match &b.block.stmts[0] {
+            syn::Stmt::Expr(e, None) => const_arg(e),
+            _ => Ty::Unknown,
+        },
+        syn::Expr::Path(p) => match p.path.get_ident() {
+            Some(id) => Ty::Named(id.to_string(), vec![]),
+            None => Ty::Unknown,
+        },
+        _ => Ty::Unknown,
+    }
+}
+
+/// The names of the const generic parameters of a file (`N` of `const N: usize`).
+fn const_params(file: &syn::File) -> HashSet<String> {
+    struct Finder(HashSet<String>);
+    impl<'ast> syn::visit::Visit<'ast> for Finder {
+        fn visit_const_param(&mut self, c: &'ast syn::ConstParam) {
+            self.0.insert(c.ident.to_string());
+        }
+    }
+    let mut f = Finder(HashSet::new());
+    syn::visit::Visit::visit_file(&mut f, file);
+    f.0
 }
 
 /// The names in `#[derive(…)]`.
@@ -1514,4 +1607,98 @@ fn widen_usize(ret: &mut Ty, block: &syn::Block) {
             *ret = Ty::Int(IntKind::U64);
         }
     }
+}
+
+/// `[i32; N]` (behind references): the const parameter giving the length.
+fn array_len_param(t: &Type) -> Option<String> {
+    match t {
+        Type::Reference(r) => array_len_param(&r.elem),
+        Type::Array(a) => match &a.len {
+            syn::Expr::Path(p) => p.path.get_ident().map(ToString::to_string),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `Vector<N>`: the name is a generic argument of a type written.
+fn generic_arg_mentions(t: &Type, name: &str) -> bool {
+    struct Finder<'a>(&'a str, bool);
+    impl<'ast> syn::visit::Visit<'ast> for Finder<'_> {
+        fn visit_angle_bracketed_generic_arguments(
+            &mut self,
+            a: &'ast syn::AngleBracketedGenericArguments,
+        ) {
+            for arg in &a.args {
+                let hit = match arg {
+                    syn::GenericArgument::Type(Type::Path(p)) => p.path.is_ident(self.0),
+                    syn::GenericArgument::Const(syn::Expr::Path(p)) => p.path.is_ident(self.0),
+                    _ => false,
+                };
+                self.1 |= hit;
+            }
+            syn::visit::visit_angle_bracketed_generic_arguments(self, a);
+        }
+    }
+    let mut f = Finder(name, false);
+    syn::visit::Visit::visit_type(&mut f, t);
+    f.1
+}
+
+/// `impl<T: Display> Describe for T`: the bounds of the parameter the impl is for, when it is
+/// for every type having them.
+pub fn blanket_bounds(
+    imp: &syn::ItemImpl,
+) -> Option<syn::punctuated::Punctuated<syn::TypeParamBound, syn::token::Plus>> {
+    let name = type_name(&imp.self_ty)?;
+    imp.trait_.as_ref()?;
+    let Type::Path(p) = &*imp.self_ty else {
+        return None;
+    };
+    if !p.path.is_ident(&name) {
+        return None;
+    }
+    let mut bounds = syn::punctuated::Punctuated::new();
+    let mut found = false;
+    for g in &imp.generics.params {
+        if let GenericParam::Type(t) = g {
+            if t.ident == name {
+                found = true;
+                bounds.extend(t.bounds.iter().cloned());
+            }
+        }
+    }
+    if let Some(w) = &imp.generics.where_clause {
+        for pred in &w.predicates {
+            if let syn::WherePredicate::Type(pt) = pred {
+                if matches!(&pt.bounded_ty, Type::Path(bp) if bp.path.is_ident(&name)) {
+                    bounds.extend(pt.bounds.iter().cloned());
+                }
+            }
+        }
+    }
+    found.then_some(bounds)
+}
+
+/// The functions declared inside function and method bodies.
+fn nested_fns(file: &syn::File) -> Vec<syn::ItemFn> {
+    struct Finder(Vec<syn::ItemFn>, usize);
+    impl<'ast> syn::visit::Visit<'ast> for Finder {
+        fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+            if self.1 > 0 {
+                self.0.push(f.clone());
+            }
+            self.1 += 1;
+            syn::visit::visit_item_fn(self, f);
+            self.1 -= 1;
+        }
+        fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+            self.1 += 1;
+            syn::visit::visit_impl_item_fn(self, f);
+            self.1 -= 1;
+        }
+    }
+    let mut f = Finder(Vec::new(), 0);
+    syn::visit::Visit::visit_file(&mut f, file);
+    f.0
 }

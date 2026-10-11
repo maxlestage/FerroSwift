@@ -219,9 +219,10 @@ impl Translator<'_> {
                 }
                 // `report::<i32>(…)`: the type parameters nothing else tells, as `Int.self`.
                 let mut extra = Vec::new();
+                let lens = const_bindings(&sig, &c.args);
                 for g in &sig.phantom {
                     let pos = sig.generics.iter().position(|p| p == g);
-                    match pos.and_then(|i| turbofish.get(i)) {
+                    match pos.and_then(|i| turbofish.get(i)).or_else(|| lens.get(g)) {
                         Some(t) if t.is_complete() => {
                             extra.push(format!("{}.self", t.swift_lossy()))
                         }
@@ -302,6 +303,18 @@ impl Translator<'_> {
             .cloned()
         {
             let mut tname = self.type_path_name(&owner);
+            // `Vector::from([1.0, 2.0])` with `data: [f64; N]`: the length tells `N`.
+            let lens = const_bindings(&sig, &c.args);
+            if turbofish.is_empty() && !lens.is_empty() {
+                if let Some(st) = self.syms.structs.get(&owner_rust) {
+                    let args: Vec<String> = st
+                        .generics
+                        .iter()
+                        .map(|g| lens.get(g).map_or("_".to_string(), Ty::swift_lossy))
+                        .collect();
+                    tname = format!("{tname}<{}>", args.join(", "));
+                }
+            }
             // `Value::from(x)`: the conversion, as `x.into()` gives it (`u32::from(color)`
             // with an `impl From<Color> for u32` is the standard type's initializer).
             if sig.is_init
@@ -367,8 +380,27 @@ impl Translator<'_> {
                 &sig,
                 &c.args,
             );
-            if ex.ty == Ty::Named("Self".into(), vec![]) {
-                ex.ty = Ty::Named(self.struct_or_enum_swift(&owner_rust), vec![]);
+            let swift_owner = self.struct_or_enum_swift(&owner_rust);
+            let params = self
+                .syms
+                .structs
+                .get(&owner_rust)
+                .map(|s| s.generics.clone())
+                .unwrap_or_default();
+            // `-> Self`, `-> Bst<T>`: the type itself, with its own parameters.
+            let own = ex.ty == Ty::Named("Self".into(), vec![])
+                || matches!(&ex.ty, Ty::Named(n, args) if *n == swift_owner
+                && (args.is_empty() || args.iter().zip(&params).all(|(a, p)| {
+                    matches!(a, Ty::Named(g, x) if g == p && x.is_empty())
+                })));
+            if own {
+                // `Bst::new()` of a generic type: its parameters are learned later
+                // (`t.insert(50)`), unless the expected type tells them.
+                let n = params.len();
+                ex.ty = match expected {
+                    Ty::Named(e, args) if *e == swift_owner && args.len() == n => expected.clone(),
+                    _ => Ty::Named(swift_owner, vec![Ty::Unknown; n]),
+                };
             }
             return ex;
         }
@@ -1251,6 +1283,21 @@ impl Translator<'_> {
                 Some(Ex::primary(format!("rsReplace(&{a}, {})", b.code), ty))
             }
             ("mem", "drop") => Some(Ex::primary("", Ty::Unit)),
+            // `io::stdin()`, `io::stdout()`, `io::stderr()`.
+            ("io", "stdin") if args.is_empty() => {
+                self.helper("io");
+                Some(Ex::primary(
+                    "RsStdin()",
+                    Ty::Named("RsStdin".into(), vec![]),
+                ))
+            }
+            ("io", "stdout" | "stderr") if args.is_empty() => {
+                self.helper("io");
+                Some(Ex::primary(
+                    format!("RsOutput(error: {})", last == "stderr"),
+                    Ty::Named("RsOutput".into(), vec![]),
+                ))
+            }
             ("process", "exit") if args.len() == 1 => {
                 let v = arg(self, 0, &Ty::Int(IntKind::I32));
                 Some(Ex::primary(format!("exit(Int32({}))", v.code), Ty::Never))
@@ -1809,6 +1856,29 @@ impl Translator<'_> {
                 format!("{}.{}", wrap(&recv, P_PRIMARY), names::lower_camel(&name))
             };
             let (mut codes, arg_tys) = self.call_args_typed(&m.args, Some(&sig.params));
+            // `let mut t = Bst::new(); t.insert(50)`: the arguments tell the type's parameters
+            // the variable's type left open (`Bst<Int>`).
+            if let (Ty::Named(n, args), Expr::Path(p)) = (&recv.ty, &*m.receiver) {
+                if !generics.is_empty() && args.iter().any(|t| !t.is_complete()) {
+                    let mut bound = std::collections::HashMap::new();
+                    for (param, arg) in sig.params.iter().zip(&arg_tys) {
+                        unify(&param.ty, arg, &generics, &mut bound);
+                    }
+                    let learned: Vec<Ty> = generics
+                        .iter()
+                        .enumerate()
+                        .map(|(i, g)| match args.get(i) {
+                            Some(t) if t.is_complete() => t.clone(),
+                            _ => bound.get(g).cloned().unwrap_or(Ty::Unknown),
+                        })
+                        .collect();
+                    if learned.iter().all(Ty::is_complete) {
+                        if let Some(id) = p.path.get_ident() {
+                            self.refine(&id.to_string(), &Ty::Named(n.clone(), learned));
+                        }
+                    }
+                }
+            }
             // The method's own type parameters: from the turbofish, the arguments and the
             // expected result (`let x: i32 = r.get(s)`).
             let method_turbofish = self.method_turbofish(m);
@@ -1933,6 +2003,35 @@ impl Translator<'_> {
         {
             return Ex::primary(format!("{}()", wrap(&recv, P_PRIMARY)), Ty::Unit);
         }
+        // `Countdown { n: 3 }.map(|x| x * 2)`: a type of the crate implementing `Iterator`
+        // is a sequence of its `Item`s, which the closures take.
+        if let Ty::Named(n, _) = &recv.ty {
+            if let Some(item) = self.syms.iterators.get(n).cloned() {
+                if name != "next" {
+                    recv.ty = Ty::Iter(Box::new(item.clone()));
+                }
+                // `lexer.collect::<Result<Vec<_>, _>>()` of an iterator of results: each one
+                // unwrapped, the first error thrown.
+                if name == "collect" {
+                    if let Ty::Result(ok, e) = &item {
+                        let get = if e.is_complete() {
+                            format!("(item) throws({}) in try item.get()", e.swift_lossy())
+                        } else {
+                            "try $0.get()".to_string()
+                        };
+                        let target = self.method_turbofish(m);
+                        let into_result = matches!(target.first(), Some(Ty::Result(..)))
+                            || matches!(expected, Ty::Result(..));
+                        if into_result {
+                            recv = Ex::primary(
+                                format!("{}.map {{ {get} }}", wrap(&recv, P_PRIMARY)),
+                                Ty::Iter(ok.clone()),
+                            );
+                        }
+                    }
+                }
+            }
+        }
         let args = self.method_args(&recv, &name, m, expected);
         let mut ex = self.std_method(recv, &name, args, &turbofish, expected, m.method.span());
         if self.no_trailing == 0 {
@@ -1960,6 +2059,7 @@ impl Translator<'_> {
                     .iter()
                     .filter_map(|a| match a {
                         syn::GenericArgument::Type(t) => Some(self.ty(t)),
+                        syn::GenericArgument::Const(e) => Some(crate::symbols::const_arg(e)),
                         _ => None,
                     })
                     .collect()
@@ -2256,6 +2356,10 @@ impl Translator<'_> {
                 if std_method_name(name) {
                     return None;
                 }
+                // `e.source()` on a `dyn Error`: the standard method, not one of a type.
+                if matches!(ty, Ty::Dyn(p, _) if p == "Error") {
+                    return None;
+                }
                 // `cmd.undo(…)` on a `dyn Command`: the trait's own signature.
                 let (proto, args) = match ty {
                     Ty::Dyn(p, args) => (Some(p), args.clone()),
@@ -2476,6 +2580,9 @@ impl Translator<'_> {
         let (ok, _err) = recv.throws.as_ref().map(|t| (t.0.clone(), t.1.clone()))?;
         let code = recv.code.clone();
         Some(match name {
+            // `opt.map(parse_date).transpose()?`: the map throws already, its value is the
+            // option of the successes.
+            "transpose" if matches!(ok, Ty::Option(_)) => recv,
             // `f(x).unwrap()` of a throwing call: Rust's panic when it fails.
             "unwrap" | "expect" => {
                 self.helper("panic");
@@ -2828,6 +2935,56 @@ impl Translator<'_> {
             _ => Ty::Unknown,
         };
         let prim = |code: String, ty: Ty| Ex::primary(code, ty);
+        // `stdin.lock().lines()`, `stdin.read_line(&mut s)`, `out.flush()`.
+        if let Some(io) = rty.named().filter(|n| *n == "RsStdin" || *n == "RsOutput") {
+            let io_err = || Box::new(Ty::Named("RsIoError".into(), vec![]));
+            match (io, name) {
+                (_, "lock") => return recv,
+                ("RsStdin", "lines") => {
+                    return prim(
+                        format!("{}.lines()", recv.code),
+                        Ty::Iter(Box::new(Ty::Result(Box::new(Ty::Str), io_err()))),
+                    );
+                }
+                ("RsStdin", "read_line" | "read_to_string") if args.len() == 1 => {
+                    let method = if name == "read_line" {
+                        "readLine"
+                    } else {
+                        "readToString"
+                    };
+                    let target = args[0].code.trim_start_matches('&').to_string();
+                    return prim(
+                        format!("{}.{method}(&{target})", recv.code),
+                        Ty::Result(Box::new(Ty::Int(IntKind::Usize)), io_err()),
+                    );
+                }
+                ("RsOutput", "flush") => {
+                    return prim(
+                        format!("{}.flush()", recv.code),
+                        Ty::Result(Box::new(Ty::Unit), io_err()),
+                    );
+                }
+                ("RsOutput", "write_all" | "write") if args.len() == 1 => {
+                    return prim(
+                        format!(
+                            "{}.writeStr(String(decoding: {}, as: UTF8.self))",
+                            recv.code,
+                            a(0)
+                        ),
+                        Ty::Result(Box::new(Ty::Unit), io_err()),
+                    );
+                }
+                _ => {}
+            }
+        }
+        // `e.source()` of a `dyn Error`: its cause, through `RsErrorSource`.
+        if name == "source" && args.is_empty() && matches!(&rty, Ty::Dyn(p, _) if p == "Error") {
+            self.helper("error_source");
+            return prim(
+                format!("rsSource({})", recv.code),
+                Ty::Option(Box::new(Ty::Dyn("Error".into(), vec![]))),
+            );
+        }
         if rty == Ty::Named("Formatter".into(), vec![]) {
             let plain = recv.code.trim_start_matches('\u{2}').starts_with("fmt:");
             let builder = Ty::Named("RsDebugBuilder".into(), vec![]);
@@ -3151,6 +3308,14 @@ impl Translator<'_> {
                     return Ex::new(format!("{} ?? {d}", wrap(&recv, P_NIL + 1)), P_NIL, inner);
                 }
                 "map" => {
+                    // `opt.map(parse_date)` with a function returning a `Result`: Swift's
+                    // `map` rethrows, the value is the option of the successes.
+                    if let Ty::Result(ok, err) = fn_ret(0) {
+                        let ty = Ty::Option(ok);
+                        let mut ex = prim(format!("{r}.map({})", a(0)), ty.clone());
+                        ex.throws = Some(Box::new((ty, *err)));
+                        return ex;
+                    }
                     return prim(
                         format!("{r}.map({})", a(0)),
                         Ty::Option(Box::new(fn_ret(0))),
@@ -4615,6 +4780,14 @@ impl Translator<'_> {
                     rty.clone(),
                 );
             }
+            // `a.due.cmp(&b.due)` of options of tuples: Rust's order, through reflection.
+            "cmp" if needs_any_cmp(&recv.ty) => {
+                self.helper("cmp_any");
+                return prim(
+                    format!("rsCmpAny({}, {})", recv.code, a(0)),
+                    Ty::Named("Ordering".into(), vec![]),
+                );
+            }
             "cmp" | "partial_cmp" | "total_cmp" => {
                 self.helper("Ordering");
                 let f = if name == "partial_cmp" {
@@ -5759,6 +5932,7 @@ impl Translator<'_> {
                 .iter()
                 .filter_map(|g| match g {
                     syn::GenericArgument::Type(t) => Some(self.ty(t)),
+                    syn::GenericArgument::Const(e) => Some(crate::symbols::const_arg(e)),
                     _ => None,
                 })
                 .collect(),
@@ -5846,4 +6020,44 @@ fn is_subslice_place(code: &str) -> bool {
         return false;
     };
     code.ends_with(']') && (code[open..].contains("..") || code[open..].starts_with("[from: "))
+}
+
+/// `sum_all([1, 2, 3])` with `xs: [i32; N]`: `N` is 3, as the type `RsConst3`.
+fn const_bindings(
+    sig: &FnSig,
+    args: &syn::punctuated::Punctuated<Expr, syn::token::Comma>,
+) -> std::collections::HashMap<String, Ty> {
+    fn length(e: &Expr) -> Option<usize> {
+        match e {
+            Expr::Reference(r) => length(&r.expr),
+            Expr::Paren(p) => length(&p.expr),
+            Expr::Array(a) => Some(a.elems.len()),
+            Expr::Repeat(r) => match &*r.len {
+                Expr::Lit(l) => match &l.lit {
+                    syn::Lit::Int(i) => i.base10_parse().ok(),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    sig.const_lens
+        .iter()
+        .filter_map(|(i, g)| {
+            let n = length(args.iter().nth(*i)?)?;
+            Some((g.clone(), Ty::Named(format!("RsConst{n}"), vec![])))
+        })
+        .collect()
+}
+
+/// Values `rsCmp` cannot take: options, arrays and tuples holding options, arrays or tuples
+/// (or more than three values).
+fn needs_any_cmp(t: &Ty) -> bool {
+    let plain = |t: &Ty| !matches!(t, Ty::Option(_) | Ty::Vec(_) | Ty::Tuple(_));
+    match t {
+        Ty::Option(i) | Ty::Vec(i) => !plain(i),
+        Ty::Tuple(ts) => ts.len() > 3 || !ts.iter().all(plain),
+        _ => false,
+    }
 }

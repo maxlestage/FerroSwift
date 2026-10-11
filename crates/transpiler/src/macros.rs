@@ -152,6 +152,10 @@ impl Translator<'_> {
                 {
                     return vec![format!("{target_code}.write({text})")];
                 }
+                // `writeln!(io::stdout(), …)`: printed.
+                if target.ty.named() == Some("RsOutput") {
+                    return vec![format!("{target_code}.writeStr({text})")];
+                }
                 vec![format!("{target_code} += {text}")]
             }
             "panic" | "unreachable" | "todo" | "unimplemented" => {
@@ -245,6 +249,16 @@ impl Translator<'_> {
             | "assert_eq" | "assert_ne" | "debug_assert" | "debug_assert_eq"
             | "debug_assert_ne" => {
                 let lines = self.macro_stmt(mac);
+                // `writeln!(out, …)?` on standard output: an `io::Result`.
+                if lines.len() == 1 && lines[0].contains(".writeStr(") {
+                    return Ex::primary(
+                        lines[0].clone(),
+                        Ty::Result(
+                            Box::new(Ty::Unit),
+                            Box::new(Ty::Named("RsIoError".into(), vec![])),
+                        ),
+                    );
+                }
                 Ex::new(lines.join("\n"), crate::expr::P_ASSIGN, Ty::Unit)
             }
             _ => {

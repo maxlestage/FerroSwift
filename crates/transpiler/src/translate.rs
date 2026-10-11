@@ -141,6 +141,8 @@ pub struct Translator<'a> {
     /// The closures taking their parameter by value (`opt.map(|n| …)`), by position: a
     /// parameter to drop is dropped when the closure ends.
     pub consuming_closures: HashSet<(usize, usize)>,
+    /// The const generic parameters seen (`N` of `const N: usize`): `N.value` in expressions.
+    pub const_params: HashSet<String>,
     /// The start of the path call being translated (`thread::scope(…)` panics there).
     pub call_span: Option<proc_macro2::Span>,
     /// The type parameters a call knows before its arguments (turbofish, expected result).
@@ -231,6 +233,7 @@ impl<'a> Translator<'a> {
             pending_drops: Vec::new(),
             drop_flags: HashMap::new(),
             consuming_closures: HashSet::new(),
+            const_params: syms.const_params.clone(),
             call_span: None,
             pending_bindings: std::collections::HashMap::new(),
             last_closure_inouts: Vec::new(),
@@ -945,8 +948,11 @@ impl<'a> Translator<'a> {
                         parts.push(format!("{}: {}", t.ident, bounds.join(" & ")));
                     }
                 }
+                // `const N: usize`: a type conforming to `RsConst`, whose `value` is `N`.
                 GenericParam::Const(c) => {
-                    self.error(c.span(), "const generic parameters are not supported");
+                    self.helper("const_generic");
+                    self.const_params.insert(c.ident.to_string());
+                    parts.push(format!("{}: RsConst", c.ident));
                 }
                 GenericParam::Lifetime(_) => {}
             }
@@ -986,6 +992,10 @@ impl<'a> Translator<'a> {
                     _ => ty.swift_lossy(),
                 };
                 for b in self.bounds(&pt.bounds) {
+                    // `where T: Into<f64>`: `x.into()` is its `Double`.
+                    if b == "RsIntoDouble" {
+                        self.into_double_params.insert(name.clone());
+                    }
                     parts.push(format!("{name}: {b}"));
                 }
             }
@@ -1012,6 +1022,16 @@ impl<'a> Translator<'a> {
                 let name = seg.ident.to_string();
                 if matches!(name.as_str(), "Fn" | "FnMut" | "FnOnce") {
                     // `F: Fn(i32) -> i32`: the parameter is replaced by the closure type.
+                    continue;
+                }
+                // `T: Describe` with `impl<T: Display> Describe for T`: the types having
+                // `Describe` are those having `Display`.
+                if let Some(b) = self.syms.blanket.get(&name).cloned() {
+                    for p in self.bounds(&b) {
+                        if !out.contains(&p) {
+                            out.push(p);
+                        }
+                    }
                     continue;
                 }
                 // `{:?}` goes through reflection: no protocol to require.
@@ -1815,6 +1835,49 @@ impl<'a> Translator<'a> {
         out
     }
 
+    /// `impl<T: Display> Describe for T { … }` → `extension CustomStringConvertible { … }`:
+    /// the methods of every type having the bounds.
+    fn blanket_impl(&mut self, imp: &syn::ItemImpl, rust_name: &str) -> Option<String> {
+        let bounds = crate::symbols::blanket_bounds(imp)?;
+        let protocols = self.bounds(&bounds);
+        let (first, rest) = protocols.split_first()?;
+        self.generics = crate::symbols::type_params(&imp.generics)
+            .into_iter()
+            .filter(|g| g != rust_name)
+            .collect();
+        self.imp = Some(ImplCx {
+            rust: rust_name.to_string(),
+            swift: "Self".into(),
+            self_ty: Ty::Named("Self".into(), vec![]),
+            kind: TypeKind::Plain,
+            self_rename: None,
+        });
+        let mut members = Vec::new();
+        for it in &imp.items {
+            if let ImplItem::Fn(f) = it {
+                members.push(self.function(
+                    &f.attrs,
+                    &f.sig,
+                    &f.block,
+                    Place::Method {
+                        mutating_allowed: false,
+                    },
+                ));
+            }
+        }
+        self.imp = None;
+        self.generics.clear();
+        let where_clause = if rest.is_empty() {
+            String::new()
+        } else {
+            format!(" where Self: {}", rest.join(" & "))
+        };
+        Some(format!(
+            "extension {first}{where_clause} {{\n{}\n}}",
+            indent_lines(&members.join("\n\n"))
+        ))
+    }
+
     // ----- Traits -----
 
     fn item_trait(&mut self, t: &syn::ItemTrait) -> String {
@@ -1927,6 +1990,9 @@ impl<'a> Translator<'a> {
         let Some(rust_name) = crate::symbols::type_name(&imp.self_ty) else {
             return self.unsupported(imp.self_ty.span(), "impl for this type");
         };
+        if let Some(code) = self.blanket_impl(imp, &rust_name) {
+            return code;
+        }
         let self_ty = self.ty(&imp.self_ty);
         let trait_name = impl_trait_name(imp);
         let info = self.syms.structs.get(&rust_name);
@@ -2068,10 +2134,33 @@ impl<'a> Translator<'a> {
             }
             // `impl Error for E {}`: the type already conforms when it is the error of a
             // `Result` somewhere.
-            Some("Error") if !self.syms.errors.contains(&swift) => {
-                conformance = Some("Error".into());
+            // `impl Error for E {}`: the type already conforms when it is the error of a
+            // `Result` somewhere. Its `source()` is kept, read through `RsErrorSource`.
+            Some("Error") => {
+                let mut confs = Vec::new();
+                if !self.syms.errors.contains(&swift) {
+                    confs.push("Error".to_string());
+                }
+                for it in &imp.items {
+                    if let ImplItem::Fn(f) = it {
+                        if f.sig.ident == "source" {
+                            self.helper("error_source");
+                            confs.push("RsErrorSource".into());
+                            members.push(self.function(
+                                &f.attrs,
+                                &f.sig,
+                                &f.block,
+                                Place::Method {
+                                    mutating_allowed: false,
+                                },
+                            ));
+                        }
+                    }
+                }
+                if !confs.is_empty() {
+                    conformance = Some(confs.join(", "));
+                }
             }
-            Some("Error") => {}
             Some("Iterator") => {
                 conformance = Some("Sequence, IteratorProtocol".into());
                 for it in &imp.items {
