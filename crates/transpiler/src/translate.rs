@@ -51,6 +51,8 @@ pub struct FnCx {
     pub closure: bool,
     /// The name `self` is copied to (`mut self` receivers).
     pub self_name: Option<String>,
+    /// The method returns a key path into this type (`fn get(&mut self) -> &mut T`).
+    pub key_path: Option<String>,
 }
 
 /// The type whose `impl` is being translated.
@@ -118,6 +120,9 @@ pub struct Translator<'a> {
     pub escaping_params: std::collections::HashSet<String>,
     /// Locals being declared (`let max = …`): their initializers already see the shadowing.
     pub pending_locals: Vec<String>,
+    /// A key-path method call is wanted raw (see `raw_key_path_call`).
+    pub raw_key_path: bool,
+    pub key_path_raw: Option<(String, String, crate::symbols::FnSig)>,
     /// For each loop being translated, the variable its `break value` assigns.
     pub loop_values: Vec<Option<String>>,
     /// Nesting of the expression being translated.
@@ -158,6 +163,8 @@ impl<'a> Translator<'a> {
             generic_call: 0,
             escaping_params: std::collections::HashSet::new(),
             pending_locals: Vec::new(),
+            raw_key_path: false,
+            key_path_raw: None,
             loop_values: Vec::new(),
             depth: 0,
         }
@@ -1807,6 +1814,7 @@ impl<'a> Translator<'a> {
             init: false,
             closure: false,
             self_name: None,
+            key_path: None,
         });
         let out_name = "out".to_string();
         if let Some(p) = &param {
@@ -1883,6 +1891,7 @@ impl<'a> Translator<'a> {
             init: false,
             closure: false,
             self_name: None,
+            key_path: None,
         });
         let sink = if ret == Ty::Unit {
             Sink::Discard
@@ -1946,6 +1955,7 @@ impl<'a> Translator<'a> {
             init: false,
             closure: false,
             self_name: None,
+            key_path: None,
         });
         let mut body = prologue;
         body.extend(self.block_lines(&f.block, Sink::Return));
@@ -2016,6 +2026,7 @@ impl<'a> Translator<'a> {
             init: false,
             closure: false,
             self_name: None,
+            key_path: None,
         });
         let mut stmts: Vec<syn::Stmt> = f.block.stmts[..f.block.stmts.len() - 1].to_vec();
         stmts.push(syn::parse_quote!(#place = newValue;));
@@ -2197,6 +2208,7 @@ impl<'a> Translator<'a> {
             init: false,
             closure: false,
             self_name: None,
+            key_path: None,
         });
         let body = self.block_lines(&f.block, Sink::Yield);
         self.fns.pop();
@@ -2220,6 +2232,7 @@ impl<'a> Translator<'a> {
             init: false,
             closure: false,
             self_name: None,
+            key_path: None,
         });
         let body = self.block_lines(&f.block, Sink::Yield);
         self.fns.pop();
@@ -2302,15 +2315,20 @@ impl<'a> Translator<'a> {
             ReturnType::Default => Ty::Unit,
             ReturnType::Type(_, t) => self.ty(t),
         };
+        // `fn get(&mut self, …) -> &mut T`: a `WritableKeyPath` into the type.
+        let mut key_path_root = None;
         if let ReturnType::Type(_, t) = &sig.output {
             let self_ty = self.imp.as_ref().map(|i| i.self_ty.clone());
-            if has_mut_reference(t)
+            if crate::symbols::has_mut_reference(t)
                 && !self_ty.is_some_and(|st| crate::symbols::returns_self_ty(&ret, &st))
             {
-                self.error(
-                    t.span(),
-                    "returning a mutable reference is not translated (Swift copies values): return an index, or change the value inside the method",
-                );
+                match self.imp.as_ref().map(|i| i.swift.clone()) {
+                    Some(root) if self_kind == SelfKind::RefMut => key_path_root = Some(root),
+                    _ => self.error(
+                        t.span(),
+                        "returning a mutable reference is translated only from a `&mut self` method (as a key path into the type)",
+                    ),
+                }
             }
         }
         let mut throws = None;
@@ -2330,6 +2348,24 @@ impl<'a> Translator<'a> {
             }
             Ty::Iter(item) => format!(" -> [{}]", self.swift_ty(item, sig.output.span())),
             t => format!(" -> {}", self.swift_ty(t, sig.output.span())),
+        };
+        let ret_swift = match &key_path_root {
+            Some(root) => {
+                let inner = match &ret {
+                    Ty::Option(t) | Ty::Result(t, _) => (**t).clone(),
+                    t => t.clone(),
+                };
+                let path = format!(
+                    "WritableKeyPath<{root}, {}>",
+                    self.swift_ty(&inner, sig.output.span())
+                );
+                if matches!(ret, Ty::Option(_)) {
+                    format!(" -> {path}?")
+                } else {
+                    format!(" -> {path}")
+                }
+            }
+            None => ret_swift,
         };
         let throws_clause = match &throws {
             None => "",
@@ -2391,6 +2427,7 @@ impl<'a> Translator<'a> {
                 init: false,
                 closure: false,
                 self_name,
+                key_path: key_path_root,
             },
         }
     }
@@ -2936,19 +2973,6 @@ fn has_tuple_collection(t: &Ty) -> bool {
             matches!(**i, Ty::Tuple(_)) || has_tuple_collection(i)
         }
         Ty::Map(_, v, _) => matches!(**v, Ty::Tuple(_)) || has_tuple_collection(v),
-        _ => false,
-    }
-}
-
-/// `&mut T`, `Option<&mut T>`, `Result<&mut T, E>` as a return type.
-fn has_mut_reference(t: &Type) -> bool {
-    match t {
-        Type::Reference(r) => r.mutability.is_some(),
-        Type::Path(p) => p.path.segments.last().is_some_and(|seg| {
-            matches!(seg.ident.to_string().as_str(), "Option" | "Result")
-                && matches!(&seg.arguments, syn::PathArguments::AngleBracketed(a)
-                    if matches!(a.args.first(), Some(syn::GenericArgument::Type(inner)) if has_mut_reference(inner)))
-        }),
         _ => false,
     }
 }

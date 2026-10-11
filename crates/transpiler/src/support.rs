@@ -1506,6 +1506,33 @@ extension BinaryInteger {
     }
 }
 
+extension FixedWidthInteger {
+    /// `x.to_be_bytes()`, `x.to_le_bytes()`.
+    func toBeBytes() -> [UInt8] { withUnsafeBytes(of: bigEndian, Array.init) }
+    func toLeBytes() -> [UInt8] { withUnsafeBytes(of: littleEndian, Array.init) }
+    func toNeBytes() -> [UInt8] { withUnsafeBytes(of: self, Array.init) }
+
+    /// `T::from_be_bytes(bytes)`, `T::from_le_bytes(bytes)`.
+    init(rsBeBytes bytes: [UInt8]) {
+        self = bytes.reduce(0) { ($0 << 8) | Self(truncatingIfNeeded: $1) }
+    }
+
+    init(rsLeBytes bytes: [UInt8]) {
+        self = bytes.reversed().reduce(0) { ($0 << 8) | Self(truncatingIfNeeded: $1) }
+    }
+
+    /// `x.reverse_bits()`.
+    func reverseBits() -> Self {
+        var v = self
+        var r: Self = 0
+        for _ in 0..<Self.bitWidth {
+            r = (r << 1) | (v & 1)
+            v >>= 1
+        }
+        return r
+    }
+}
+
 extension MutableCollection {
     /// `v.fill(x)`, also on a slice (`v[..3].fill(0)`).
     mutating func fill(_ value: Element) {

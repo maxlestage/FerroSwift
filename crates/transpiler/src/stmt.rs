@@ -260,6 +260,28 @@ impl Translator<'_> {
             }
             return out;
         }
+        // `let r = &mut inv;`: `r` stands for `inv`.
+        if let Expr::Reference(re) = value {
+            if re.mutability.is_some() && simple_place(&re.expr) {
+                let ty = self.place_ty(&re.expr);
+                let place = self.place(&re.expr);
+                self.declare_alias(rust, place, ty);
+                return vec![];
+            }
+        }
+        // `let item = inv.add("x", 1);` with a method returning `&mut T`: `item` stands for
+        // the element, through the key path.
+        if let Expr::MethodCall(m) = value {
+            if let Some(sig) = self.key_path_sig(m) {
+                if !matches!(sig.ret, Ty::Option(_) | Ty::Result(..)) {
+                    if let Some((call, root, _)) = self.raw_key_path_call(m) {
+                        let p = self.fresh("path");
+                        self.declare_alias(rust, format!("{root}[keyPath: {p}]"), sig.ret.clone());
+                        return vec![format!("let {p} = {call}")];
+                    }
+                }
+            }
+        }
         // `let mut n = cell.borrow_mut();`: `n` stands for `cell.value`.
         if let Expr::MethodCall(m) = value {
             if let Some((place, ty)) = self.cell_place(m) {
@@ -667,6 +689,22 @@ impl Translator<'_> {
         if let Some(lines) = self.builder_chain(e) {
             return lines;
         }
+        // `self.cache.as_mut().map(|c| c.push(x));`: the element changed in place, when it
+        // exists.
+        if let Some(lines) = self.option_map_stmt(e) {
+            return lines;
+        }
+        // `bank.open("ann", 1);`: the key path returned is not needed.
+        if let Expr::MethodCall(m) = e {
+            if let Some((call, _, sig)) = self.raw_key_path_call(m) {
+                let t = if matches!(sig.ret, Ty::Result(..)) {
+                    "try "
+                } else {
+                    ""
+                };
+                return vec![format!("_ = {t}{call}")];
+            }
+        }
         match e {
             Expr::If(_) | Expr::Match(_) | Expr::Block(_) | Expr::Unsafe(_) => {
                 self.tail(e, &Sink::Discard)
@@ -914,6 +952,10 @@ impl Translator<'_> {
         let Some(e) = e else {
             return vec!["return".into()];
         };
+        // `fn get(&mut self, …) -> &mut T`: the key path to the value.
+        if let Some(root) = cx.key_path.clone() {
+            return self.key_path_return(e, &root, &cx);
+        }
         // In a function returning a `Result`.
         if let Some(err) = &cx.throws {
             let ok_ty = match &cx.ret {
@@ -1149,7 +1191,8 @@ impl Translator<'_> {
         if !matches!(
             call.method.to_string().as_str(),
             "get_mut" | "as_mut" | "last_mut" | "first_mut" | "find"
-        ) || m.arms.len() != 2
+        ) && !self.is_key_path_call(call)
+            || m.arms.len() != 2
         {
             return None;
         }
@@ -1807,7 +1850,19 @@ impl Translator<'_> {
                     format!("let {i} = {c}.firstIndex(where: {})", f.code),
                 ))
             }
-            _ => None,
+            // `self.find_mut(k)`: a method of the crate returning `Option<&mut T>` as a key path.
+            _ => {
+                let (call, root, sig) = self.raw_key_path_call(m)?;
+                if !matches!(sig.ret, Ty::Option(_)) {
+                    return None;
+                }
+                let p = self.fresh("path");
+                Some((
+                    format!("{root}[keyPath: {p}]"),
+                    sig.ret.item(),
+                    format!("let {p} = {call}"),
+                ))
+            }
         }
     }
 
@@ -1826,10 +1881,21 @@ impl Translator<'_> {
         let Expr::MethodCall(accessor) = accessor else {
             return None;
         };
+        // `let acct = self.get(name)?;` with a method returning `Result<&mut T, E>`.
+        if error.is_none() {
+            if let Some((call, root, sig)) = self.raw_key_path_call(accessor) {
+                if let Ty::Result(ok, _) = &sig.ret {
+                    let p = self.fresh("path");
+                    self.declare_alias(rust, format!("{root}[keyPath: {p}]"), (**ok).clone());
+                    return Some(vec![format!("let {p} = try {call}")]);
+                }
+            }
+        }
         if !matches!(
             accessor.method.to_string().as_str(),
             "get_mut" | "as_mut" | "last_mut" | "first_mut" | "find"
-        ) {
+        ) && !self.is_key_path_call(accessor)
+        {
             return None;
         }
         self.preludes.push(Vec::new());
@@ -1919,8 +1985,17 @@ impl Translator<'_> {
         if !matches!(
             m.method.to_string().as_str(),
             "get_mut" | "as_mut" | "last_mut" | "first_mut" | "find"
-        ) {
+        ) && !self.is_key_path_call(m)
+        {
             return None;
+        }
+        // `self.get(name).unwrap()` with a method returning `Result<&mut T, E>`.
+        if let Some((call, root, sig)) = self.raw_key_path_call(m) {
+            if let Ty::Result(ok, _) = &sig.ret {
+                let p = self.fresh("path");
+                self.prelude(format!("let {p} = try! {call}"));
+                return Some((format!("{root}[keyPath: {p}]"), (**ok).clone()));
+            }
         }
         self.preludes.push(Vec::new());
         let saved = self.diags.len();
@@ -1938,6 +2013,46 @@ impl Translator<'_> {
             self.prelude(format!("let {binding}!"));
         }
         Some((place, ty))
+    }
+
+    /// `opt.as_mut().map(|c| …)`, `v.last_mut().map(|x| …)` as a statement: an `if` on the
+    /// place, whose closure parameter stands for the element itself.
+    fn option_map_stmt(&mut self, e: &Expr) -> Option<Vec<String>> {
+        let Expr::MethodCall(m) = e else { return None };
+        if m.method != "map" || m.args.len() != 1 {
+            return None;
+        }
+        let Expr::Closure(c) = &m.args[0] else {
+            return None;
+        };
+        let Expr::MethodCall(accessor) = &*m.receiver else {
+            return None;
+        };
+        if !matches!(
+            accessor.method.to_string().as_str(),
+            "as_mut" | "get_mut" | "last_mut" | "first_mut"
+        ) || c.inputs.len() != 1
+        {
+            return None;
+        }
+        let Pat::Ident(id) = &c.inputs[0] else {
+            return None;
+        };
+        self.push_scope();
+        let Some((place, ty, condition)) = self.mutable_place(accessor) else {
+            self.pop_scope();
+            return None;
+        };
+        self.declare_alias(&id.ident.to_string(), place, ty);
+        let body = match &*c.body {
+            Expr::Block(b) if b.label.is_none() => self.block_lines(&b.block, Sink::Discard),
+            other => self.expr_stmt(other),
+        };
+        self.pop_scope();
+        Some(vec![format!(
+            "if {condition} {{\n{}\n}}",
+            indent_lines(&body.join("\n"))
+        )])
     }
 
     /// `v.iter_mut().for_each(|x| …)`: a `for` loop, whose elements are changed in place.

@@ -18,6 +18,7 @@ mod comments;
 mod diag;
 mod expr;
 mod format;
+mod keypath;
 mod macros;
 mod methods;
 mod names;
