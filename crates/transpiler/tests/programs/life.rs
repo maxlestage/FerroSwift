@@ -1,69 +1,70 @@
-#[derive(Clone, PartialEq)]
-struct Life { w: usize, h: usize, cells: Vec<bool> }
+//! Conway's game of life on a small torus.
 
-impl Life {
-    fn from_str(s: &str) -> Life {
-        let rows: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-        let h = rows.len();
-        let w = rows[0].len();
-        let cells = rows.iter().flat_map(|r| r.chars().map(|c| c == '#')).collect();
-        Life { w, h, cells }
+const W: usize = 8;
+const H: usize = 6;
+
+struct Grid {
+    cells: Vec<Vec<bool>>,
+}
+
+impl Grid {
+    fn new() -> Grid {
+        Grid { cells: vec![vec![false; W]; H] }
     }
-    fn alive(&self, r: isize, c: isize) -> bool {
-        let r = r.rem_euclid(self.h as isize) as usize;
-        let c = c.rem_euclid(self.w as isize) as usize;
-        self.cells[r * self.w + c]
+
+    fn set(&mut self, x: usize, y: usize) {
+        self.cells[y][x] = true;
     }
-    fn neighbors(&self, r: usize, c: usize) -> usize {
+
+    fn neighbours(&self, x: usize, y: usize) -> usize {
         let mut n = 0;
-        for dr in -1..=1 {
-            for dc in -1..=1 {
-                if (dr, dc) != (0, 0) && self.alive(r as isize + dr, c as isize + dc) {
+        for dy in [H - 1, 0, 1] {
+            for dx in [W - 1, 0, 1] {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                if self.cells[(y + dy) % H][(x + dx) % W] {
                     n += 1;
                 }
             }
         }
         n
     }
-    fn step(&self) -> Life {
-        let mut next = self.clone();
-        for r in 0..self.h {
-            for c in 0..self.w {
-                let n = self.neighbors(r, c);
-                let a = self.cells[r * self.w + c];
-                next.cells[r * self.w + c] = matches!((a, n), (true, 2) | (_, 3));
+
+    fn step(&self) -> Grid {
+        let mut next = Grid::new();
+        for y in 0..H {
+            for x in 0..W {
+                let alive = self.cells[y][x];
+                let n = self.neighbours(x, y);
+                next.cells[y][x] = matches!((alive, n), (true, 2) | (true, 3) | (false, 3));
             }
         }
         next
     }
+
     fn render(&self) -> String {
-        self.cells.chunks(self.w).map(|row| row.iter().map(|&b| if b { '#' } else { '.' }).collect::<String>()).collect::<Vec<_>>().join("\n")
+        self.cells
+            .iter()
+            .map(|row| row.iter().map(|&c| if c { '#' } else { '.' }).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
-    fn population(&self) -> usize { self.cells.iter().filter(|&&b| b).count() }
+
+    fn population(&self) -> usize {
+        self.cells.iter().flatten().filter(|c| **c).count()
+    }
 }
 
 fn main() {
-    let mut g = Life::from_str("
-        ......
-        ..#...
-        ...#..
-        .###..
-        ......
-        ......
-    ");
-    let start = g.clone();
-    for gn in 0..4 {
-        println!("gen {gn} pop {}\n{}", g.population(), g.render());
-        g = g.step();
+    let mut grid = Grid::new();
+    // A glider.
+    for (x, y) in [(1, 0), (2, 1), (0, 2), (1, 2), (2, 2)] {
+        grid.set(x, y);
     }
-    let mut steps = 0;
-    let mut h = start.clone();
-    loop {
-        h = h.step();
-        steps += 1;
-        if h == start || steps > 50 { break; }
+    for generation in 0..4 {
+        println!("generation {} ({} alive)", generation, grid.population());
+        println!("{}", grid.render());
+        grid = grid.step();
     }
-    println!("period {steps}");
-    let hist: Vec<usize> = (0..3).scan(start, |s, _| { *s = s.step(); Some(s.population()) }).collect();
-    println!("{:?}", hist);
 }
