@@ -40,6 +40,11 @@ fn every_page_ends_with_the_signature_footer() {
             ),
             "{lang}"
         );
+        // On a phone, the command wraps after the slashes of its URL.
+        assert!(
+            footer.contains("https://github.com/<wbr/>maxlestage/<wbr/>FerroSwift ferroswift-cli"),
+            "{lang}"
+        );
         assert!(
             footer.contains(&format!("v{}", ferroswift_transpiler::VERSION)),
             "{lang}"

@@ -1453,6 +1453,7 @@ a:hover > .arrow {
   }
 
   .pg-actions {
+    flex-wrap: wrap;
     margin-left: 0;
   }
 }
@@ -2093,6 +2094,7 @@ a:hover > .arrow {
   display: inline-flex;
   align-items: center;
   gap: 12px;
+  max-width: 100%;
   padding: 14px 22px;
   border: 1px solid var(--line-2);
   border-radius: 999px;
@@ -2109,6 +2111,20 @@ a:hover > .arrow {
 .foot-install::before {
   content: "$";
   color: var(--accent);
+}
+
+/* On one line when there is room; otherwise it wraps after the slashes of the URL. */
+.foot-install > span {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .foot-install {
+    border-radius: 20px;
+  }
 }
 
 .foot-install:hover {
