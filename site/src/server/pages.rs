@@ -221,6 +221,26 @@ pub const ECOSYSTEM: [(&str, &str); 7] = [
 /// The signature footer, shared in spirit by every site of the ecosystem: the call to
 /// action and the install command, the link columns, the sister projects, the author's
 /// signature, the giant wordmark and the legal line.
+/// A shell command whose URL may break after its slashes on a narrow screen: `<wbr>` adds
+/// nothing to what is selected and copied.
+fn command(text: &str) -> Element {
+    let mut line = span();
+    let mut part = String::new();
+    let mut chars = text.chars().peekable();
+    let mut previous = ' ';
+    while let Some(c) = chars.next() {
+        part.push(c);
+        let next = chars.peek().copied();
+        if c == '/' && previous != '/' && next.is_some_and(|n| n != '/') {
+            line = line
+                .child(Node::from(std::mem::take(&mut part)))
+                .child(wbr());
+        }
+        previous = c;
+    }
+    line.child(Node::from(part))
+}
+
 fn footer(route: &Route, site: &Site) -> Element {
     let d = t(route.lang);
     let f = &d.footer;
@@ -252,7 +272,7 @@ fn footer(route: &Route, site: &Site) -> Element {
                     format!("{}: cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli", f.install),
                 )
                 .attr("title", f.install)
-                .text("cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli"),
+                .child(command("cargo install --git https://github.com/maxlestage/FerroSwift ferroswift-cli")),
         );
     let brand = div()
         .class("foot-brand")
