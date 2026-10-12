@@ -18,8 +18,9 @@ fn main() {
     let a = Guard("a");
     let b = Guard("b");
     thread::scope(|s| {
-        s.spawn(move || println!("scoped {}", a.0));
+        // Printed before the spawn: two threads printing at once have no fixed order.
         println!("b is {}", b.0);
+        s.spawn(move || println!("scoped {}", a.0));
     });
     println!("end");
 }
