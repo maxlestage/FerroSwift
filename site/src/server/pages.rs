@@ -454,6 +454,9 @@ fn document(site: &Site, route: &Route, kind: &str, content: Node, bundle: Bundl
         .title_template("%s · FerroSwift")
         .base_url(site.origin.clone())
         .image("/og.png")
+        .meta_property("og:image:width", "1200")
+        .meta_property("og:image:height", "630")
+        .meta_property("og:image:alt", "FerroSwift: write Rust, ship SwiftUI.")
         .locale(t(route.lang).locale);
     let mut doc = Document::new(body)
         .lang(route.lang.code())
@@ -1072,6 +1075,9 @@ pub fn root(site: &Site, target: &str) -> String {
         .alternate("en", format!("/en/{target}"))
         .alternate("x-default", french)
         .image("/og.png")
+        .meta_property("og:image:width", "1200")
+        .meta_property("og:image:height", "630")
+        .meta_property("og:image:alt", "FerroSwift: write Rust, ship SwiftUI.")
         .noindex(true);
     let body = main().class("root").child(
         div()
@@ -1111,6 +1117,9 @@ pub fn offline(site: &Site) -> String {
         .base_url(site.origin.clone())
         .canonical("/offline/")
         .image("/og.png")
+        .meta_property("og:image:width", "1200")
+        .meta_property("og:image:height", "630")
+        .meta_property("og:image:alt", "FerroSwift: write Rust, ship SwiftUI.")
         .noindex(true);
     let body = main().class("root offline").child(
         div()
