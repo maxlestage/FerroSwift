@@ -1,3 +1,5 @@
+[![FerroSwift : écrivez du Rust, livrez du SwiftUI](https://raw.githubusercontent.com/maxlestage/FerroSwift/master/site/static/og.png)](https://maxlestage.github.io/FerroSwift/)
+
 # FerroSwift
 
 [English](README.md) · **Français**
