@@ -124,6 +124,11 @@ fn every_route_renders_with_its_seo_tags() {
         assert!(
             html.contains(r#"<meta property="og:image" content="https://example.com/og.png"/>"#)
         );
+        // The card of a shared link: the image, its size and its description.
+        assert!(html.contains(r#"<meta property="og:image:width" content="1200"/>"#));
+        assert!(html.contains(r#"<meta property="og:image:height" content="630"/>"#));
+        assert!(html.contains(r#"<meta property="og:image:alt" content="#));
+        assert!(html.contains(r#"<meta name="twitter:card" content="summary_large_image"/>"#));
         assert!(html.contains(r#"href="/static/app.css?v="#), "{path}");
         assert!(
             html.contains("https://maxlestage.github.io/Active/"),
