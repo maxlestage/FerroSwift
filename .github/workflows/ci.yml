@@ -36,7 +36,7 @@ jobs:
         run: |
           cargo build -p ferroswift-site --lib --target wasm32-unknown-unknown --profile wasm-release
           wasm-bindgen --target web --no-typescript --out-dir site/pkg target/wasm32-unknown-unknown/wasm-release/ferroswift_site.wasm
-      # Same command as pages.yml: the static version of the site for GitHub Pages.
+      # The static export of the site, kept working (served by no host).
       - name: Export the site as static files
         run: BASE_PATH=/FerroSwift cargo run --release -p ferroswift-site -- export dist
 

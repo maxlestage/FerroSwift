@@ -9,7 +9,8 @@
   at it, so that the Rust/Swift comparisons run).
 - **CI** (`.github/workflows/ci.yml`) also type-checks the translations against Apple's SwiftUI
   on macOS, for iOS 17 and macOS 14, in Swift 5 and Swift 6 modes, and builds a new app made
-  with `ferroswift new`. A green CI on `master` publishes the site (`site/`) on GitHub Pages.
+  with `ferroswift new`. The site (`site/`) is built and tested by CI; it is not published on
+  GitHub Pages (GitHub only hosts the code).
 - **Tests of the transpiler:** `crates/transpiler/tests/programs/*.rs` are run with `rustc`
   and, translated, with `swiftc`; their outputs must be identical. Add a program there for any
   new piece of Rust that should translate. Snapshots are blessed with `FERROSWIFT_BLESS=1`.
